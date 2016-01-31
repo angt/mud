@@ -26,7 +26,7 @@ struct mud {
 };
 
 static
-struct addrinfo *ai_create (const char *host, const char *port, int flags)
+struct addrinfo *mud_addrinfo (const char *host, const char *port, int flags)
 {
     struct addrinfo *ai = NULL, hints = {
         .ai_family = AF_UNSPEC,
@@ -71,23 +71,25 @@ struct path *mud_get_path (struct mud *mud, int fd, struct sockaddr_storage *add
 }
 
 static
-void mud_new_path (struct mud *mud, int fd, struct sockaddr_storage *addr, socklen_t addrlen)
+struct path *mud_new_path (struct mud *mud, int fd, struct sockaddr_storage *addr, socklen_t addrlen)
 {
     struct path *path = mud_get_path(mud, fd, addr, addrlen);
 
     if (path)
-        return;
+        return path;
 
-    path = malloc(sizeof(struct path));
+    path = calloc(1, sizeof(struct path));
 
     if (!path)
-        return;
+        return NULL;
 
     path->fd = fd;
     memcpy(&path->addr, addr, addrlen);
     path->addrlen = addrlen;
     path->next = mud->path;
     mud->path = path;
+
+    return path;
 }
 
 static
@@ -153,7 +155,7 @@ int mud_peer (struct mud *mud, const char *host, const char *port)
     if (!host || !port)
         return -1;
 
-    struct addrinfo *p, *ai = ai_create(host, port, AI_NUMERICSERV);
+    struct addrinfo *p, *ai = mud_addrinfo(host, port, AI_NUMERICSERV);
 
     if (!ai)
         return -1;
@@ -171,7 +173,7 @@ int mud_bind (struct mud *mud, const char *host, const char *port)
     if (!host || !port)
         return -1;
 
-    struct addrinfo *p, *ai = ai_create(host, port, AI_NUMERICSERV|AI_PASSIVE);
+    struct addrinfo *p, *ai = mud_addrinfo(host, port, AI_NUMERICSERV|AI_PASSIVE);
 
     if (!ai)
         return -1;
