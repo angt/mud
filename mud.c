@@ -1,12 +1,14 @@
 #include "mud.h"
 
 #include <stdlib.h>
+#include <stdint.h>
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
 #include <netdb.h>
 #include <fcntl.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 
 struct path {
     int fd;
@@ -25,6 +27,38 @@ struct mud {
     struct sock *sock;
     struct path *path;
 };
+
+static
+void mud_write32 (unsigned char *dst, uint32_t src)
+{
+    dst[0] = (unsigned char)(UINT32_C(255)&(src));
+    dst[1] = (unsigned char)(UINT32_C(255)&(src>>8));
+    dst[2] = (unsigned char)(UINT32_C(255)&(src>>16));
+    dst[3] = (unsigned char)(UINT32_C(255)&(src>>24));
+}
+
+static
+uint32_t mud_read32 (unsigned char *src)
+{
+    return ((uint32_t)src[0])
+         | ((uint32_t)src[1]<<8)
+         | ((uint32_t)src[2]<<16)
+         | ((uint32_t)src[3]<<24);
+}
+
+static
+uint32_t mud_now (void)
+{
+    struct timeval now;
+    gettimeofday(&now, NULL);
+    return now.tv_sec*UINT32_C(1000000)+now.tv_usec;
+}
+
+static
+ssize_t mud_send_path (struct path *path, const void *data, size_t size)
+{
+    return sendto(path->fd, data, size, 0, (struct sockaddr *)&path->addr, path->addrlen);
+}
 
 static
 int mud_set_nonblock (int fd)
@@ -239,13 +273,22 @@ ssize_t mud_recv (struct mud *mud, void *data, size_t size)
 
     int fd = mud->sock->fd;
 
-    ssize_t ret = recvfrom(fd, (uint8_t *)data, size, 0,
-                               (struct sockaddr *)&addr, &addrlen);
+    unsigned char buf[2048];
 
-    if (ret>0)
-        mud_new_addr(mud, &addr, addrlen);
+    ssize_t ret = recvfrom(fd, buf, sizeof(buf), 0,
+                           (struct sockaddr *)&addr, &addrlen);
 
-    return ret;
+    if (ret<=0)
+        return ret;
+
+    if (ret<=4)
+        return 0;
+
+    mud_new_path(mud, fd, &addr, addrlen);
+
+    memcpy(data, &buf[4], ret-4);
+
+    return ret-4;
 }
 
 ssize_t mud_send (struct mud *mud, const void *data, size_t size)
@@ -255,6 +298,20 @@ ssize_t mud_send (struct mud *mud, const void *data, size_t size)
     if (!path)
         return 0;
 
-    return sendto(path->fd, (uint8_t *)data, size, 0,
-                            (struct sockaddr *)&path->addr, path->addrlen);
+    unsigned char buf[2048];
+
+    if (size+4>sizeof(buf)) {
+        errno = EMSGSIZE;
+        return -1;
+    }
+
+    mud_write32(buf, mud_now());
+    memcpy(&buf[4], data, size);
+
+    ssize_t ret = mud_send_path(path, buf, size+4);
+
+    if (ret<=0)
+        return ret;
+
+    return ret-4;
 }
