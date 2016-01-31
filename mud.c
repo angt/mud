@@ -14,6 +14,8 @@ struct path {
     int fd;
     struct sockaddr_storage addr;
     socklen_t addrlen;
+    unsigned count;
+    uint32_t rtt;
     struct path *next;
 };
 
@@ -273,6 +275,13 @@ ssize_t mud_recv (struct mud *mud, void *data, size_t size)
 
     int fd = mud->sock->fd;
 
+    uint32_t now = mud_now();
+
+    if (!now) {
+        errno = EAGAIN;
+        return -1;
+    }
+
     unsigned char buf[2048];
 
     ssize_t ret = recvfrom(fd, buf, sizeof(buf), 0,
@@ -284,7 +293,31 @@ ssize_t mud_recv (struct mud *mud, void *data, size_t size)
     if (ret<=4)
         return 0;
 
-    mud_new_path(mud, fd, &addr, addrlen);
+    struct path *path = mud_new_path(mud, fd, &addr, addrlen);
+
+    if (!path) {
+        errno = ENOMEM;
+        return -1;
+    }
+
+    uint32_t send_now = mud_read32(buf);
+
+    if (!send_now) {
+        send_now = mud_read32(&buf[4]);
+        path->rtt = now-send_now;
+        errno = EAGAIN;
+        return -1;
+    }
+
+    if (path->count==500) {
+        path->count = 0;
+        unsigned char reply[8];
+        memset(reply, 0, 4);
+        memcpy(&reply[4], buf, 4);
+        mud_send_path(path, reply, sizeof(reply));
+    } else {
+        path->count++;
+    }
 
     memcpy(data, &buf[4], ret-4);
 
@@ -298,6 +331,13 @@ ssize_t mud_send (struct mud *mud, const void *data, size_t size)
     if (!path)
         return 0;
 
+    uint32_t now = mud_now();
+
+    if (!now) {
+        errno = EAGAIN;
+        return -1;
+    }
+
     unsigned char buf[2048];
 
     if (size+4>sizeof(buf)) {
@@ -305,7 +345,7 @@ ssize_t mud_send (struct mud *mud, const void *data, size_t size)
         return -1;
     }
 
-    mud_write32(buf, mud_now());
+    mud_write32(buf, now);
     memcpy(&buf[4], data, size);
 
     ssize_t ret = mud_send_path(path, buf, size+4);
