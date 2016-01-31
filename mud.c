@@ -5,6 +5,7 @@
 #include <string.h>
 #include <errno.h>
 #include <netdb.h>
+#include <fcntl.h>
 #include <sys/socket.h>
 
 struct path {
@@ -24,6 +25,17 @@ struct mud {
     struct sock *sock;
     struct path *path;
 };
+
+static
+int mud_set_nonblock (int fd)
+{
+    int flags = fcntl(fd, F_GETFL, 0);
+
+    if (flags==-1)
+        flags = 0;
+
+    return fcntl(fd, F_SETFL, flags|O_NONBLOCK);
+}
 
 static
 struct addrinfo *mud_addrinfo (const char *host, const char *port, int flags)
@@ -184,6 +196,9 @@ int mud_bind (struct mud *mud, const char *host, const char *port)
         fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
 
         if (fd==-1)
+            continue;
+
+        if (mud_set_nonblock(fd))
             continue;
 
         if (!bind(fd, (struct sockaddr *)p->ai_addr, p->ai_addrlen)) {
