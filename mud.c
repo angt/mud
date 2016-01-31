@@ -119,7 +119,7 @@ void mud_new_addr (struct mud *mud, struct sockaddr_storage *addr, socklen_t add
 static
 void mud_new_sock (struct mud *mud, int fd, int family)
 {
-    struct sock *sock = malloc(sizeof(struct sock));
+    struct sock *sock = calloc(1, sizeof(struct sock));
 
     if (!sock)
         return;
