@@ -313,5 +313,8 @@ ssize_t mud_send (struct mud *mud, const void *data, size_t size)
     if (ret<=0)
         return ret;
 
-    return ret-4;
+    if (ret!=size+4)
+        return 0;
+
+    return size;
 }
