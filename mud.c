@@ -16,6 +16,10 @@ struct path {
     socklen_t addrlen;
     unsigned count;
     uint32_t rtt;
+    uint32_t dt;
+    uint32_t send_dt;
+    uint32_t recv_time;
+    uint32_t send_time;
     struct path *next;
 };
 
@@ -302,16 +306,20 @@ ssize_t mud_recv (struct mud *mud, void *data, size_t size)
 
     if (!send_now) {
         send_now = mud_read32(&buf[4]);
+        path->dt = mud_read32(&buf[8]);
         path->rtt = now-send_now;
         errno = EAGAIN;
         return -1;
     }
 
-    if (path->count==500) {
+    if (path->count==256) {
+        unsigned char reply[3*4];
+        uint32_t dt = (now-path->recv_time)>>8;
         path->count = 0;
-        unsigned char reply[8];
+        path->recv_time = now;
         memset(reply, 0, 4);
         memcpy(&reply[4], buf, 4);
+        mud_write32(&reply[8], dt);
         mud_send_path(path, reply, sizeof(reply));
     } else {
         path->count++;
@@ -353,6 +361,14 @@ ssize_t mud_send (struct mud *mud, const void *data, size_t size)
 
     if (ret!=size+4)
         return 0;
+
+    if (path->count==256) {
+        path->count = 0;
+        path->send_dt = (now-path->send_time)>>8;
+        path->send_time = now;
+    } else {
+        path->count++;
+    }
 
     return size;
 }
