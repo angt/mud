@@ -176,8 +176,10 @@ int mud_bind (struct mud *mud, const char *host, const char *port)
     if (!ai)
         return -1;
 
+    int fd;
+
     for (p=ai; p; p=p->ai_next) {
-        int fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+        fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
 
         if (fd==-1)
             continue;
@@ -195,7 +197,7 @@ int mud_bind (struct mud *mud, const char *host, const char *port)
     if (!p)
         return -1;
 
-    return 0;
+    return fd;
 }
 
 // fake
