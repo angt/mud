@@ -295,10 +295,8 @@ ssize_t mud_recv (struct mud *mud, void *data, size_t size)
 
     struct path *path = mud_new_path(mud, fd, &addr, addrlen);
 
-    if (!path) {
-        errno = ENOMEM;
+    if (!path)
         return -1;
-    }
 
     uint32_t send_now = mud_read32(buf);
 
