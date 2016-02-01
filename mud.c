@@ -87,7 +87,7 @@ int mud_set_nonblock (int fd)
 {
     int flags = fcntl(fd, F_GETFL, 0);
 
-    if (flags==-1)
+    if (flags == -1)
         flags = 0;
 
     return fcntl(fd, F_SETFL, flags|O_NONBLOCK);
@@ -128,9 +128,9 @@ struct path *mud_get_path (struct mud *mud, int fd, struct sockaddr_storage *add
 {
     struct path *path;
 
-    for (path=mud->path; path; path=path->next) {
-        if ((path->fd==fd) &&
-            (path->addrlen==addrlen) &&
+    for (path = mud->path; path; path = path->next) {
+        if ((path->fd == fd) &&
+            (path->addrlen == addrlen) &&
             (!memcmp(&path->addr, addr, addrlen)))
             break;
     }
@@ -178,8 +178,8 @@ void mud_new_addr (struct mud *mud, struct sockaddr_storage *addr, socklen_t add
 
     struct sock *sock;
 
-    for (sock=mud->sock; sock; sock=sock->next) {
-        if (sock->family==family)
+    for (sock = mud->sock; sock; sock = sock->next) {
+        if (sock->family == family)
             mud_new_path(mud, sock->fd, addr, addrlen);
     }
 }
@@ -212,8 +212,8 @@ void mud_new_sock (struct mud *mud, int fd, int family)
 
     struct path *path;
 
-    for (path=mud->path; path; path=path->next) {
-        if (path->addrlen==addrlen)
+    for (path = mud->path; path; path = path->next) {
+        if (path->addrlen == addrlen)
             mud_new_path(mud, fd, &path->addr, path->addrlen);
     }
 }
@@ -228,7 +228,7 @@ int mud_peer (struct mud *mud, const char *host, const char *port)
     if (!ai)
         return -1;
 
-    for (p=ai; p; p=p->ai_next)
+    for (p = ai; p; p = p->ai_next)
         mud_new_addr(mud, (struct sockaddr_storage *)p->ai_addr, p->ai_addrlen);
 
     freeaddrinfo(ai);
@@ -248,10 +248,10 @@ int mud_bind (struct mud *mud, const char *host, const char *port)
 
     int fd;
 
-    for (p=ai; p; p=p->ai_next) {
+    for (p = ai; p; p = p->ai_next) {
         fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
 
-        if (fd==-1)
+        if (fd == -1)
             continue;
 
         if (mud_set_nonblock(fd))
@@ -311,16 +311,17 @@ ssize_t mud_recv (struct mud *mud, void *data, size_t size)
     struct sock *sock;
     ssize_t ret = 0;
 
-    for (sock=mud->sock; sock; sock=sock->next) {
+    for (sock = mud->sock; sock; sock = sock->next) {
         ret = recvfrom(sock->fd, buf, sizeof(buf), 0, (struct sockaddr *)&addr, &addrlen);
-        if (ret>0)
+
+        if (ret > 0)
             break;
     }
 
-    if (ret<=0)
+    if (ret <= 0)
         return ret;
 
-    if (ret<=4)
+    if (ret <= 4)
         return 0;
 
     struct path *path = mud_new_path(mud, sock->fd, &addr, addrlen);
@@ -338,7 +339,7 @@ ssize_t mud_recv (struct mud *mud, void *data, size_t size)
         return -1;
     }
 
-    if (path->count==256) {
+    if (path->count == 256) {
         unsigned char reply[3*4];
         uint32_t dt = (now-path->recv_time)>>8;
         path->count = 0;
@@ -358,10 +359,10 @@ ssize_t mud_recv (struct mud *mud, void *data, size_t size)
 
 void mud_flush (struct mud *mud, uint32_t time)
 {
-    while (mud->queue.start!=mud->queue.end) {
+    while (mud->queue.start != mud->queue.end) {
         struct packet *packet = &mud->queue.packet[mud->queue.start];
 
-        if (packet->time>time)
+        if (packet->time > time)
             break;
 
         mud->queue.start++;
@@ -369,13 +370,13 @@ void mud_flush (struct mud *mud, uint32_t time)
         struct path *path = mud->path;
         ssize_t ret = mud_send_path(path, packet->data, packet->size);
 
-        if (ret<=0)
+        if (ret <= 0)
             continue;
 
-        if (ret!=packet->size)
+        if (ret != packet->size)
             continue;
 
-        if (path->count==256) {
+        if (path->count == 256) {
             path->count = 0;
             path->send_dt = (time-path->send_time)>>8;
             path->send_time = time;
@@ -387,7 +388,7 @@ void mud_flush (struct mud *mud, uint32_t time)
 
 ssize_t mud_send (struct mud *mud, const void *data, size_t size)
 {
-    if (size+4>MUD_PKT_SIZE) {
+    if (size+4 > MUD_PKT_SIZE) {
         errno = EMSGSIZE;
         return -1;
     }
@@ -401,7 +402,7 @@ ssize_t mud_send (struct mud *mud, const void *data, size_t size)
 
     unsigned char next = mud->queue.end+1;
 
-    if (mud->queue.start!=next) {
+    if (mud->queue.start != next) {
         struct packet *packet = &mud->queue.packet[next];
         mud_write32(packet->data, now);
         memcpy(&packet->data[4], data, size);
