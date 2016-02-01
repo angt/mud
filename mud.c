@@ -10,6 +10,8 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 
+#define MUD_PKT_SIZE (2048u)
+
 struct path {
     int fd;
     struct sockaddr_storage addr;
@@ -29,7 +31,21 @@ struct sock {
     struct sock *next;
 };
 
+struct packet {
+    unsigned char data[MUD_PKT_SIZE];
+    uint32_t time;
+    size_t size;
+//  struct path *path;
+};
+
+struct queue {
+    struct packet *packet;
+    unsigned char start;
+    unsigned char end;
+};
+
 struct mud {
+    struct queue queue;
     struct sock *sock;
     struct path *path;
 };
@@ -257,11 +273,21 @@ int mud_bind (struct mud *mud, const char *host, const char *port)
     return fd;
 }
 
-// fake
-
 struct mud *mud_create (void)
 {
-    return calloc(1, sizeof(struct mud));
+    struct mud *mud = calloc(1, sizeof(struct mud));
+
+    if (!mud)
+        return NULL;
+
+    mud->queue.packet = calloc(256, sizeof(struct packet));
+
+    if (!mud->queue.packet) {
+        free(mud);
+        return NULL;
+    }
+
+    return mud;
 }
 
 void mud_delete (struct mud *mud)
@@ -274,11 +300,6 @@ ssize_t mud_recv (struct mud *mud, void *data, size_t size)
     struct sockaddr_storage addr;
     socklen_t addrlen = sizeof(addr);
 
-    if (!mud->sock)
-        return 0;
-
-    int fd = mud->sock->fd;
-
     uint32_t now = mud_now();
 
     if (!now) {
@@ -287,9 +308,14 @@ ssize_t mud_recv (struct mud *mud, void *data, size_t size)
     }
 
     unsigned char buf[2048];
+    struct sock *sock;
+    ssize_t ret = 0;
 
-    ssize_t ret = recvfrom(fd, buf, sizeof(buf), 0,
-                           (struct sockaddr *)&addr, &addrlen);
+    for (sock=mud->sock; sock; sock=sock->next) {
+        ret = recvfrom(sock->fd, buf, sizeof(buf), 0, (struct sockaddr *)&addr, &addrlen);
+        if (ret>0)
+            break;
+    }
 
     if (ret<=0)
         return ret;
@@ -297,7 +323,7 @@ ssize_t mud_recv (struct mud *mud, void *data, size_t size)
     if (ret<=4)
         return 0;
 
-    struct path *path = mud_new_path(mud, fd, &addr, addrlen);
+    struct path *path = mud_new_path(mud, sock->fd, &addr, addrlen);
 
     if (!path)
         return -1;
@@ -330,12 +356,41 @@ ssize_t mud_recv (struct mud *mud, void *data, size_t size)
     return ret-4;
 }
 
+void mud_flush (struct mud *mud, uint32_t time)
+{
+    while (mud->queue.start!=mud->queue.end) {
+        struct packet *packet = &mud->queue.packet[mud->queue.start];
+
+        if (packet->time>time)
+            break;
+
+        mud->queue.start++;
+
+        struct path *path = mud->path;
+        ssize_t ret = mud_send_path(path, packet->data, packet->size);
+
+        if (ret<=0)
+            continue;
+
+        if (ret!=packet->size)
+            continue;
+
+        if (path->count==256) {
+            path->count = 0;
+            path->send_dt = (time-path->send_time)>>8;
+            path->send_time = time;
+        } else {
+            path->count++;
+        }
+    }
+}
+
 ssize_t mud_send (struct mud *mud, const void *data, size_t size)
 {
-    struct path *path = mud->path;
-
-    if (!path)
-        return 0;
+    if (size+4>MUD_PKT_SIZE) {
+        errno = EMSGSIZE;
+        return -1;
+    }
 
     uint32_t now = mud_now();
 
@@ -344,31 +399,18 @@ ssize_t mud_send (struct mud *mud, const void *data, size_t size)
         return -1;
     }
 
-    unsigned char buf[2048];
+    unsigned char next = mud->queue.end+1;
 
-    if (size+4>sizeof(buf)) {
-        errno = EMSGSIZE;
-        return -1;
+    if (mud->queue.start!=next) {
+        struct packet *packet = &mud->queue.packet[next];
+        mud_write32(packet->data, now);
+        memcpy(&packet->data[4], data, size);
+        packet->size = size+4;
+        packet->time = now;
+        mud->queue.end = next;
     }
 
-    mud_write32(buf, now);
-    memcpy(&buf[4], data, size);
-
-    ssize_t ret = mud_send_path(path, buf, size+4);
-
-    if (ret<=0)
-        return ret;
-
-    if (ret!=size+4)
-        return 0;
-
-    if (path->count==256) {
-        path->count = 0;
-        path->send_dt = (now-path->send_time)>>8;
-        path->send_time = now;
-    } else {
-        path->count++;
-    }
+    mud_flush(mud, now);
 
     return size;
 }
