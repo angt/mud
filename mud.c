@@ -297,6 +297,26 @@ struct mud *mud_create (void)
 
 void mud_delete (struct mud *mud)
 {
+    if (!mud)
+        return;
+
+    free(mud->tx.packet);
+    free(mud->rx.packet);
+
+    while (mud->sock) {
+        struct sock *sock = mud->sock;
+        if (sock->fd != -1)
+            close(sock->fd);
+        mud->sock = sock->next;
+        free(sock);
+    }
+
+    while (mud->path) {
+        struct path *path = mud->path;
+        mud->path = path->next;
+        free(path);
+    }
+
     free(mud);
 }
 
