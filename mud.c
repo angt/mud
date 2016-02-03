@@ -10,6 +10,8 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 
+#include <sodium.h>
+
 #define MUD_PKT_SIZE (2048u)
 
 struct path {
@@ -45,11 +47,16 @@ struct queue {
     unsigned char end;
 };
 
+struct crypto {
+    crypto_aead_aes256gcm_state key;
+};
+
 struct mud {
     struct queue tx;
     struct queue rx;
     struct sock *sock;
     struct path *path;
+    struct crypto crypto;
 };
 
 static
@@ -62,7 +69,7 @@ void mud_write32 (unsigned char *dst, uint32_t src)
 }
 
 static
-uint32_t mud_read32 (unsigned char *src)
+uint32_t mud_read32 (const unsigned char *src)
 {
     return ((uint32_t)src[0])
          | ((uint32_t)src[1]<<8)
@@ -275,12 +282,17 @@ int mud_bind (struct mud *mud, const char *host, const char *port)
     return fd;
 }
 
-struct mud *mud_create (void)
+struct mud *mud_create (const unsigned char *key, size_t key_size)
 {
+    if (key_size != crypto_aead_aes256gcm_KEYBYTES)
+        return NULL;
+
     struct mud *mud = calloc(1, sizeof(struct mud));
 
     if (!mud)
         return NULL;
+
+    crypto_aead_aes256gcm_beforenm(&mud->crypto.key, key);
 
     mud->tx.packet = calloc(256, sizeof(struct packet));
     mud->rx.packet = calloc(256, sizeof(struct packet));
@@ -320,6 +332,58 @@ void mud_delete (struct mud *mud)
     free(mud);
 }
 
+static
+int mud_encrypt (struct mud *mud, uint32_t nonce,
+                 unsigned char *dst, size_t dst_size,
+                 const unsigned char *src, size_t src_size)
+{
+    if (!src_size)
+        return 0;
+
+    unsigned char npub[crypto_aead_aes256gcm_NPUBBYTES] = {0};
+
+    mud_write32(npub, nonce);
+
+    crypto_aead_aes256gcm_encrypt_afternm(
+            dst+4, NULL,
+            src, src_size,
+            NULL, 0,
+            NULL,
+            npub,
+            (const crypto_aead_aes256gcm_state *)&mud->crypto.key);
+
+    memcpy(dst, npub, 4);
+
+    return src_size+4+crypto_aead_aes256gcm_ABYTES;
+}
+
+static
+size_t mud_decrypt (struct mud *mud, uint32_t *nonce,
+                    unsigned char *dst, size_t dst_size,
+                    const unsigned char *src, size_t src_size)
+{
+    if (!src_size)
+        return 0;
+
+    unsigned char npub[crypto_aead_aes256gcm_NPUBBYTES] = {0};
+
+    memcpy(npub, src, 4);
+
+    if (crypto_aead_aes256gcm_decrypt_afternm(
+            dst, NULL,
+            NULL,
+            src+4, src_size-4,
+            NULL, 0,
+            npub,
+            (const crypto_aead_aes256gcm_state *)&mud->crypto.key))
+        return 0;
+
+    if (nonce)
+        *nonce = mud_read32(src);
+
+    return src_size-4-crypto_aead_aes256gcm_ABYTES;
+}
+
 int mud_pull (struct mud *mud)
 {
     uint32_t now = mud_now();
@@ -343,7 +407,7 @@ int mud_pull (struct mud *mud)
         socklen_t addrlen = sizeof(addr);
 
         ssize_t ret = recvfrom(sock->fd, packet->data, sizeof(packet->data),
-                0, (struct sockaddr *)&addr, &addrlen);
+                               0, (struct sockaddr *)&addr, &addrlen);
 
         if (ret<=0)
             continue;
@@ -389,7 +453,7 @@ int mud_pull (struct mud *mud)
 
 ssize_t mud_recv (struct mud *mud, void *data, size_t size)
 {
-    if (size+4 < MUD_PKT_SIZE) {
+    if (size+4+crypto_aead_aes256gcm_ABYTES < MUD_PKT_SIZE) {
         errno = EMSGSIZE;
         return -1;
     }
@@ -401,10 +465,13 @@ ssize_t mud_recv (struct mud *mud, void *data, size_t size)
 
     struct packet *packet = &mud->rx.packet[mud->rx.start];
 
-    memcpy(data, &packet->data[4], packet->size-4);
+    ssize_t ret = mud_decrypt(mud, NULL,
+                              data, size,
+                              packet->data, packet->size);
+
     mud->rx.start++;
 
-    return packet->size-4;
+    return ret;
 }
 
 int mud_push (struct mud *mud)
@@ -447,7 +514,7 @@ int mud_push (struct mud *mud)
 
 ssize_t mud_send (struct mud *mud, const void *data, size_t size)
 {
-    if (size+4 > MUD_PKT_SIZE) {
+    if (size+4+crypto_aead_aes256gcm_ABYTES > MUD_PKT_SIZE) {
         errno = EMSGSIZE;
         return -1;
     }
@@ -468,9 +535,10 @@ ssize_t mud_send (struct mud *mud, const void *data, size_t size)
 
     struct packet *packet = &mud->tx.packet[mud->tx.end];
 
-    mud_write32(packet->data, now);
-    memcpy(&packet->data[4], data, size);
-    packet->size = size+4;
+    packet->size = mud_encrypt(mud, now,
+                               packet->data, sizeof(packet->data),
+                               data, size);
+
 //  packet->time = now;
     mud->tx.end = next;
 
