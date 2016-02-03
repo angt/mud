@@ -243,7 +243,7 @@ int mud_bind (struct mud *mud, const char *host, const char *port)
     if (!host || !port)
         return -1;
 
-    struct addrinfo *p, *ai = mud_addrinfo(host, port, AI_NUMERICSERV|AI_PASSIVE);
+    struct addrinfo *p, *ai = mud_addrinfo(host, port, AI_NUMERICHOST|AI_NUMERICSERV|AI_PASSIVE);
 
     if (!ai)
         return -1;
