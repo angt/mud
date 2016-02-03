@@ -396,56 +396,58 @@ int mud_pull (struct mud *mud)
     struct sock *sock;
 
     for (sock = mud->sock; sock; sock = sock->next) {
-        unsigned char next = mud->rx.end+1;
+        for (int i = 0; i < 16; i++) {
+            unsigned char next = mud->rx.end+1;
 
-        if (mud->rx.start == next)
-            return 0;
+            if (mud->rx.start == next)
+                return 0;
 
-        struct packet *packet = &mud->rx.packet[mud->rx.end];
+            struct packet *packet = &mud->rx.packet[mud->rx.end];
 
-        struct sockaddr_storage addr;
-        socklen_t addrlen = sizeof(addr);
+            struct sockaddr_storage addr;
+            socklen_t addrlen = sizeof(addr);
 
-        ssize_t ret = recvfrom(sock->fd, packet->data, sizeof(packet->data),
-                               0, (struct sockaddr *)&addr, &addrlen);
+            ssize_t ret = recvfrom(sock->fd, packet->data, sizeof(packet->data),
+                                   0, (struct sockaddr *)&addr, &addrlen);
 
-        if (ret<=0)
-            continue;
+            if (ret <= 0)
+                break;
 
-        struct path *path = mud_new_path(mud, sock->fd, &addr, addrlen);
+            struct path *path = mud_new_path(mud, sock->fd, &addr, addrlen);
 
-        if (!path)
-            return -1;
+            if (!path)
+                return -1;
 
-        uint32_t send_now = mud_read32(packet->data);
+            uint32_t send_now = mud_read32(packet->data);
 
-        if (!send_now) {
-            send_now = mud_read32(&packet->data[4]);
-            path->dt = mud_read32(&packet->data[8]);
-            path->rtt = now-send_now;
-            continue;
+            if (!send_now) {
+                send_now = mud_read32(&packet->data[4]);
+                path->dt = mud_read32(&packet->data[8]);
+                path->rtt = now-send_now;
+                continue;
+            }
+
+            if (path->recv_count == 256) {
+                unsigned char reply[3*4];
+                uint32_t dt = (now-path->recv_time)>>8;
+
+                path->recv_count = 0;
+                path->recv_time = now;
+
+                memset(reply, 0, 4);
+                memcpy(&reply[4], packet->data, 4);
+                mud_write32(&reply[8], dt);
+
+                mud_send_path(path, reply, sizeof(reply));
+            } else {
+                path->recv_count++;
+            }
+
+            packet->size = ret;
+        //  packet->time = now;
+
+            mud->rx.end = next;
         }
-
-        if (path->recv_count == 256) {
-            unsigned char reply[3*4];
-            uint32_t dt = (now-path->recv_time)>>8;
-
-            path->recv_count = 0;
-            path->recv_time = now;
-
-            memset(reply, 0, 4);
-            memcpy(&reply[4], packet->data, 4);
-            mud_write32(&reply[8], dt);
-
-            mud_send_path(path, reply, sizeof(reply));
-        } else {
-            path->recv_count++;
-        }
-
-        packet->size = ret;
-    //  packet->time = now;
-
-        mud->rx.end = next;
     }
 
     return 0;
