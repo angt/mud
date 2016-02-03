@@ -14,6 +14,11 @@
 
 #define MUD_PKT_SIZE (2048u)
 
+struct addr {
+    struct sockaddr_storage data;
+    socklen_t size;
+};
+
 struct path_info {
     uint32_t dt;
     uint32_t time;
@@ -22,8 +27,7 @@ struct path_info {
 
 struct path {
     int fd;
-    struct sockaddr_storage addr;
-    socklen_t addrlen;
+    struct addr addr;
     uint32_t rtt;
     struct path_info recv;
     struct path_info send;
@@ -90,7 +94,8 @@ uint32_t mud_now (void)
 static
 ssize_t mud_send_path (struct path *path, const void *data, size_t size)
 {
-    return sendto(path->fd, data, size, 0, (struct sockaddr *)&path->addr, path->addrlen);
+    return sendto(path->fd, data, size, 0,
+                  (struct sockaddr *)&path->addr.data, path->addr.size);
 }
 
 static
@@ -135,14 +140,14 @@ struct addrinfo *mud_addrinfo (const char *host, const char *port, int flags)
 }
 
 static
-struct path *mud_get_path (struct mud *mud, int fd, struct sockaddr_storage *addr, socklen_t addrlen)
+struct path *mud_get_path (struct mud *mud, int fd, struct addr *addr)
 {
     struct path *path;
 
     for (path = mud->path; path; path = path->next) {
         if ((path->fd == fd) &&
-            (path->addrlen == addrlen) &&
-            (!memcmp(&path->addr, addr, addrlen)))
+            (path->addr.size == addr->size) &&
+            (!memcmp(&path->addr.data, &addr->data, addr->size)))
             break;
     }
 
@@ -150,9 +155,9 @@ struct path *mud_get_path (struct mud *mud, int fd, struct sockaddr_storage *add
 }
 
 static
-struct path *mud_new_path (struct mud *mud, int fd, struct sockaddr_storage *addr, socklen_t addrlen)
+struct path *mud_new_path (struct mud *mud, int fd, struct addr *addr)
 {
-    struct path *path = mud_get_path(mud, fd, addr, addrlen);
+    struct path *path = mud_get_path(mud, fd, addr);
 
     if (path)
         return path;
@@ -163,8 +168,7 @@ struct path *mud_new_path (struct mud *mud, int fd, struct sockaddr_storage *add
         return NULL;
 
     path->fd = fd;
-    memcpy(&path->addr, addr, addrlen);
-    path->addrlen = addrlen;
+    memcpy(&path->addr, addr, sizeof(struct addr));
     path->next = mud->path;
     mud->path = path;
 
@@ -172,11 +176,11 @@ struct path *mud_new_path (struct mud *mud, int fd, struct sockaddr_storage *add
 }
 
 static
-void mud_new_addr (struct mud *mud, struct sockaddr_storage *addr, socklen_t addrlen)
+void mud_new_addr (struct mud *mud, struct addr *addr)
 {
     int family;
 
-    switch (addrlen) {
+    switch (addr->size) {
     case INET_ADDRSTRLEN:
         family = AF_INET;
         break;
@@ -191,7 +195,7 @@ void mud_new_addr (struct mud *mud, struct sockaddr_storage *addr, socklen_t add
 
     for (sock = mud->sock; sock; sock = sock->next) {
         if (sock->family == family)
-            mud_new_path(mud, sock->fd, addr, addrlen);
+            mud_new_path(mud, sock->fd, addr);
     }
 }
 
@@ -208,14 +212,14 @@ void mud_new_sock (struct mud *mud, int fd, int family)
     sock->next = mud->sock;
     mud->sock = sock;
 
-    socklen_t addrlen;
+    socklen_t addr_size;
 
     switch (family) {
     case AF_INET:
-        addrlen = INET_ADDRSTRLEN;
+        addr_size = INET_ADDRSTRLEN;
         break;
     case AF_INET6:
-        addrlen = INET6_ADDRSTRLEN;
+        addr_size = INET6_ADDRSTRLEN;
         break;
     default:
         return;
@@ -224,8 +228,8 @@ void mud_new_sock (struct mud *mud, int fd, int family)
     struct path *path;
 
     for (path = mud->path; path; path = path->next) {
-        if (path->addrlen == addrlen)
-            mud_new_path(mud, fd, &path->addr, path->addrlen);
+        if (path->addr.size == addr_size)
+            mud_new_path(mud, fd, &path->addr);
     }
 }
 
@@ -239,8 +243,14 @@ int mud_peer (struct mud *mud, const char *host, const char *port)
     if (!ai)
         return -1;
 
-    for (p = ai; p; p = p->ai_next)
-        mud_new_addr(mud, (struct sockaddr_storage *)p->ai_addr, p->ai_addrlen);
+    for (p = ai; p; p = p->ai_next) {
+        struct addr addr;
+
+        memcpy(&addr.data, p->ai_addr, p->ai_addrlen);
+        addr.size = p->ai_addrlen;
+
+        mud_new_addr(mud, &addr);
+    }
 
     freeaddrinfo(ai);
 
@@ -319,14 +329,17 @@ void mud_delete (struct mud *mud)
 
     while (mud->sock) {
         struct sock *sock = mud->sock;
+
         if (sock->fd != -1)
             close(sock->fd);
+
         mud->sock = sock->next;
         free(sock);
     }
 
     while (mud->path) {
         struct path *path = mud->path;
+
         mud->path = path->next;
         free(path);
     }
@@ -414,18 +427,16 @@ int mud_pull (struct mud *mud)
             if (mud->rx.start == next)
                 return 0;
 
+            struct addr addr;
             struct packet *packet = &mud->rx.packet[mud->rx.end];
 
-            struct sockaddr_storage addr;
-            socklen_t addrlen = sizeof(addr);
-
             ssize_t ret = recvfrom(sock->fd, packet->data, sizeof(packet->data),
-                                   0, (struct sockaddr *)&addr, &addrlen);
+                                   0, (struct sockaddr *)&addr.data, &addr.size);
 
             if (ret <= 0)
                 break;
 
-            struct path *path = mud_new_path(mud, sock->fd, &addr, addrlen);
+            struct path *path = mud_new_path(mud, sock->fd, &addr);
 
             if (!path)
                 return -1;
