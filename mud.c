@@ -515,21 +515,24 @@ int mud_push (struct mud *mud)
 
         mud->tx.start++;
 
-        struct path *path = mud->path;
-        ssize_t ret = mud_send_path(path, packet->data, packet->size);
+        struct path *path;
 
-        if (ret <= 0)
-            continue;
+        for (path = mud->path; path; path = path->next) {
+            ssize_t ret = mud_send_path(path, packet->data, packet->size);
 
-        if (ret != packet->size)
-            continue;
+            if (ret <= 0)
+                continue;
 
-        if (path->send.count == 256) {
-            path->send.count = 0;
-            path->send.dt = (now-path->send.time)>>8;
-            path->send.time = now;
-        } else {
-            path->send.count++;
+            if (ret != packet->size)
+                continue;
+
+            if (path->send.count == 256) {
+                path->send.count = 0;
+                path->send.dt = (now-path->send.time)>>8;
+                path->send.time = now;
+            } else {
+                path->send.count++;
+            }
         }
     }
 
