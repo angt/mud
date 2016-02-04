@@ -365,14 +365,15 @@ int mud_encrypt (struct mud *mud, uint32_t nonce,
     mud_write32(npub, nonce);
 
     crypto_aead_aes256gcm_encrypt_afternm(
-            dst+4, NULL,
-            src, src_size,
-            NULL, 0,
+            dst+8, NULL,
+            src+4, src_size-4,
+            src, 4,
             NULL,
             npub,
             (const crypto_aead_aes256gcm_state *)&mud->crypto.key);
 
     memcpy(dst, npub, 4);
+    memcpy(dst+4, src, 4);
 
     return size;
 }
@@ -393,12 +394,13 @@ int mud_decrypt (struct mud *mud, uint32_t *nonce,
     unsigned char npub[crypto_aead_aes256gcm_NPUBBYTES] = {0};
 
     memcpy(npub, src, 4);
+    memcpy(dst, src+4, 4);
 
     if (crypto_aead_aes256gcm_decrypt_afternm(
-            dst, NULL,
+            dst+4, NULL,
             NULL,
-            src+4, src_size-4,
-            NULL, 0,
+            src+8, src_size-8,
+            src+4, 4,
             npub,
             (const crypto_aead_aes256gcm_state *)&mud->crypto.key))
         return -1;
