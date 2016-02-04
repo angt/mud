@@ -350,9 +350,13 @@ void mud_delete (struct mud *mud)
 static
 int mud_encrypt (struct mud *mud, uint32_t nonce,
                  unsigned char *dst, size_t dst_size,
-                 const unsigned char *src, size_t src_size)
+                 const unsigned char *src, size_t src_size,
+                 size_t ad_size)
 {
     if (!src_size)
+        return 0;
+
+    if (ad_size > src_size)
         return 0;
 
     size_t size = src_size+4+crypto_aead_aes256gcm_ABYTES;
@@ -365,15 +369,15 @@ int mud_encrypt (struct mud *mud, uint32_t nonce,
     mud_write32(npub, nonce);
 
     crypto_aead_aes256gcm_encrypt_afternm(
-            dst+8, NULL,
-            src+4, src_size-4,
-            src, 4,
+            dst+ad_size+4, NULL,
+            src+ad_size, src_size-ad_size,
+            src, ad_size,
             NULL,
             npub,
             (const crypto_aead_aes256gcm_state *)&mud->crypto.key);
 
     memcpy(dst, npub, 4);
-    memcpy(dst+4, src, 4);
+    memcpy(dst+4, src, ad_size);
 
     return size;
 }
@@ -381,9 +385,13 @@ int mud_encrypt (struct mud *mud, uint32_t nonce,
 static
 int mud_decrypt (struct mud *mud, uint32_t *nonce,
                  unsigned char *dst, size_t dst_size,
-                 const unsigned char *src, size_t src_size)
+                 const unsigned char *src, size_t src_size,
+                 size_t ad_size)
 {
     if (!src_size)
+        return 0;
+
+    if (ad_size > src_size)
         return 0;
 
     size_t size = src_size-4-crypto_aead_aes256gcm_ABYTES;
@@ -394,13 +402,13 @@ int mud_decrypt (struct mud *mud, uint32_t *nonce,
     unsigned char npub[crypto_aead_aes256gcm_NPUBBYTES] = {0};
 
     memcpy(npub, src, 4);
-    memcpy(dst, src+4, 4);
+    memcpy(dst, src+4, ad_size);
 
     if (crypto_aead_aes256gcm_decrypt_afternm(
-            dst+4, NULL,
+            dst+ad_size, NULL,
             NULL,
-            src+8, src_size-8,
-            src+4, 4,
+            src+ad_size+4, src_size-ad_size-4,
+            src+ad_size, ad_size,
             npub,
             (const crypto_aead_aes256gcm_state *)&mud->crypto.key))
         return -1;
@@ -488,7 +496,7 @@ int mud_recv (struct mud *mud, void *data, size_t size)
     struct packet *packet = &mud->rx.packet[mud->rx.start];
 
     int ret = mud_decrypt(mud, NULL, data, size,
-                          packet->data, packet->size);
+                          packet->data, packet->size, 4);
 
     mud->rx.start++;
 
@@ -561,7 +569,7 @@ int mud_send (struct mud *mud, const void *data, size_t size)
 
     int ret = mud_encrypt(mud, now,
                           packet->data, sizeof(packet->data),
-                          data, size);
+                          data, size, 4);
 
     if (!ret) {
         errno = EMSGSIZE;
