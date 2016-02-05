@@ -437,7 +437,10 @@ int mud_pull (struct mud *mud)
             if (mud->rx.start == next)
                 return 0;
 
-            struct addr addr;
+            struct addr addr = {
+                .size = sizeof(addr.data),
+            };
+
             struct packet *packet = &mud->rx.packet[mud->rx.end];
 
             ssize_t ret = recvfrom(sock->fd, packet->data, sizeof(packet->data),
