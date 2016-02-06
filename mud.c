@@ -513,40 +513,43 @@ int mud_recv (struct mud *mud, void *data, size_t size)
 
 int mud_push (struct mud *mud)
 {
-    uint32_t now = mud_now();
-
-    if (!now) {
-        errno = EAGAIN;
-        return -1;
-    }
-
     while (mud->tx.start != mud->tx.end) {
+        uint32_t now = mud_now();
+
+        if (!now) {
+            errno = EAGAIN;
+            return -1;
+        }
+
         struct packet *packet = &mud->tx.packet[mud->tx.start];
 
     //  if (packet->time > time)
     //      break;
 
-        mud->tx.start++;
-
         struct path *path;
+        struct path *path_min = NULL;
+        int32_t dt_min = INT32_MAX;
 
         for (path = mud->path; path; path = path->next) {
-            ssize_t ret = mud_send_path(path, packet->data, packet->size);
+            int32_t dt = (int32_t)path->recv.dt-(int32_t)(now-path->send.time);
 
-            if (ret <= 0)
-                continue;
-
-            if (ret != packet->size)
-                continue;
-
-            if (path->send.count == 256) {
-                path->send.count = 0;
-                path->send.dt = (now-path->send.time)>>8;
-                path->send.time = now;
-            } else {
-                path->send.count++;
+            if (dt_min > dt) {
+                dt_min = dt;
+                path_min = path;
             }
         }
+
+        if (!path_min)
+            return -1;
+
+        ssize_t ret = mud_send_path(path_min, packet->data, packet->size);
+
+        mud->tx.start++;
+
+        if (ret != packet->size)
+            return -1;
+
+        path_min->send.time = now;
     }
 
     return 0;
