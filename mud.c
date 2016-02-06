@@ -531,6 +531,11 @@ int mud_push (struct mud *mud)
         int32_t dt_min = INT32_MAX;
 
         for (path = mud->path; path; path = path->next) {
+            if (!path->recv.dt) {
+                mud_send_path(path, packet->data, packet->size);
+                continue;
+            }
+
             int32_t dt = (int32_t)path->recv.dt-(int32_t)(now-path->send.time);
 
             if (dt_min > dt) {
