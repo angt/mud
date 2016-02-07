@@ -145,10 +145,37 @@ struct path *mud_get_path (struct mud *mud, int fd, struct addr *addr)
     struct path *path;
 
     for (path = mud->path; path; path = path->next) {
-        if ((path->fd == fd) &&
-            (path->addr.size == addr->size) &&
-            (!memcmp(&path->addr.data, &addr->data, addr->size)))
+        if (path->fd != fd)
+            continue;
+
+        if (path->addr.data.ss_family != addr->data.ss_family)
+            continue;
+
+        if (addr->data.ss_family == AF_INET) {
+            struct sockaddr_in *sa0 = (struct sockaddr_in *)&path->addr.data;
+            struct sockaddr_in *sa1 = (struct sockaddr_in *)&addr->data;
+
+            if (memcmp(&sa0->sin_addr.s_addr, &sa1->sin_addr.s_addr, sizeof(sa0->sin_addr.s_addr)))
+                continue;
+
+            if (memcmp(&sa0->sin_port, &sa1->sin_port, sizeof(sa0->sin_port)))
+                continue;
+
             break;
+        }
+
+        if (addr->data.ss_family == AF_INET6) {
+            struct sockaddr_in6 *sa0 = (struct sockaddr_in6 *)&path->addr.data;
+            struct sockaddr_in6 *sa1 = (struct sockaddr_in6 *)&addr->data;
+
+            if (memcmp(&sa0->sin6_addr.s6_addr, &sa1->sin6_addr.s6_addr, sizeof(sa0->sin6_addr.s6_addr)))
+                continue;
+
+            if (memcmp(&sa0->sin6_port, &sa1->sin6_port, sizeof(sa0->sin6_port)))
+                continue;
+
+            break;
+        }
     }
 
     return path;
@@ -178,23 +205,10 @@ struct path *mud_new_path (struct mud *mud, int fd, struct addr *addr)
 static
 void mud_new_addr (struct mud *mud, struct addr *addr)
 {
-    int family;
-
-    switch (addr->size) {
-    case INET_ADDRSTRLEN:
-        family = AF_INET;
-        break;
-    case INET6_ADDRSTRLEN:
-        family = AF_INET6;
-        break;
-    default:
-        return;
-    }
-
     struct sock *sock;
 
     for (sock = mud->sock; sock; sock = sock->next) {
-        if (sock->family == family)
+        if (sock->family == addr->data.ss_family)
             mud_new_path(mud, sock->fd, addr);
     }
 }
@@ -212,23 +226,10 @@ void mud_new_sock (struct mud *mud, int fd, int family)
     sock->next = mud->sock;
     mud->sock = sock;
 
-    socklen_t addr_size;
-
-    switch (family) {
-    case AF_INET:
-        addr_size = INET_ADDRSTRLEN;
-        break;
-    case AF_INET6:
-        addr_size = INET6_ADDRSTRLEN;
-        break;
-    default:
-        return;
-    }
-
     struct path *path;
 
     for (path = mud->path; path; path = path->next) {
-        if (path->addr.size == addr_size)
+        if (path->addr.data.ss_family == family)
             mud_new_path(mud, fd, &path->addr);
     }
 }
