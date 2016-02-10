@@ -36,7 +36,7 @@ struct path {
 
 struct sock {
     int fd;
-    int family;
+    struct addr addr;
     struct sock *next;
 };
 
@@ -140,42 +140,55 @@ struct addrinfo *mud_addrinfo (const char *host, const char *port, int flags)
 }
 
 static
+int mud_cmp_addr (struct addr *a, struct addr *b)
+{
+    if ((a->size != b->size) ||
+        (a->data.ss_family != b->data.ss_family))
+        return 1;
+
+    if (a->data.ss_family == AF_INET) {
+        struct sockaddr_in *_a = (struct sockaddr_in *)&a->data;
+        struct sockaddr_in *_b = (struct sockaddr_in *)&b->data;
+
+        return ((_a->sin_port != _b->sin_port) ||
+                (memcmp(&_a->sin_addr.s_addr, &_b->sin_addr.s_addr,
+                        sizeof(_a->sin_addr.s_addr))));
+    }
+
+    if (a->data.ss_family == AF_INET6) {
+        struct sockaddr_in6 *_a = (struct sockaddr_in6 *)&a->data;
+        struct sockaddr_in6 *_b = (struct sockaddr_in6 *)&b->data;
+
+        return ((_a->sin6_port != _b->sin6_port) ||
+                (memcmp(&_a->sin6_addr.s6_addr, &_b->sin6_addr.s6_addr,
+                        sizeof(_a->sin6_addr.s6_addr))));
+    }
+
+    return 1;
+}
+
+static
+struct sock *mud_get_sock (struct mud *mud, struct addr *addr)
+{
+    struct sock *sock;
+
+    for (sock = mud->sock; sock; sock = sock->next) {
+        if (!mud_cmp_addr(addr, &sock->addr))
+            break;
+    }
+
+    return sock;
+}
+
+static
 struct path *mud_get_path (struct mud *mud, int fd, struct addr *addr)
 {
     struct path *path;
 
     for (path = mud->path; path; path = path->next) {
-        if (path->fd != fd)
-            continue;
-
-        if (path->addr.data.ss_family != addr->data.ss_family)
-            continue;
-
-        if (addr->data.ss_family == AF_INET) {
-            struct sockaddr_in *sa0 = (struct sockaddr_in *)&path->addr.data;
-            struct sockaddr_in *sa1 = (struct sockaddr_in *)&addr->data;
-
-            if (memcmp(&sa0->sin_addr.s_addr, &sa1->sin_addr.s_addr, sizeof(sa0->sin_addr.s_addr)))
-                continue;
-
-            if (memcmp(&sa0->sin_port, &sa1->sin_port, sizeof(sa0->sin_port)))
-                continue;
-
+        if ((path->fd == fd) &&
+            (!mud_cmp_addr(addr, &path->addr)))
             break;
-        }
-
-        if (addr->data.ss_family == AF_INET6) {
-            struct sockaddr_in6 *sa0 = (struct sockaddr_in6 *)&path->addr.data;
-            struct sockaddr_in6 *sa1 = (struct sockaddr_in6 *)&addr->data;
-
-            if (memcmp(&sa0->sin6_addr.s6_addr, &sa1->sin6_addr.s6_addr, sizeof(sa0->sin6_addr.s6_addr)))
-                continue;
-
-            if (memcmp(&sa0->sin6_port, &sa1->sin6_port, sizeof(sa0->sin6_port)))
-                continue;
-
-            break;
-        }
     }
 
     return path;
@@ -208,30 +221,51 @@ void mud_new_addr (struct mud *mud, struct addr *addr)
     struct sock *sock;
 
     for (sock = mud->sock; sock; sock = sock->next) {
-        if (sock->family == addr->data.ss_family)
+        if (sock->addr.data.ss_family == addr->data.ss_family)
             mud_new_path(mud, sock->fd, addr);
     }
 }
 
 static
-void mud_new_sock (struct mud *mud, int fd, int family)
+struct sock *mud_new_sock (struct mud *mud, struct addr *addr)
 {
-    struct sock *sock = calloc(1, sizeof(struct sock));
+    struct sock *sock = mud_get_sock(mud, addr);
 
-    if (!sock)
-        return;
+    if (sock)
+        return sock;
+
+    int fd = socket(addr->data.ss_family, SOCK_DGRAM, IPPROTO_UDP);
+
+    if (fd == -1)
+        return NULL;
+
+    mud_set_nonblock(fd);
+
+    if (bind(fd, (struct sockaddr *)&addr->data, addr->size)) {
+        close(fd);
+        return NULL;
+    }
+
+    sock = calloc(1, sizeof(struct sock));
+
+    if (!sock) {
+        close(fd);
+        return NULL;
+    }
 
     sock->fd = fd;
-    sock->family = family;
+    memcpy(&sock->addr, addr, sizeof(struct addr));
     sock->next = mud->sock;
     mud->sock = sock;
 
     struct path *path;
 
     for (path = mud->path; path; path = path->next) {
-        if (path->addr.data.ss_family == family)
+        if (path->addr.data.ss_family == addr->data.ss_family)
             mud_new_path(mud, fd, &path->addr);
     }
+
+    return sock;
 }
 
 int mud_peer (struct mud *mud, const char *host, const char *port)
@@ -268,31 +302,24 @@ int mud_bind (struct mud *mud, const char *host, const char *port)
     if (!ai)
         return -1;
 
-    int fd;
+    struct sock *sock = NULL;
 
     for (p = ai; p; p = p->ai_next) {
-        fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+        struct addr addr;
 
-        if (fd == -1)
-            continue;
+        memcpy(&addr.data, p->ai_addr, p->ai_addrlen);
+        addr.size = p->ai_addrlen;
 
-        if (mud_set_nonblock(fd))
-            continue;
-
-        if (!bind(fd, (struct sockaddr *)p->ai_addr, p->ai_addrlen)) {
-            mud_new_sock(mud, fd, p->ai_family);
+        if (sock = mud_new_sock(mud, &addr), sock)
             break;
-        }
-
-        close(fd);
     }
 
     freeaddrinfo(ai);
 
-    if (!p)
+    if (!sock)
         return -1;
 
-    return fd;
+    return sock->fd;
 }
 
 struct mud *mud_create (const unsigned char *key, size_t key_size)
