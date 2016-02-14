@@ -12,23 +12,21 @@
 
 #include <sodium.h>
 
-#define MUD_PKT_SIZE (2048u)
-
 struct addr {
     struct sockaddr_storage data;
     socklen_t size;
 };
 
 struct path_info {
-    uint32_t dt;
-    uint32_t time;
+    uint64_t dt;
+    uint64_t time;
     unsigned count;
 };
 
 struct path {
     int fd;
     struct addr addr;
-    uint32_t rtt;
+    uint64_t rtt;
     struct path_info recv;
     struct path_info send;
     struct path *next;
@@ -41,10 +39,8 @@ struct sock {
 };
 
 struct packet {
-    unsigned char data[MUD_PKT_SIZE];
+    unsigned char data[2048];
     size_t size;
-//  uint32_t time;
-//  struct path *path;
 };
 
 struct queue {
@@ -58,6 +54,7 @@ struct crypto {
 };
 
 struct mud {
+    uint64_t base;
     struct queue tx;
     struct queue rx;
     struct sock *sock;
@@ -66,29 +63,33 @@ struct mud {
 };
 
 static
-void mud_write32 (unsigned char *dst, uint32_t src)
+void mud_write48 (unsigned char *dst, uint64_t src)
 {
-    dst[0] = (unsigned char)(UINT32_C(255)&(src));
-    dst[1] = (unsigned char)(UINT32_C(255)&(src>>8));
-    dst[2] = (unsigned char)(UINT32_C(255)&(src>>16));
-    dst[3] = (unsigned char)(UINT32_C(255)&(src>>24));
+    dst[0] = (unsigned char)(UINT64_C(255)&(src));
+    dst[1] = (unsigned char)(UINT64_C(255)&(src>>8));
+    dst[2] = (unsigned char)(UINT64_C(255)&(src>>16));
+    dst[3] = (unsigned char)(UINT64_C(255)&(src>>24));
+    dst[4] = (unsigned char)(UINT64_C(255)&(src>>32));
+    dst[5] = (unsigned char)(UINT64_C(255)&(src>>40));
 }
 
 static
-uint32_t mud_read32 (const unsigned char *src)
+uint64_t mud_read48 (const unsigned char *src)
 {
-    return ((uint32_t)src[0])
-         | ((uint32_t)src[1]<<8)
-         | ((uint32_t)src[2]<<16)
-         | ((uint32_t)src[3]<<24);
+    return ((uint64_t)src[0])
+         | ((uint64_t)src[1]<<8)
+         | ((uint64_t)src[2]<<16)
+         | ((uint64_t)src[3]<<24)
+         | ((uint64_t)src[4]<<32)
+         | ((uint64_t)src[5]<<40);
 }
 
 static
-uint32_t mud_now (void)
+uint64_t mud_now (struct mud *mud)
 {
     struct timeval now;
     gettimeofday(&now, NULL);
-    return now.tv_sec*UINT32_C(1000000)+now.tv_usec;
+    return (now.tv_sec*UINT64_C(1000000)+now.tv_usec)-mud->base;
 }
 
 static
@@ -344,6 +345,8 @@ struct mud *mud_create (const unsigned char *key, size_t key_size)
         return NULL;
     }
 
+    mud->base = mud_now(mud);
+
     return mud;
 }
 
@@ -376,7 +379,7 @@ void mud_delete (struct mud *mud)
 }
 
 static
-int mud_encrypt (struct mud *mud, uint32_t nonce,
+int mud_encrypt (struct mud *mud, uint64_t nonce,
                  unsigned char *dst, size_t dst_size,
                  const unsigned char *src, size_t src_size,
                  size_t ad_size)
@@ -387,31 +390,30 @@ int mud_encrypt (struct mud *mud, uint32_t nonce,
     if (ad_size > src_size)
         return 0;
 
-    size_t size = src_size+4+crypto_aead_aes256gcm_ABYTES;
+    size_t size = src_size+6+crypto_aead_aes256gcm_ABYTES;
 
     if (size > dst_size)
         return 0;
 
     unsigned char npub[crypto_aead_aes256gcm_NPUBBYTES] = {0};
 
-    mud_write32(npub, nonce);
+    mud_write48(npub, nonce);
+    memcpy(dst, npub, 6);
+    memcpy(dst+6, src, ad_size);
 
     crypto_aead_aes256gcm_encrypt_afternm(
-            dst+ad_size+4, NULL,
+            dst+ad_size+6, NULL,
             src+ad_size, src_size-ad_size,
-            src, ad_size,
+            dst, ad_size+6,
             NULL,
             npub,
             (const crypto_aead_aes256gcm_state *)&mud->crypto.key);
-
-    memcpy(dst, npub, 4);
-    memcpy(dst+4, src, ad_size);
 
     return size;
 }
 
 static
-int mud_decrypt (struct mud *mud, uint32_t *nonce,
+int mud_decrypt (struct mud *mud, uint64_t *nonce,
                  unsigned char *dst, size_t dst_size,
                  const unsigned char *src, size_t src_size,
                  size_t ad_size)
@@ -422,39 +424,34 @@ int mud_decrypt (struct mud *mud, uint32_t *nonce,
     if (ad_size > src_size)
         return 0;
 
-    size_t size = src_size-4-crypto_aead_aes256gcm_ABYTES;
+    size_t size = src_size-6-crypto_aead_aes256gcm_ABYTES;
 
     if (size > dst_size)
         return 0;
 
     unsigned char npub[crypto_aead_aes256gcm_NPUBBYTES] = {0};
 
-    memcpy(npub, src, 4);
-    memcpy(dst, src+4, ad_size);
+    memcpy(npub, src, 6);
+    memcpy(dst, src+6, ad_size);
 
     if (crypto_aead_aes256gcm_decrypt_afternm(
             dst+ad_size, NULL,
             NULL,
-            src+ad_size+4, src_size-ad_size-4,
-            src+ad_size, ad_size,
+            src+ad_size+6, src_size-ad_size-6,
+            src, ad_size+6,
             npub,
             (const crypto_aead_aes256gcm_state *)&mud->crypto.key))
         return -1;
 
     if (nonce)
-        *nonce = mud_read32(src);
+        *nonce = mud_read48(src);
 
     return size;
 }
 
 int mud_pull (struct mud *mud)
 {
-    uint32_t now = mud_now();
-
-    if (!now) {
-        errno = EAGAIN;
-        return -1;
-    }
+    uint64_t now = mud_now(mud);
 
     struct sock *sock;
 
@@ -482,25 +479,25 @@ int mud_pull (struct mud *mud)
             if (!path)
                 return -1;
 
-            uint32_t send_now = mud_read32(packet->data);
+            uint64_t send_now = mud_read48(packet->data);
 
             if (!send_now) {
-                send_now = mud_read32(&packet->data[4]);
-                path->recv.dt = mud_read32(&packet->data[8]);
+                send_now = mud_read48(&packet->data[6]);
+                path->recv.dt = mud_read48(&packet->data[12]);
                 path->rtt = now-send_now;
                 continue;
             }
 
             if (path->recv.count == 256) {
-                unsigned char reply[3*4];
-                uint32_t dt = (now-path->recv.time)>>8;
+                unsigned char reply[3*6];
+                uint64_t dt = (now-path->recv.time)>>8;
 
                 path->recv.count = 0;
                 path->recv.time = now;
 
-                memset(reply, 0, 4);
-                memcpy(&reply[4], packet->data, 4);
-                mud_write32(&reply[8], dt);
+                memset(reply, 0, 6);
+                memcpy(&reply[6], packet->data, 6);
+                mud_write48(&reply[12], dt);
 
                 mud_send_path(path, reply, sizeof(reply));
             } else {
@@ -508,8 +505,6 @@ int mud_pull (struct mud *mud)
             }
 
             packet->size = ret;
-        //  packet->time = now;
-
             mud->rx.end = next;
         }
     }
@@ -542,21 +537,14 @@ int mud_recv (struct mud *mud, void *data, size_t size)
 int mud_push (struct mud *mud)
 {
     while (mud->tx.start != mud->tx.end) {
-        uint32_t now = mud_now();
-
-        if (!now) {
-            errno = EAGAIN;
-            return -1;
-        }
+        uint64_t now = mud_now(mud);
 
         struct packet *packet = &mud->tx.packet[mud->tx.start];
 
-    //  if (packet->time > time)
-    //      break;
-
         struct path *path;
+
         struct path *path_min = NULL;
-        int32_t dt_min = INT32_MAX;
+        int64_t dt_min = INT64_MAX;
 
         for (path = mud->path; path; path = path->next) {
             if (!path->recv.dt) {
@@ -564,7 +552,7 @@ int mud_push (struct mud *mud)
                 continue;
             }
 
-            int32_t dt = (int32_t)path->recv.dt-(int32_t)(now-path->send.time);
+            int64_t dt = (int64_t)path->recv.dt-(int64_t)(now-path->send.time);
 
             if (dt_min > dt) {
                 dt_min = dt;
@@ -590,12 +578,7 @@ int mud_push (struct mud *mud)
 
 int mud_send (struct mud *mud, const void *data, size_t size)
 {
-    uint32_t now = mud_now();
-
-    if (!now) {
-        errno = EAGAIN;
-        return -1;
-    }
+    uint64_t now = mud_now(mud);
 
     unsigned char next = mud->tx.end+1;
 
@@ -616,8 +599,6 @@ int mud_send (struct mud *mud, const void *data, size_t size)
     }
 
     packet->size = ret;
-
-//  packet->time = now;
     mud->tx.end = next;
 
     return size;
