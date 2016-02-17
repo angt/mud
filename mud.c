@@ -420,10 +420,10 @@ int mud_decrypt (struct mud *mud, uint64_t *nonce,
                  const unsigned char *src, size_t src_size,
                  size_t ad_size)
 {
-    if (ad_size > src_size)
-        ad_size > src_size;
-
     size_t size = src_size-6-crypto_aead_aes256gcm_ABYTES;
+
+    if (ad_size > size)
+        ad_size = size;
 
     if (size > dst_size)
         return 0;
@@ -479,7 +479,7 @@ int mud_pull (struct mud *mud)
                 unsigned char tmp[sizeof(packet->data)];
 
                 if (mud_decrypt(mud, NULL, tmp, sizeof(tmp),
-                                packet->data, (size_t)ret, 4) <= 0)
+                                packet->data, (size_t)ret, 4) == -1)
                     continue;
 
                 path = mud_new_path(mud, sock->fd, &addr);
@@ -489,6 +489,13 @@ int mud_pull (struct mud *mud)
             }
 
             uint64_t send_time = mud_read48(packet->data);
+            int64_t dt = (now-path->recv.time)-(send_time-path->recv.send_time);
+
+            if (path->recv.time && path->recv.send_time && (dt > 0))
+                path->rdt = (path->rdt*UINT64_C(7)+dt)/UINT64_C(8);
+
+            path->recv.send_time = send_time;
+            path->recv.time = now;
 
             if (!send_time) {
                 uint64_t send_time = mud_read48(&packet->data[6*1]);
@@ -500,17 +507,10 @@ int mud_pull (struct mud *mud)
                 continue;
             }
 
-            int64_t dt = (now-path->recv.time)-(send_time-path->recv.send_time);
-
-            if (path->recv.time && path->recv.send_time && (dt > 0))
-                path->rdt = (path->rdt*UINT64_C(7)+dt)/UINT64_C(8);
-
-            path->recv.send_time = send_time;
-            path->recv.time = now;
-
-            if (now-path->pong_time > UINT64_C(100000)) {
+            if (!path->pong_time ||
+                (now-path->pong_time > UINT64_C(100000))) {
                 unsigned char tmp[256];
-                unsigned char pong[5*6];
+                unsigned char pong[6*3];
 
                 memcpy(pong, packet->data, 6);
                 mud_write48(&pong[6*1], now);
@@ -520,6 +520,7 @@ int mud_pull (struct mud *mud)
 
                 if (ret > 0) {
                     mud_send_path(path, tmp, (size_t)ret);
+                    path->send.time = now;
                     path->pong_time = now;
                 }
             }
@@ -570,6 +571,12 @@ int mud_push (struct mud *mud)
         int64_t limit_min = INT64_MAX;
 
         for (path = mud->path; path; path = path->next) {
+            if (!path->recv.time)
+                continue;
+
+            if (now-path->recv.time > UINT64_C(200000))
+                continue;
+
             int64_t limit = path->limit;
             uint64_t elapsed = now-path->send.time;
 
@@ -602,7 +609,7 @@ int mud_push (struct mud *mud)
     for (path = mud->path; path; path = path->next) {
         uint64_t now = mud_now(mud);
 
-        if (path->send.time && (now-path->send.time < UINT64_C(10000000)))
+        if (path->send.time && (now-path->send.time < UINT64_C(1000000)))
             continue;
 
         unsigned char ping[32];
