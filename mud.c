@@ -20,13 +20,18 @@ struct addr {
 struct path_info {
     uint64_t dt;
     uint64_t time;
-    unsigned count;
+    uint64_t send_time;
+    uint64_t count;
 };
 
 struct path {
     int fd;
     struct addr addr;
-    uint64_t rtt;
+    uint64_t dt;
+    uint64_t rdt;
+    int64_t  sdt;
+    uint64_t limit;
+    uint64_t pong_time;
     struct path_info recv;
     struct path_info send;
     struct path *next;
@@ -384,11 +389,8 @@ int mud_encrypt (struct mud *mud, uint64_t nonce,
                  const unsigned char *src, size_t src_size,
                  size_t ad_size)
 {
-    if (!src_size)
-        return 0;
-
     if (ad_size > src_size)
-        return 0;
+        ad_size = src_size;
 
     size_t size = src_size+6+crypto_aead_aes256gcm_ABYTES;
 
@@ -418,11 +420,8 @@ int mud_decrypt (struct mud *mud, uint64_t *nonce,
                  const unsigned char *src, size_t src_size,
                  size_t ad_size)
 {
-    if (!src_size)
-        return 0;
-
     if (ad_size > src_size)
-        return 0;
+        ad_size > src_size;
 
     size_t size = src_size-6-crypto_aead_aes256gcm_ABYTES;
 
@@ -451,8 +450,6 @@ int mud_decrypt (struct mud *mud, uint64_t *nonce,
 
 int mud_pull (struct mud *mud)
 {
-    uint64_t now = mud_now(mud);
-
     struct sock *sock;
 
     for (sock = mud->sock; sock; sock = sock->next) {
@@ -468,41 +465,67 @@ int mud_pull (struct mud *mud)
 
             struct packet *packet = &mud->rx.packet[mud->rx.end];
 
+            uint64_t now = mud_now(mud);
+
             ssize_t ret = recvfrom(sock->fd, packet->data, sizeof(packet->data),
                                    0, (struct sockaddr *)&addr.data, &addr.size);
 
             if (ret <= 0)
                 break;
 
-            struct path *path = mud_new_path(mud, sock->fd, &addr);
+            struct path *path = mud_get_path(mud, sock->fd, &addr);
 
-            if (!path)
-                return -1;
+            if (!path) {
+                unsigned char tmp[sizeof(packet->data)];
 
-            uint64_t send_now = mud_read48(packet->data);
+                if (mud_decrypt(mud, NULL, tmp, sizeof(tmp),
+                                packet->data, (size_t)ret, 4) <= 0)
+                    continue;
 
-            if (!send_now) {
-                send_now = mud_read48(&packet->data[6]);
-                path->recv.dt = mud_read48(&packet->data[12]);
-                path->rtt = now-send_now;
+                path = mud_new_path(mud, sock->fd, &addr);
+
+                if (!path)
+                    return -1;
+            }
+
+            uint64_t send_time = mud_read48(packet->data);
+
+            if (!send_time) {
+                uint64_t send_time = mud_read48(&packet->data[6*1]);
+                uint64_t recv_time = mud_read48(&packet->data[6*2]);
+                uint64_t dt = mud_read48(&packet->data[6*3]);
+
+                path->dt = dt;
+                path->sdt = recv_time-send_time;
                 continue;
             }
 
-            if (path->recv.count == 256) {
-                unsigned char reply[3*6];
-                uint64_t dt = (now-path->recv.time)>>8;
+            int64_t dt = (now-path->recv.time)-(send_time-path->recv.send_time);
 
-                path->recv.count = 0;
-                path->recv.time = now;
+            if (path->recv.time && path->recv.send_time && (dt > 0))
+                path->rdt = (path->rdt*UINT64_C(7)+dt)/UINT64_C(8);
 
-                memset(reply, 0, 6);
-                memcpy(&reply[6], packet->data, 6);
-                mud_write48(&reply[12], dt);
+            path->recv.send_time = send_time;
+            path->recv.time = now;
 
-                mud_send_path(path, reply, sizeof(reply));
-            } else {
-                path->recv.count++;
+            if (now-path->pong_time > UINT64_C(100000)) {
+                unsigned char tmp[256];
+                unsigned char pong[5*6];
+
+                memcpy(pong, packet->data, 6);
+                mud_write48(&pong[6*1], now);
+                mud_write48(&pong[6*2], path->rdt);
+
+                int ret = mud_encrypt(mud, 0, tmp, sizeof(tmp), pong, sizeof(pong), sizeof(pong));
+
+                if (ret > 0) {
+                    mud_send_path(path, tmp, (size_t)ret);
+                    path->pong_time = now;
+                }
             }
+
+            if (ret <= 6+crypto_aead_aes256gcm_ABYTES)
+                continue;
 
             packet->size = ret;
             mud->rx.end = next;
@@ -536,41 +559,61 @@ int mud_recv (struct mud *mud, void *data, size_t size)
 
 int mud_push (struct mud *mud)
 {
+    struct path *path;
+
     while (mud->tx.start != mud->tx.end) {
         uint64_t now = mud_now(mud);
 
         struct packet *packet = &mud->tx.packet[mud->tx.start];
 
-        struct path *path;
-
         struct path *path_min = NULL;
-        int64_t dt_min = INT64_MAX;
+        int64_t limit_min = INT64_MAX;
 
         for (path = mud->path; path; path = path->next) {
-            if (!path->recv.dt) {
-                mud_send_path(path, packet->data, packet->size);
-                continue;
+            int64_t limit = path->limit;
+            uint64_t elapsed = now-path->send.time;
+
+            if (limit > elapsed) {
+                limit += path->dt-elapsed;
+            } else {
+                limit = path->dt;
             }
 
-            int64_t dt = (int64_t)path->recv.dt-(int64_t)(now-path->send.time);
-
-            if (dt_min > dt) {
-                dt_min = dt;
+            if (limit_min > limit) {
+                limit_min = limit;
                 path_min = path;
             }
         }
 
         if (!path_min)
-            return -1;
+            break;
 
         ssize_t ret = mud_send_path(path_min, packet->data, packet->size);
 
         mud->tx.start++;
 
         if (ret != packet->size)
-            return -1;
+            break;
 
+        path_min->limit = limit_min;
         path_min->send.time = now;
+    }
+
+    for (path = mud->path; path; path = path->next) {
+        uint64_t now = mud_now(mud);
+
+        if (path->send.time && (now-path->send.time < UINT64_C(10000000)))
+            continue;
+
+        unsigned char ping[32];
+
+        int ret = mud_encrypt(mud, now, ping, sizeof(ping), NULL, 0, 0);
+
+        if (ret <= 0)
+            continue;
+
+        mud_send_path(path, ping, (size_t)ret);
+        path->send.time = now;
     }
 
     return 0;
@@ -578,6 +621,9 @@ int mud_push (struct mud *mud)
 
 int mud_send (struct mud *mud, const void *data, size_t size)
 {
+    if (!size)
+        return 0;
+
     uint64_t now = mud_now(mud);
 
     unsigned char next = mud->tx.end+1;
