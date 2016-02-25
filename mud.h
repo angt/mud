@@ -7,7 +7,9 @@ struct mud;
 struct mud *mud_create (const unsigned char *, size_t);
 void        mud_delete (struct mud *);
 
-int mud_bind (struct mud *, const char *, const char *);
+int mud_get_fd (struct mud *);
+
+int mud_bind (struct mud *, const char *);
 int mud_peer (struct mud *, const char *, const char *);
 
 int mud_pull (struct mud *);
