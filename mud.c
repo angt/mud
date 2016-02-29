@@ -350,6 +350,9 @@ int mud_peer (struct mud *mud, const char *host, const char *port)
         struct sock *sock;
         struct sockaddr_storage addr;
 
+        if (!p->ai_addr)
+            continue;
+
         memcpy(&addr, p->ai_addr, p->ai_addrlen);
 
         for (sock = mud->sock; sock; sock = sock->next)
@@ -518,7 +521,9 @@ int mud_encrypt (struct mud *mud, uint64_t nonce,
 
     mud_write48(npub, nonce);
     memcpy(dst, npub, 6);
-    memcpy(dst+6, src, ad_size);
+
+    if (src)
+        memcpy(dst+6, src, ad_size);
 
     crypto_aead_aes256gcm_encrypt_afternm(
             dst+ad_size+6, NULL,
@@ -693,7 +698,7 @@ int mud_pull (struct mud *mud)
         }
 
         if (!path->pong_time ||
-                (now-path->pong_time > UINT64_C(100000))) {
+            (now-path->pong_time > UINT64_C(100000))) {
             unsigned char tmp[256];
             unsigned char pong[6*3];
 
