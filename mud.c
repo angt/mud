@@ -416,58 +416,78 @@ int mud_bind (struct mud *mud, const char *name)
     return 0;
 }
 
-struct mud *mud_create (const unsigned char *key, size_t key_size)
+int mud_set_key (struct mud *mud, unsigned char *key, size_t size)
 {
-    if (key_size != crypto_aead_aes256gcm_KEYBYTES) {
+    if (size != crypto_aead_aes256gcm_KEYBYTES) {
         errno = EINVAL;
-        return NULL;
+        return -1;
     }
 
+    crypto_aead_aes256gcm_beforenm(&mud->crypto.key, key);
+
+    return 0;
+}
+
+struct mud *mud_create (const char *port)
+{
     struct mud *mud = calloc(1, sizeof(struct mud));
 
     if (!mud)
         return NULL;
 
-    mud->fd = socket(AF_INET6, SOCK_DGRAM, 0);
+    mud->fd = -1;
 
-    if (mud->fd == -1)
-        goto fail;
+    struct addrinfo *p, *ai = mud_addrinfo(NULL, port, AI_PASSIVE|AI_NUMERICSERV);
 
-    if (mud_sso_int(mud->fd, SOL_SOCKET, SO_REUSEADDR, 1) ||
-        mud_sso_int(mud->fd, IPPROTO_IP, IP_PKTINFO, 1) ||
-        mud_sso_int(mud->fd, IPPROTO_IPV6, IPV6_RECVPKTINFO, 1) ||
-        mud_sso_int(mud->fd, IPPROTO_IPV6, IPV6_V6ONLY, 0))
-        goto fail;
+    if (!ai) {
+        mud_delete(mud);
+        return NULL;
+    }
+
+    for (p = ai; p; p = p->ai_next) {
+        if (p->ai_family != AF_INET6)
+            continue;
+
+        if (!p->ai_addr)
+            continue;
+
+        int fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+
+        if (fd == -1)
+            continue;
+
+        if (mud_sso_int(fd, SOL_SOCKET, SO_REUSEADDR, 1) ||
+            mud_sso_int(fd, IPPROTO_IP, IP_PKTINFO, 1) ||
+            mud_sso_int(fd, IPPROTO_IPV6, IPV6_RECVPKTINFO, 1) ||
+            mud_sso_int(fd, IPPROTO_IPV6, IPV6_V6ONLY, 0) ||
+            mud_set_nonblock(fd) ||
+            bind(fd, p->ai_addr, p->ai_addrlen)) {
+            close(fd);
+            continue;
+        }
+
+        mud->fd = fd;
+        break;
+    }
+
+    freeaddrinfo(ai);
+
+    if (mud->fd == -1) {
+        mud_delete(mud);
+        return NULL;
+    }
 
     mud->tx.packet = calloc(256, sizeof(struct packet));
     mud->rx.packet = calloc(256, sizeof(struct packet));
 
-    if (!mud->tx.packet || !mud->rx.packet)
-        goto fail;
+    if (!mud->tx.packet || !mud->rx.packet) {
+        mud_delete(mud);
+        return NULL;
+    }
 
-    struct sockaddr_in6 sin6 = {
-        .sin6_family = AF_INET6,
-        .sin6_port = htons(5000),
-    };
-
-    mud_set_nonblock(mud->fd);
-
-    if (bind(mud->fd, (struct sockaddr *)&sin6, sizeof(sin6)))
-        goto fail;
-
-    crypto_aead_aes256gcm_beforenm(&mud->crypto.key, key);
     mud->base = mud_now(mud);
 
     return mud;
-
-fail:
-    if (mud) {
-        int err = errno;
-        mud_delete(mud);
-        errno = err;
-    }
-
-    return NULL;
 }
 
 int mud_get_fd (struct mud *mud)
@@ -485,20 +505,21 @@ void mud_delete (struct mud *mud)
 
     while (mud->sock) {
         struct sock *sock = mud->sock;
-
         mud->sock = sock->next;
         free(sock);
     }
 
     while (mud->path) {
         struct path *path = mud->path;
-
         mud->path = path->next;
         free(path);
     }
 
-    if (mud->fd != -1)
+    if (mud->fd != -1) {
+        int err = errno;
         close(mud->fd);
+        errno = err;
+    }
 
     free(mud);
 }
