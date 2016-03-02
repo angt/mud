@@ -15,6 +15,8 @@
 
 #include <sodium.h>
 
+#define MUD_ASSERT(X) (void)sizeof(char[(X)?1:-1])
+
 struct path_info {
     uint64_t dt;
     uint64_t time;
@@ -260,6 +262,58 @@ struct path *mud_get_path (struct mud *mud, int index, struct sockaddr *addr)
 }
 
 static
+void mud_set_path (struct path *path, unsigned index,
+                   struct sockaddr *addr, struct sockaddr *ifa_addr)
+{
+    struct msghdr msg = {
+        .msg_control = path->ctrl.data,
+        .msg_controllen = sizeof(path->ctrl.data),
+    };
+
+    struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+
+    if (addr->sa_family == AF_INET) {
+        MUD_ASSERT(sizeof(index)==sizeof(((struct in_pktinfo *)0)->ipi_ifindex));
+
+        path->index = index;
+        memcpy(&path->addr, addr, sizeof(struct sockaddr_in));
+
+        cmsg->cmsg_level = IPPROTO_IP;
+        cmsg->cmsg_type = IP_PKTINFO;
+        cmsg->cmsg_len = CMSG_LEN(sizeof(struct in_pktinfo));
+
+        memcpy(&((struct in_pktinfo *)CMSG_DATA(cmsg))->ipi_ifindex,
+               &index, sizeof(index));
+
+        memcpy(&((struct in_pktinfo *)CMSG_DATA(cmsg))->ipi_spec_dst,
+               &((struct sockaddr_in *)ifa_addr)->sin_addr.s_addr,
+               sizeof(struct in_addr));
+
+        path->ctrl.size = CMSG_SPACE(sizeof(struct in_pktinfo));
+    }
+
+    if (addr->sa_family == AF_INET6) {
+        MUD_ASSERT(sizeof(index)==sizeof(((struct in6_pktinfo *)0)->ipi6_ifindex));
+
+        path->index = index;
+        memcpy(&path->addr, addr, sizeof(struct sockaddr_in6));
+
+        cmsg->cmsg_level = IPPROTO_IPV6;
+        cmsg->cmsg_type = IPV6_PKTINFO;
+        cmsg->cmsg_len = CMSG_LEN(sizeof(struct in6_pktinfo));
+
+        memcpy(&((struct in6_pktinfo *)CMSG_DATA(cmsg))->ipi6_ifindex,
+               &index, sizeof(index));
+
+        memcpy(&((struct in6_pktinfo *)CMSG_DATA(cmsg))->ipi6_addr,
+               &((struct sockaddr_in6 *)ifa_addr)->sin6_addr.s6_addr,
+               sizeof(struct in6_addr));
+
+        path->ctrl.size = CMSG_SPACE(sizeof(struct in6_pktinfo));
+    }
+}
+
+static
 struct path *mud_new_path (struct mud *mud, unsigned index, struct sockaddr *addr)
 {
     struct path *path = mud_get_path(mud, index, addr);
@@ -284,63 +338,19 @@ struct path *mud_new_path (struct mud *mud, unsigned index, struct sockaddr *add
         return NULL;
     }
 
-    struct msghdr msg = {
-        .msg_control = path->ctrl.data,
-        .msg_controllen = sizeof(path->ctrl.data),
-    };
-
-    struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
-
     for (struct ifaddrs *ifa = ifaddrs; ifa; ifa = ifa->ifa_next) {
-        if (!ifa->ifa_addr)
+        struct sockaddr *ifa_addr = ifa->ifa_addr;
+
+        if (!ifa_addr)
             continue;
 
-        if (ifa->ifa_addr->sa_family != addr->sa_family)
+        if (ifa_addr->sa_family != addr->sa_family)
             continue;
 
         if (strncmp(sock->name, ifa->ifa_name, sizeof(sock->name)))
             continue;
 
-        if (addr->sa_family == AF_INET) {
-            path->index = index;
-            memcpy(&path->addr, addr, sizeof(struct sockaddr_in));
-
-            struct in_pktinfo ipi = {
-                .ipi_ifindex = index,
-            };
-
-            memcpy(&ipi.ipi_spec_dst,
-                   &((struct sockaddr_in *)ifa->ifa_addr)->sin_addr.s_addr,
-                   sizeof(struct in_addr));
-
-            cmsg->cmsg_level = IPPROTO_IP;
-            cmsg->cmsg_type = IP_PKTINFO;
-            cmsg->cmsg_len = CMSG_LEN(sizeof(ipi));
-            memcpy(CMSG_DATA(cmsg), &ipi, sizeof(ipi));
-
-            path->ctrl.size = CMSG_SPACE(sizeof(ipi));
-        }
-
-        if (addr->sa_family == AF_INET6) {
-            path->index = index;
-            memcpy(&path->addr, addr, sizeof(struct sockaddr_in6));
-
-            struct in6_pktinfo ipi6 = {
-                .ipi6_ifindex = index,
-            };
-
-            memcpy(&ipi6.ipi6_addr,
-                   &((struct sockaddr_in6 *)ifa->ifa_addr)->sin6_addr.s6_addr,
-                   sizeof(struct in6_addr));
-
-            cmsg->cmsg_level = IPPROTO_IPV6;
-            cmsg->cmsg_type = IPV6_PKTINFO;
-            cmsg->cmsg_len = CMSG_LEN(sizeof(ipi6));
-            memcpy(CMSG_DATA(cmsg), &ipi6, sizeof(ipi6));
-
-            path->ctrl.size = CMSG_SPACE(sizeof(ipi6));
-        }
-
+        mud_set_path(path, index, addr, ifa_addr);
         break;
     }
 
@@ -624,8 +634,6 @@ int mud_pull (struct mud *mud)
 
         struct packet *packet = &mud->rx.packet[mud->rx.end];
 
-        uint64_t now = mud_now(mud);
-
         struct sockaddr_storage addr;
 
         struct iovec iov = {
@@ -646,6 +654,8 @@ int mud_pull (struct mud *mud)
 
         if (ret <= 0)
             break;
+
+        uint64_t now = mud_now(mud);
 
         mud_unmapv4((struct sockaddr *)&addr);
 
