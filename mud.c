@@ -402,29 +402,15 @@ int mud_bind (struct mud *mud, const char *name)
 
     const size_t len = strlen(name);
 
-    struct ifreq ifr = {0};
-
-    if (len >= sizeof(ifr.ifr_name))
+    if (len >= IF_NAMESIZE)
         return -1;
 
-    memcpy(ifr.ifr_name, name, len+1);
+    unsigned index = if_nametoindex(name);
 
-    int fd = socket(AF_UNIX, SOCK_DGRAM, 0);
-
-    if (fd == -1)
+    if (!index)
         return -1;
 
-    int ret = ioctl(fd, SIOCGIFINDEX, &ifr);
-    int err = errno;
-
-    close(fd);
-
-    if (ret == -1) {
-        errno = err;
-        return -1;
-    }
-
-    struct sock *sock = mud_get_sock(mud, ifr.ifr_ifindex);
+    struct sock *sock = mud_get_sock(mud, index);
 
     if (sock)
         return 0;
@@ -435,14 +421,14 @@ int mud_bind (struct mud *mud, const char *name)
         return -1;
 
     memcpy(&sock->name, name, len+1);
-    sock->index = ifr.ifr_ifindex;
+    sock->index = index;
     sock->next = mud->sock;
     mud->sock = sock;
 
     struct path *path;
 
     for (path = mud->path; path; path = path->next)
-        mud_new_path(mud, ifr.ifr_ifindex, (struct sockaddr *)&path->addr);
+        mud_new_path(mud, index, (struct sockaddr *)&path->addr);
 
     return 0;
 }
