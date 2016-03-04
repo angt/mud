@@ -11,8 +11,12 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <net/if.h>
-#include <netinet/in.h>
 #include <ifaddrs.h>
+
+#ifdef __APPLE__
+#include <netinet/in.h>
+#include <netinet6/in6.h>
+#endif
 
 #include <sodium.h>
 
