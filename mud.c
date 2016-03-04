@@ -1,5 +1,9 @@
 #include "mud.h"
 
+#ifdef __APPLE__
+#define __APPLE_USE_RFC_3542
+#endif
+
 #include <stdlib.h>
 #include <stdint.h>
 #include <unistd.h>
@@ -11,12 +15,8 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <net/if.h>
-#include <ifaddrs.h>
-
-#ifdef __APPLE__
 #include <netinet/in.h>
-#include <netinet6/in6.h>
-#endif
+#include <ifaddrs.h>
 
 #include <sodium.h>
 
