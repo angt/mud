@@ -455,6 +455,22 @@ int mud_set_key (struct mud *mud, unsigned char *key, size_t size)
 }
 
 static
+int mud_setup_socket (int fd)
+{
+    if (mud_sso_int(fd, SOL_SOCKET, SO_REUSEADDR, 1) ||
+        mud_sso_int(fd, IPPROTO_IP, IP_PKTINFO, 1) ||
+        mud_sso_int(fd, IPPROTO_IPV6, IPV6_RECVPKTINFO, 1) ||
+        mud_sso_int(fd, IPPROTO_IPV6, IPV6_V6ONLY, 0) ||
+        mud_set_nonblock(fd))
+        return -1;
+
+    mud_sso_int(fd, SOL_SOCKET, SO_RCVBUF, 1<<24);
+    mud_sso_int(fd, SOL_SOCKET, SO_SNDBUF, 1<<24);
+
+    return 0;
+}
+
+static
 int mud_create_socket (const char *port)
 {
     struct addrinfo *p, *ai = mud_addrinfo(NULL, port, AI_PASSIVE|AI_NUMERICSERV);
@@ -476,11 +492,7 @@ int mud_create_socket (const char *port)
         if (fd == -1)
             continue;
 
-        if (mud_sso_int(fd, SOL_SOCKET, SO_REUSEADDR, 1) ||
-            mud_sso_int(fd, IPPROTO_IP, IP_PKTINFO, 1) ||
-            mud_sso_int(fd, IPPROTO_IPV6, IPV6_RECVPKTINFO, 1) ||
-            mud_sso_int(fd, IPPROTO_IPV6, IPV6_V6ONLY, 0) ||
-            mud_set_nonblock(fd) ||
+        if (mud_setup_socket(fd) ||
             bind(fd, p->ai_addr, p->ai_addrlen)) {
             close(fd);
             fd = -1;
