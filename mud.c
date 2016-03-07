@@ -56,7 +56,7 @@ struct sock {
 
 struct packet {
     size_t size;
-    unsigned char data[2048];
+    unsigned char data[1500];
 };
 
 struct queue {
