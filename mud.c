@@ -620,8 +620,10 @@ int mud_pull (struct mud *mud)
     for (int i = 0; i < 16; i++) {
         unsigned char next = mud->rx.end+1;
 
-        if (mud->rx.start == next)
-            return 0;
+        if (mud->rx.start == next) {
+            errno = ENOBUFS;
+            return -1;
+        }
 
         struct packet *packet = &mud->rx.packet[mud->rx.end];
 
@@ -856,18 +858,16 @@ int mud_send (struct mud *mud, const void *data, size_t size)
     if (!size)
         return 0;
 
-    uint64_t now = mud_now(mud);
-
     unsigned char next = mud->tx.end+1;
 
     if (mud->tx.start == next) {
-        errno = EAGAIN;
+        errno = ENOBUFS;
         return -1;
     }
 
     struct packet *packet = &mud->tx.packet[mud->tx.end];
 
-    int ret = mud_encrypt(mud, now,
+    int ret = mud_encrypt(mud, mud_now(mud),
                           packet->data, sizeof(packet->data),
                           data, size, 4);
 
