@@ -22,6 +22,10 @@
 
 #define MUD_ASSERT(X) (void)sizeof(char[(X)?1:-1])
 
+#define MUD_PACKET_MASK    (0x1FF)
+#define MUD_PACKET_COUNT   (MUD_PACKET_MASK+1)
+#define MUD_PACKET_NEXT(X) (((X)+1)&MUD_PACKET_MASK)
+
 struct path_info {
     uint64_t dt;
     uint64_t time;
@@ -61,8 +65,8 @@ struct packet {
 
 struct queue {
     struct packet *packet;
-    unsigned char start;
-    unsigned char end;
+    unsigned start;
+    unsigned end;
 };
 
 struct crypto {
@@ -491,6 +495,17 @@ int mud_create_socket (const char *port)
     return fd;
 }
 
+static
+int mud_create_queue (struct queue *queue)
+{
+    queue->packet = calloc(MUD_PACKET_COUNT, sizeof(struct packet));
+
+    if (!queue->packet)
+        return -1;
+
+    return 0;
+}
+
 struct mud *mud_create (const char *port)
 {
     struct mud *mud = calloc(1, sizeof(struct mud));
@@ -505,10 +520,8 @@ struct mud *mud_create (const char *port)
         return NULL;
     }
 
-    mud->tx.packet = calloc(256, sizeof(struct packet));
-    mud->rx.packet = calloc(256, sizeof(struct packet));
-
-    if (!mud->tx.packet || !mud->rx.packet) {
+    if (mud_create_queue(&mud->tx) ||
+        mud_create_queue(&mud->rx)) {
         mud_delete(mud);
         return NULL;
     }
@@ -624,7 +637,7 @@ int mud_pull (struct mud *mud)
     unsigned char ctrl[1024];
 
     for (int i = 0; i < 16; i++) {
-        unsigned char next = mud->rx.end+1;
+        unsigned next = MUD_PACKET_NEXT(mud->rx.end);
 
         if (mud->rx.start == next) {
             errno = ENOBUFS;
@@ -783,7 +796,7 @@ int mud_recv (struct mud *mud, void *data, size_t size)
     int ret = mud_decrypt(mud, NULL, data, size,
                           packet->data, packet->size, 4);
 
-    mud->rx.start++;
+    mud->rx.start = MUD_PACKET_NEXT(mud->rx.start);
 
     if (ret == -1) {
         errno = EINVAL;
@@ -848,7 +861,7 @@ int mud_push (struct mud *mud)
 
         ssize_t ret = mud_send_path(mud, path_min, now, packet->data, packet->size);
 
-        mud->tx.start++;
+        mud->tx.start = MUD_PACKET_NEXT(mud->tx.start);
 
         if (ret != packet->size)
             break;
@@ -864,7 +877,7 @@ int mud_send (struct mud *mud, const void *data, size_t size)
     if (!size)
         return 0;
 
-    unsigned char next = mud->tx.end+1;
+    unsigned next = MUD_PACKET_NEXT(mud->tx.end);
 
     if (mud->tx.start == next) {
         errno = ENOBUFS;
