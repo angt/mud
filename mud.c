@@ -450,21 +450,15 @@ int mud_set_key (struct mud *mud, unsigned char *key, size_t size)
     return 0;
 }
 
-struct mud *mud_create (const char *port)
+static
+int mud_create_socket (const char *port)
 {
-    struct mud *mud = calloc(1, sizeof(struct mud));
-
-    if (!mud)
-        return NULL;
-
-    mud->fd = -1;
-
     struct addrinfo *p, *ai = mud_addrinfo(NULL, port, AI_PASSIVE|AI_NUMERICSERV);
 
-    if (!ai) {
-        mud_delete(mud);
-        return NULL;
-    }
+    if (!ai)
+        return -1;
+
+    int fd = -1;
 
     for (p = ai; p; p = p->ai_next) {
         if (p->ai_family != AF_INET6)
@@ -473,7 +467,7 @@ struct mud *mud_create (const char *port)
         if (!p->ai_addr)
             continue;
 
-        int fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+        fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
 
         if (fd == -1)
             continue;
@@ -485,14 +479,26 @@ struct mud *mud_create (const char *port)
             mud_set_nonblock(fd) ||
             bind(fd, p->ai_addr, p->ai_addrlen)) {
             close(fd);
+            fd = -1;
             continue;
         }
 
-        mud->fd = fd;
         break;
     }
 
     freeaddrinfo(ai);
+
+    return fd;
+}
+
+struct mud *mud_create (const char *port)
+{
+    struct mud *mud = calloc(1, sizeof(struct mud));
+
+    if (!mud)
+        return NULL;
+
+    mud->fd = mud_create_socket(port);
 
     if (mud->fd == -1) {
         mud_delete(mud);
