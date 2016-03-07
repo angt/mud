@@ -22,7 +22,7 @@
 
 #define MUD_ASSERT(X) (void)sizeof(char[(X)?1:-1])
 
-#define MUD_PACKET_MASK    (0x1FF)
+#define MUD_PACKET_MASK    (0x3FF)
 #define MUD_PACKET_COUNT   (MUD_PACKET_MASK+1)
 #define MUD_PACKET_NEXT(X) (((X)+1)&MUD_PACKET_MASK)
 
