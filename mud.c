@@ -219,6 +219,9 @@ struct addrinfo *mud_addrinfo (const char *host, const char *port, int flags)
 static
 int mud_cmp_addr (struct sockaddr *a, struct sockaddr *b)
 {
+    if (a == b)
+        return 0;
+
     if (a->sa_family != b->sa_family)
         return 1;
 
@@ -388,15 +391,12 @@ int mud_peer (struct mud *mud, const char *host, const char *port)
 
     for (p = ai; p; p = p->ai_next) {
         struct sock *sock;
-        struct sockaddr_storage addr;
 
         if (!p->ai_addr)
             continue;
 
-        memcpy(&addr, p->ai_addr, p->ai_addrlen);
-
         for (sock = mud->sock; sock; sock = sock->next)
-            mud_new_path(mud, sock->index, (struct sockaddr *)&addr);
+            mud_new_path(mud, sock->index, p->ai_addr);
     }
 
     freeaddrinfo(ai);
