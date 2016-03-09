@@ -644,6 +644,11 @@ int mud_decrypt (struct mud *mud, uint64_t *nonce,
     return size;
 }
 
+int mud_can_pull (struct mud *mud)
+{
+    return (mud->rx.start != MUD_PACKET_NEXT(mud->rx.end));
+}
+
 int mud_pull (struct mud *mud)
 {
     unsigned char ctrl[1024];
