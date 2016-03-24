@@ -649,6 +649,18 @@ int mud_can_pull (struct mud *mud)
     return (mud->rx.start != MUD_PACKET_NEXT(mud->rx.end));
 }
 
+int mud_is_up (struct mud *mud)
+{
+    struct path *path;
+
+    int ret = 0;
+
+    for (path = mud->path; path; path = path->next)
+        ret += path->up;
+
+    return ret;
+}
+
 int mud_pull (struct mud *mud)
 {
     unsigned char ctrl[1024];
