@@ -843,7 +843,7 @@ int mud_push (struct mud *mud)
         uint64_t now = mud_now(mud);
 
         if ((path->send.time > path->recv.time) &&
-            (path->send.time-path->recv.time > UINT64_C(200000)))
+            (path->send.time-path->recv.time > UINT64_C(200000)+path->rtt*4))
             path->up = 0;
 
         if (path->send.time &&
