@@ -75,7 +75,6 @@ struct crypto {
 
 struct mud {
     int fd;
-    uint64_t base;
     struct queue tx;
     struct queue rx;
     struct sock *sock;
@@ -110,7 +109,13 @@ uint64_t mud_now (struct mud *mud)
 {
     struct timeval now;
     gettimeofday(&now, NULL);
-    return (now.tv_sec*UINT64_C(1000000)+now.tv_usec)-mud->base;
+    return (now.tv_sec*UINT64_C(1000000)+now.tv_usec)&((UINT64_C(1)<<48)-1);
+}
+
+static
+uint64_t mud_dt (uint64_t a, uint64_t b)
+{
+    return (a >= b)?a-b:b-a;
 }
 
 static
@@ -538,8 +543,6 @@ struct mud *mud_create (const char *port)
         return NULL;
     }
 
-    mud->base = mud_now(mud);
-
     return mud;
 }
 
@@ -697,6 +700,10 @@ int mud_pull (struct mud *mud)
             break;
 
         uint64_t now = mud_now(mud);
+        uint64_t send_time = mud_read48(packet->data);
+
+        if (mud_dt(now, send_time) >= UINT64_C(1000000*60*10))
+            continue;
 
         mud_unmapv4((struct sockaddr *)&addr);
 
@@ -765,7 +772,6 @@ int mud_pull (struct mud *mud)
 
         path->up = 1;
 
-        uint64_t send_time = mud_read48(packet->data);
         int64_t dt = (now-path->recv.time)-(send_time-path->recv.send_time);
 
         if (path->recv.time && path->recv.send_time && (dt > 0))
