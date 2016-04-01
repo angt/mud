@@ -26,6 +26,9 @@
 #define MUD_PACKET_COUNT   (MUD_PACKET_MASK+1)
 #define MUD_PACKET_NEXT(X) (((X)+1)&MUD_PACKET_MASK)
 
+#define MUD_ABYTES    (16)
+#define MUD_KEYBYTES  (32)
+
 struct path_info {
     uint64_t dt;
     uint64_t time;
@@ -70,7 +73,7 @@ struct queue {
 };
 
 struct crypto {
-    crypto_aead_aes256gcm_state key;
+    uint8_t key[MUD_KEYBYTES];
 };
 
 struct mud {
@@ -449,12 +452,12 @@ int mud_bind (struct mud *mud, const char *name)
 
 int mud_set_key (struct mud *mud, unsigned char *key, size_t size)
 {
-    if (size != crypto_aead_aes256gcm_KEYBYTES) {
+    if (size != MUD_KEYBYTES) {
         errno = EINVAL;
         return -1;
     }
 
-    crypto_aead_aes256gcm_beforenm(&mud->crypto.key, key);
+    memcpy(&mud->crypto.key, key, size);
 
     return 0;
 }
@@ -525,6 +528,9 @@ int mud_create_queue (struct queue *queue)
 
 struct mud *mud_create (const char *port)
 {
+    if (sodium_init() == -1)
+        return NULL;
+
     struct mud *mud = calloc(1, sizeof(struct mud));
 
     if (!mud)
@@ -589,12 +595,12 @@ int mud_encrypt (struct mud *mud, uint64_t nonce,
     if (ad_size > src_size)
         ad_size = src_size;
 
-    size_t size = src_size+6+crypto_aead_aes256gcm_ABYTES;
+    size_t size = src_size+6+MUD_ABYTES;
 
     if (size > dst_size)
         return 0;
 
-    unsigned char npub[crypto_aead_aes256gcm_NPUBBYTES] = {0};
+    unsigned char npub[crypto_aead_chacha20poly1305_NPUBBYTES] = {0};
 
     mud_write48(npub, nonce);
     memcpy(dst, npub, 6);
@@ -602,13 +608,13 @@ int mud_encrypt (struct mud *mud, uint64_t nonce,
     if (src)
         memcpy(dst+6, src, ad_size);
 
-    crypto_aead_aes256gcm_encrypt_afternm(
+    crypto_aead_chacha20poly1305_encrypt(
             dst+ad_size+6, NULL,
             src+ad_size, src_size-ad_size,
             dst, ad_size+6,
             NULL,
             npub,
-            (const crypto_aead_aes256gcm_state *)&mud->crypto.key);
+            mud->crypto.key);
 
     return size;
 }
@@ -619,7 +625,7 @@ int mud_decrypt (struct mud *mud, uint64_t *nonce,
                  const unsigned char *src, size_t src_size,
                  size_t ad_size)
 {
-    size_t size = src_size-6-crypto_aead_aes256gcm_ABYTES;
+    size_t size = src_size-6-MUD_ABYTES;
 
     if (ad_size > size)
         ad_size = size;
@@ -627,18 +633,18 @@ int mud_decrypt (struct mud *mud, uint64_t *nonce,
     if (size > dst_size)
         return 0;
 
-    unsigned char npub[crypto_aead_aes256gcm_NPUBBYTES] = {0};
+    unsigned char npub[crypto_aead_chacha20poly1305_NPUBBYTES] = {0};
 
     memcpy(npub, src, 6);
     memcpy(dst, src+6, ad_size);
 
-    if (crypto_aead_aes256gcm_decrypt_afternm(
+    if (crypto_aead_chacha20poly1305_decrypt(
             dst+ad_size, NULL,
             NULL,
             src+ad_size+6, src_size-ad_size-6,
             src, ad_size+6,
             npub,
-            (const crypto_aead_aes256gcm_state *)&mud->crypto.key))
+            mud->crypto.key))
         return -1;
 
     if (nonce)
@@ -817,7 +823,7 @@ int mud_pull (struct mud *mud)
             }
         }
 
-        if (ret <= 6+crypto_aead_aes256gcm_ABYTES)
+        if (ret <= 6+MUD_ABYTES)
             continue;
 
         packet->size = ret;
