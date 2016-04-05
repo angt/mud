@@ -933,8 +933,8 @@ int mud_push (struct mud *mud)
     struct path *path;
 
     for (path = mud->path; path; path = path->next) {
-
-        if ((path->send.time > path->last_time) &&
+        if ((path->last_time) &&
+            (path->send.time > path->last_time) &&
             (path->send.time-path->last_time > mud->down_timeout+path->rtt))
             path->up = 0;
 
