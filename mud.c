@@ -41,7 +41,7 @@
 
 #define MUD_PACKET_MIN_SIZE (MUD_NPUB_SIZE+MUD_AD_SIZE)
 
-#define MUD_PONG_DATA_SIZE (3U*MUD_TIME_SIZE)
+#define MUD_PONG_DATA_SIZE (3*MUD_TIME_SIZE)
 #define MUD_PONG_SIZE      (MUD_PONG_DATA_SIZE+MUD_PACKET_MIN_SIZE)
 
 #define MUD_ONE_MSEC (UINT64_C(1000))
@@ -62,6 +62,10 @@
 
 #ifndef MUD_TIME_TOLERANCE
 #define MUD_TIME_TOLERANCE (10*MUD_ONE_MIN)
+#endif
+
+#ifndef MUD_PACKET_MAX_SIZE
+#define MUD_PACKET_MAX_SIZE (1500U)
 #endif
 
 struct path_info {
@@ -99,7 +103,7 @@ struct sock {
 
 struct packet {
     size_t size;
-    unsigned char data[1500];
+    unsigned char data[MUD_PACKET_MAX_SIZE];
 };
 
 struct queue {
