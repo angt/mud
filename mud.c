@@ -53,7 +53,7 @@
 #endif
 
 #ifndef MUD_DOWN_TIMEOUT
-#define MUD_DOWN_TIMEOUT (MUD_ONE_MIN)
+#define MUD_DOWN_TIMEOUT (200*MUD_ONE_MSEC)
 #endif
 
 #ifndef MUD_PONG_TIMEOUT
@@ -505,6 +505,26 @@ int mud_set_key (struct mud *mud, unsigned char *key, size_t size)
     return 0;
 }
 
+void mud_set_down_timeout_msec (struct mud *mud, unsigned msec)
+{
+    mud->down_timeout = msec*MUD_ONE_MSEC;
+}
+
+void mud_set_send_timeout_msec (struct mud *mud, unsigned msec)
+{
+    mud->send_timeout = msec*MUD_ONE_MSEC;
+}
+
+void mud_set_pong_timeout_msec (struct mud *mud, unsigned msec)
+{
+    mud->pong_timeout = msec*MUD_ONE_MSEC;
+}
+
+void mud_set_time_tolerance_sec (struct mud *mud, unsigned sec)
+{
+    mud->time_tolerance = sec*MUD_ONE_SEC;
+}
+
 static
 int mud_setup_socket (int fd)
 {
@@ -939,7 +959,7 @@ int mud_push (struct mud *mud)
     for (path = mud->path; path; path = path->next) {
         if ((path->last_time) &&
             (path->send.time > path->last_time) &&
-            (path->send.time-path->last_time > mud->down_timeout+path->rtt))
+            (path->send.time-path->last_time > mud->down_timeout+mud->pong_timeout+path->rtt))
             path->up = 0;
 
         if (path->send.time) {
