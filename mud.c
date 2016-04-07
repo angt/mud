@@ -761,6 +761,39 @@ struct cmsghdr *mud_get_pktinfo (struct msghdr *msg, int family)
     return NULL;
 }
 
+static
+void mud_ping_path (struct mud *mud, struct path *path, uint64_t now)
+{
+    unsigned char ping[MUD_PACKET_MIN_SIZE];
+
+    int ret = mud_encrypt(mud, now, ping, sizeof(ping), NULL, 0, 0);
+
+    if (ret <= 0)
+        return;
+
+    mud_send_path(mud, path, now, ping, (size_t)ret);
+}
+
+static
+void mud_pong_path (struct mud *mud, struct path *path, uint64_t now)
+{
+    unsigned char pong[MUD_PONG_SIZE];
+    unsigned char data[MUD_PONG_DATA_SIZE];
+
+    mud_write48(data, now);
+    mud_write48(&data[MUD_TIME_SIZE], path->recv.send_time);
+    mud_write48(&data[MUD_TIME_SIZE*2], path->rdt);
+
+    int ret = mud_encrypt(mud, 0, pong, sizeof(pong),
+                          data, sizeof(data), sizeof(data));
+
+    if (ret <= 0)
+        return;
+
+    if (mud_send_path(mud, path, now, pong, (size_t)ret) == (ssize_t)ret)
+        path->pong_time = now;
+}
+
 int mud_pull (struct mud *mud)
 {
     unsigned char ctrl[256];
@@ -888,23 +921,8 @@ int mud_pull (struct mud *mud)
             continue;
         }
 
-        if ((!path->pong_time) ||
-            (now-path->pong_time > mud->pong_timeout)) {
-            unsigned char tmp[MUD_PONG_SIZE];
-            unsigned char pong[MUD_PONG_DATA_SIZE];
-
-            mud_write48(pong, now);
-            memcpy(&pong[MUD_TIME_SIZE], packet->data, MUD_TIME_SIZE);
-            mud_write48(&pong[MUD_TIME_SIZE*2], path->rdt);
-
-            int ret = mud_encrypt(mud, 0, tmp, sizeof(tmp),
-                                  pong, sizeof(pong), sizeof(pong));
-
-            if (ret > 0) {
-                mud_send_path(mud, path, now, tmp, (size_t)ret);
-                path->pong_time = now;
-            }
-        }
+        if (now-path->pong_time > mud->pong_timeout)
+            mud_pong_path(mud, path, now);
 
         if (ret == (ssize_t)MUD_PACKET_MIN_SIZE)
             continue;
@@ -938,25 +956,13 @@ int mud_recv (struct mud *mud, void *data, size_t size)
     return ret;
 }
 
-static void mud_ping_path (struct mud *mud, struct path *path, uint64_t now)
-{
-    unsigned char ping[32];
-
-    int ret = mud_encrypt(mud, now, ping, sizeof(ping), NULL, 0, 0);
-
-    if (ret <= 0)
-        return;
-
-    mud_send_path(mud, path, now, ping, (size_t)ret);
-}
-
 int mud_push (struct mud *mud)
 {
-    uint64_t now = mud_now(mud);
-
     struct path *path;
 
     for (path = mud->path; path; path = path->next) {
+        uint64_t now = mud_now(mud);
+
         if ((path->last_time) &&
             (path->send.time > path->last_time) &&
             (path->send.time-path->last_time > mud->down_timeout+mud->pong_timeout+path->rtt))
@@ -974,6 +980,8 @@ int mud_push (struct mud *mud)
     }
 
     while (mud->tx.start != mud->tx.end) {
+        uint64_t now = mud_now(mud);
+
         struct packet *packet = &mud->tx.packet[mud->tx.start];
 
         struct path *path_min = NULL;
