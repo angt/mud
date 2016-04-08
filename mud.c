@@ -52,10 +52,6 @@
 #define MUD_SEND_TIMEOUT (10*MUD_ONE_SEC)
 #endif
 
-#ifndef MUD_DOWN_TIMEOUT
-#define MUD_DOWN_TIMEOUT (200*MUD_ONE_MSEC)
-#endif
-
 #ifndef MUD_PING_TIMEOUT
 #define MUD_PING_TIMEOUT (100*MUD_ONE_MSEC)
 #endif
@@ -125,7 +121,6 @@ struct crypto {
 struct mud {
     int fd;
     uint64_t send_timeout;
-    uint64_t down_timeout;
     uint64_t time_tolerance;
     struct queue tx;
     struct queue rx;
@@ -512,11 +507,6 @@ int mud_set_key (struct mud *mud, unsigned char *key, size_t size)
     return 0;
 }
 
-void mud_set_down_timeout_msec (struct mud *mud, unsigned msec)
-{
-    mud->down_timeout = msec*MUD_ONE_MSEC;
-}
-
 void mud_set_send_timeout_msec (struct mud *mud, unsigned msec)
 {
     mud->send_timeout = msec*MUD_ONE_MSEC;
@@ -615,8 +605,6 @@ struct mud *mud_create (const char *port)
     }
 
     mud->send_timeout = MUD_SEND_TIMEOUT;
-    mud->down_timeout = MUD_DOWN_TIMEOUT;
-
     mud->time_tolerance = MUD_TIME_TOLERANCE;
 
     return mud;
