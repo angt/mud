@@ -56,6 +56,10 @@
 #define MUD_DOWN_TIMEOUT (200*MUD_ONE_MSEC)
 #endif
 
+#ifndef MUD_PING_TIMEOUT
+#define MUD_PING_TIMEOUT (100*MUD_ONE_MSEC)
+#endif
+
 #ifndef MUD_PONG_TIMEOUT
 #define MUD_PONG_TIMEOUT (100*MUD_ONE_MSEC)
 #endif
@@ -88,8 +92,10 @@ struct path {
     uint64_t rtt;
     int64_t  sdt;
     uint64_t limit;
+    uint64_t ping_time;
     uint64_t pong_time;
     uint64_t last_time;
+    unsigned last_count;
     struct path_info recv;
     struct path_info send;
     struct path *next;
@@ -120,7 +126,6 @@ struct mud {
     int fd;
     uint64_t send_timeout;
     uint64_t down_timeout;
-    uint64_t pong_timeout;
     uint64_t time_tolerance;
     struct queue tx;
     struct queue rx;
@@ -211,8 +216,10 @@ ssize_t mud_send_path (struct mud *mud, struct path *path, uint64_t now, void *d
     ssize_t ret = sendmsg(mud->fd, &msg, 0);
 
     if (ret == (ssize_t)size) {
-        if (path->recv.time > path->send.time)
+        if (path->recv.time > path->send.time) {
             path->last_time = now;
+            path->last_count = 0;
+        }
 
         path->send.time = now;
     }
@@ -515,11 +522,6 @@ void mud_set_send_timeout_msec (struct mud *mud, unsigned msec)
     mud->send_timeout = msec*MUD_ONE_MSEC;
 }
 
-void mud_set_pong_timeout_msec (struct mud *mud, unsigned msec)
-{
-    mud->pong_timeout = msec*MUD_ONE_MSEC;
-}
-
 void mud_set_time_tolerance_sec (struct mud *mud, unsigned sec)
 {
     mud->time_tolerance = sec*MUD_ONE_SEC;
@@ -614,7 +616,6 @@ struct mud *mud_create (const char *port)
 
     mud->send_timeout = MUD_SEND_TIMEOUT;
     mud->down_timeout = MUD_DOWN_TIMEOUT;
-    mud->pong_timeout = MUD_PONG_TIMEOUT;
 
     mud->time_tolerance = MUD_TIME_TOLERANCE;
 
@@ -764,6 +765,9 @@ struct cmsghdr *mud_get_pktinfo (struct msghdr *msg, int family)
 static
 void mud_ping_path (struct mud *mud, struct path *path, uint64_t now)
 {
+    if (now-path->ping_time < MUD_PING_TIMEOUT)
+        return;
+
     unsigned char ping[MUD_PACKET_MIN_SIZE];
 
     int ret = mud_encrypt(mud, now, ping, sizeof(ping), NULL, 0, 0);
@@ -772,11 +776,15 @@ void mud_ping_path (struct mud *mud, struct path *path, uint64_t now)
         return;
 
     mud_send_path(mud, path, now, ping, (size_t)ret);
+    path->ping_time = now;
 }
 
 static
 void mud_pong_path (struct mud *mud, struct path *path, uint64_t now)
 {
+    if (now-path->pong_time < MUD_PONG_TIMEOUT)
+        return;
+
     unsigned char pong[MUD_PONG_SIZE];
     unsigned char data[MUD_PONG_DATA_SIZE];
 
@@ -790,8 +798,8 @@ void mud_pong_path (struct mud *mud, struct path *path, uint64_t now)
     if (ret <= 0)
         return;
 
-    if (mud_send_path(mud, path, now, pong, (size_t)ret) == (ssize_t)ret)
-        path->pong_time = now;
+    mud_send_path(mud, path, now, pong, (size_t)ret);
+    path->pong_time = now;
 }
 
 int mud_pull (struct mud *mud)
@@ -921,8 +929,7 @@ int mud_pull (struct mud *mud)
             continue;
         }
 
-        if (now-path->pong_time > mud->pong_timeout)
-            mud_pong_path(mud, path, now);
+        mud_pong_path(mud, path, now);
 
         if (ret == (ssize_t)MUD_PACKET_MIN_SIZE)
             continue;
@@ -965,16 +972,22 @@ int mud_push (struct mud *mud)
 
         if ((path->last_time) &&
             (path->send.time > path->last_time) &&
-            (path->send.time-path->last_time > mud->down_timeout+mud->pong_timeout+path->rtt))
-            path->up = 0;
-
-        if (path->send.time) {
-            if (now < path->send.time)
-                continue;
-
-            if ((now-path->send.time) < mud->send_timeout)
-                continue;
+            (path->send.time-path->last_time > MUD_PONG_TIMEOUT+path->rtt+(path->rtt>>1))) {
+            if (path->last_count == 4) {
+                path->last_time = 0;
+                path->last_count = 0;
+                path->up = 0;
+            } else {
+                path->last_time = path->send.time;
+                path->last_count++;
+            }
         }
+
+        if ((path->send.time) &&
+            (!path->last_count) &&
+            (now > path->send.time) &&
+            (now-path->send.time) < mud->send_timeout)
+            continue;
 
         mud_ping_path(mud, path, now);
     }
