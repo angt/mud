@@ -848,6 +848,14 @@ int mud_pull (struct mud *mud)
         if (mud_dt(now, send_time) >= mud->time_tolerance)
             continue;
 
+        if (pong_packet || (ret == (ssize_t)MUD_PACKET_MIN_SIZE)) {
+            unsigned char tmp[sizeof(packet->data)];
+
+            if (mud_decrypt(mud, NULL, tmp, sizeof(tmp),
+                            packet->data, (size_t)ret, (size_t)ret) == -1)
+                continue;
+        }
+
         mud_unmapv4((struct sockaddr *)&addr);
 
         struct cmsghdr *cmsg = mud_get_pktinfo(&msg, addr.ss_family);
