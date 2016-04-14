@@ -716,6 +716,11 @@ int mud_can_pull (struct mud *mud)
     return (mud->rx.start != MUD_PACKET_NEXT(mud->rx.end));
 }
 
+int mud_can_push (struct mud *mud)
+{
+    return (mud->tx.start != mud->tx.end);
+}
+
 int mud_is_up (struct mud *mud)
 {
     struct path *path;

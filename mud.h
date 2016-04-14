@@ -17,6 +17,7 @@ int mud_bind (struct mud *, const char *);
 int mud_peer (struct mud *, const char *, const char *);
 
 int mud_can_pull (struct mud *);
+int mud_can_push (struct mud *);
 int mud_is_up    (struct mud *);
 
 int mud_pull (struct mud *);
