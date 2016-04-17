@@ -84,7 +84,10 @@ struct path_info {
 };
 
 struct path {
-    unsigned up;
+    struct {
+        unsigned up : 1;
+        unsigned active : 1;
+    } state;
     unsigned index;
     struct sockaddr_storage addr;
     struct {
@@ -142,7 +145,6 @@ struct mud {
     struct queue rx;
     struct sock *sock;
     struct path *path;
-    uint64_t keyx_time;
     struct crypto crypto;
 };
 
@@ -466,8 +468,14 @@ int mud_peer (struct mud *mud, const char *host, const char *port)
         if (!p->ai_addr)
             continue;
 
-        for (sock = mud->sock; sock; sock = sock->next)
-            mud_new_path(mud, sock->index, p->ai_addr);
+        for (sock = mud->sock; sock; sock = sock->next) {
+            struct path *path = mud_new_path(mud, sock->index, p->ai_addr);
+
+            if (!path)
+                continue;
+
+            path->state.active = 1;
+        }
     }
 
     freeaddrinfo(ai);
@@ -761,7 +769,7 @@ int mud_is_up (struct mud *mud)
     int ret = 0;
 
     for (path = mud->path; path; path = path->next)
-        ret += path->up;
+        ret += path->state.up;
 
     return ret;
 }
@@ -1011,7 +1019,7 @@ int mud_pull (struct mud *mud)
                 return -1;
         }
 
-        path->up = 1;
+        path->state.up = 1;
 
         int64_t dt = (now-path->recv.time)-(send_time-path->recv.send_time);
 
@@ -1086,14 +1094,17 @@ int mud_push (struct mud *mud)
             if (path->last_count == 4) {
                 path->last_time = 0;
                 path->last_count = 0;
-                path->up = 0;
+                path->state.up = 0;
             } else {
                 path->last_time = path->send.time;
                 path->last_count++;
             }
         }
 
-        if (path->up && (now-mud->crypto.time >= MUD_KEYX_TIMEOUT)) {
+        if (!path->state.active)
+            continue;
+
+        if (path->state.up && (now-mud->crypto.time >= MUD_KEYX_TIMEOUT)) {
             randombytes_buf(mud->crypto.secret, sizeof(mud->crypto.secret));
             crypto_scalarmult_base(mud->crypto.send.public, mud->crypto.secret);
             memset(mud->crypto.recv.public, 0, sizeof(mud->crypto.recv.public));
@@ -1119,7 +1130,7 @@ int mud_push (struct mud *mud)
         int64_t limit_min = INT64_MAX;
 
         for (path = mud->path; path; path = path->next) {
-            if (!path->up)
+            if (!path->state.up)
                 continue;
 
             int64_t limit = path->limit;
