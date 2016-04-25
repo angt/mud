@@ -548,12 +548,12 @@ void mud_set_time_tolerance_sec (struct mud *mud, unsigned sec)
 }
 
 static
-int mud_setup_socket (int fd)
+int mud_setup_socket (int fd, int v4, int v6)
 {
     if (mud_sso_int(fd, SOL_SOCKET, SO_REUSEADDR, 1) ||
-        mud_sso_int(fd, IPPROTO_IP, IP_PKTINFO, 1) ||
-        mud_sso_int(fd, IPPROTO_IPV6, IPV6_RECVPKTINFO, 1) ||
-        mud_sso_int(fd, IPPROTO_IPV6, IPV6_V6ONLY, 0) ||
+        (v4 && mud_sso_int(fd, IPPROTO_IP, IP_PKTINFO, 1)) ||
+        (v6 && mud_sso_int(fd, IPPROTO_IPV6, IPV6_RECVPKTINFO, 1)) ||
+        (v6 && mud_sso_int(fd, IPPROTO_IPV6, IPV6_V6ONLY, !v4)) ||
         mud_set_nonblock(fd))
         return -1;
 
@@ -564,7 +564,7 @@ int mud_setup_socket (int fd)
 }
 
 static
-int mud_create_socket (const char *port)
+int mud_create_socket (const char *port, int v4, int v6)
 {
     struct addrinfo *p, *ai = mud_addrinfo(NULL, port, AI_PASSIVE|AI_NUMERICSERV);
 
@@ -574,7 +574,7 @@ int mud_create_socket (const char *port)
     int fd = -1;
 
     for (p = ai; p; p = p->ai_next) {
-        if (p->ai_family != AF_INET6)
+        if (v6 && (p->ai_family != AF_INET6))
             continue;
 
         if (!p->ai_addr)
@@ -585,7 +585,7 @@ int mud_create_socket (const char *port)
         if (fd == -1)
             continue;
 
-        if (mud_setup_socket(fd) ||
+        if (mud_setup_socket(fd, v4, v6) ||
             bind(fd, p->ai_addr, p->ai_addrlen)) {
             close(fd);
             fd = -1;
@@ -611,7 +611,7 @@ int mud_create_queue (struct queue *queue)
     return 0;
 }
 
-struct mud *mud_create (const char *port)
+struct mud *mud_create (const char *port, int v4, int v6)
 {
     if (sodium_init() == -1)
         return NULL;
@@ -621,7 +621,7 @@ struct mud *mud_create (const char *port)
     if (!mud)
         return NULL;
 
-    mud->fd = mud_create_socket(port);
+    mud->fd = mud_create_socket(port, v4, v6);
 
     if (mud->fd == -1) {
         mud_delete(mud);
