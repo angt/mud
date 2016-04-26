@@ -537,6 +537,14 @@ int mud_set_key (struct mud *mud, unsigned char *key, size_t size)
     return 0;
 }
 
+int mud_new_key (struct mud *mud)
+{
+    unsigned char key[MUD_KEY_SIZE];
+
+    randombytes_buf(key, sizeof(key));
+    mud_set_key(mud, key, sizeof(key));
+}
+
 void mud_set_send_timeout_msec (struct mud *mud, unsigned msec)
 {
     mud->send_timeout = msec*MUD_ONE_MSEC;
@@ -636,6 +644,8 @@ struct mud *mud_create (const char *port, int v4, int v6)
 
     mud->send_timeout = MUD_SEND_TIMEOUT;
     mud->time_tolerance = MUD_TIME_TOLERANCE;
+
+    mud_new_key(mud);
 
     return mud;
 }
