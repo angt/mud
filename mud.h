@@ -8,6 +8,8 @@ struct mud *mud_create (const char *, int, int);
 void        mud_delete (struct mud *);
 
 int mud_set_key (struct mud *, unsigned char *, size_t);
+int mud_get_key (struct mud *, unsigned char *, size_t);
+
 int mud_get_fd  (struct mud *);
 
 void mud_set_send_timeout_msec  (struct mud *, unsigned);

@@ -521,9 +521,21 @@ int mud_bind (struct mud *mud, const char *name)
     return 0;
 }
 
+int mud_get_key (struct mud *mud, unsigned char *key, size_t size)
+{
+    if (size < MUD_KEY_SIZE) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    memcpy(key, mud->crypto.key, MUD_KEY_SIZE);
+
+    return 0;
+}
+
 int mud_set_key (struct mud *mud, unsigned char *key, size_t size)
 {
-    if (size != MUD_KEY_SIZE) {
+    if (size < MUD_KEY_SIZE) {
         errno = EINVAL;
         return -1;
     }
