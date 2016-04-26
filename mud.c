@@ -127,13 +127,13 @@ struct queue {
 
 struct crypto {
     uint64_t time;
-    uint8_t secret[crypto_scalarmult_SCALARBYTES];
-    uint8_t shared[crypto_scalarmult_BYTES];
-    uint8_t key[MUD_KEY_SIZE];
-    uint8_t old_key[MUD_KEY_SIZE];
+    unsigned char secret[crypto_scalarmult_SCALARBYTES];
+    unsigned char shared[crypto_scalarmult_BYTES];
+    unsigned char key[MUD_KEY_SIZE];
+    unsigned char old_key[MUD_KEY_SIZE];
     struct {
-        uint8_t public[crypto_scalarmult_BYTES];
-        uint8_t key[MUD_KEY_SIZE];
+        unsigned char public[crypto_scalarmult_BYTES];
+        unsigned char key[MUD_KEY_SIZE];
     } send, recv;
 };
 
@@ -736,7 +736,7 @@ int mud_decrypt (struct mud *mud, uint64_t *nonce,
     memcpy(npub, src, MUD_NPUB_SIZE);
     memcpy(dst, src+MUD_NPUB_SIZE, ad_size);
 
-    uint8_t *keys[] = {
+    unsigned char *keys[] = {
         mud->crypto.key,
         mud->crypto.old_key,
         mud->crypto.recv.key,
@@ -873,7 +873,7 @@ void mud_keyx_path (struct mud *mud, struct path *path, uint64_t now)
 }
 
 static
-void mud_recv_keyx (struct mud *mud, struct path *path, uint64_t now, uint8_t *data, size_t size)
+void mud_recv_keyx (struct mud *mud, struct path *path, uint64_t now, unsigned char *data, size_t size)
 {
     if ((memcmp(mud->crypto.send.public, &data[crypto_scalarmult_BYTES], crypto_scalarmult_BYTES)) ||
         (memcmp(mud->crypto.recv.public, data, crypto_scalarmult_BYTES))) {
