@@ -230,14 +230,13 @@ ssize_t mud_send_path (struct mud *mud, struct path *path, uint64_t now,
 
     ssize_t ret = sendmsg(mud->fd, &msg, 0);
 
-    if (ret == (ssize_t)size) {
-        if (path->recv.time > path->send.time) {
-            path->last_time = now;
-            path->last_count = 0;
-        }
-
-        path->send.time = now;
+    if ((ret == (ssize_t)size) &&
+        (path->recv.time > path->send.time)) {
+        path->last_time = now;
+        path->last_count = 0;
     }
+
+    path->send.time = now;
 
     return ret;
 }
