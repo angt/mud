@@ -30,10 +30,6 @@
 #define MUD_ASSERT(X) (void)sizeof(char[(X)?1:-1])
 #define MUD_COUNT(X)  (sizeof(X)/sizeof(X[0]))
 
-#define MUD_PACKET_MASK    (0x3FFU)
-#define MUD_PACKET_COUNT   (MUD_PACKET_MASK+1)
-#define MUD_PACKET_NEXT(X) (((X)+1)&MUD_PACKET_MASK)
-
 #define MUD_TIME_SIZE (6U)
 
 #define MUD_AD_SIZE   (16U)
@@ -75,6 +71,13 @@
 #ifndef MUD_PACKET_MAX_SIZE
 #define MUD_PACKET_MAX_SIZE (1500U)
 #endif
+
+#ifndef MUD_PACKET_MASK
+#define MUD_PACKET_MASK (0x3FFU)
+#endif
+
+#define MUD_PACKET_COUNT   ((MUD_PACKET_MASK)+1)
+#define MUD_PACKET_NEXT(X) (((X)+1)&(MUD_PACKET_MASK))
 
 struct path_info {
     uint64_t dt;
@@ -927,7 +930,7 @@ int mud_pull (struct mud *mud)
 {
     unsigned char ctrl[256];
 
-    for (int i = 0; i < 16; i++) {
+    while (1) {
         unsigned next = MUD_PACKET_NEXT(mud->rx.end);
 
         if (mud->rx.start == next) {
