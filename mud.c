@@ -108,10 +108,10 @@ struct path {
     struct path *next;
 };
 
-struct sock {
+struct iface {
     unsigned index;
     char name[IF_NAMESIZE];
-    struct sock *next;
+    struct iface *next;
 };
 
 struct packet {
@@ -143,7 +143,7 @@ struct mud {
     uint64_t time_tolerance;
     struct queue tx;
     struct queue rx;
-    struct sock *sock;
+    struct iface *iface;
     struct path *path;
     struct crypto crypto;
 };
@@ -317,16 +317,16 @@ int mud_cmp_addr (struct sockaddr *a, struct sockaddr *b)
 }
 
 static
-struct sock *mud_get_sock (struct mud *mud, unsigned index)
+struct iface *mud_get_iface (struct mud *mud, unsigned index)
 {
-    struct sock *sock;
+    struct iface *iface;
 
-    for (sock = mud->sock; sock; sock = sock->next) {
-        if (sock->index == index)
+    for (iface = mud->iface; iface; iface = iface->next) {
+        if (iface->index == index)
             break;
     }
 
-    return sock;
+    return iface;
 }
 
 static
@@ -403,9 +403,9 @@ struct path *mud_new_path (struct mud *mud, unsigned index, struct sockaddr *add
     if (path)
         return path;
 
-    struct sock *sock = mud_get_sock(mud, index);
+    struct iface *iface = mud_get_iface(mud, index);
 
-    if (!sock)
+    if (!iface)
         return NULL;
 
     path = calloc(1, sizeof(struct path));
@@ -429,7 +429,7 @@ struct path *mud_new_path (struct mud *mud, unsigned index, struct sockaddr *add
         if (ifa_addr->sa_family != addr->sa_family)
             continue;
 
-        if (strncmp(sock->name, ifa->ifa_name, sizeof(sock->name)))
+        if (strncmp(iface->name, ifa->ifa_name, sizeof(iface->name)))
             continue;
 
         mud_set_path(path, index, addr, ifa_addr);
@@ -460,13 +460,13 @@ int mud_peer (struct mud *mud, const char *host, const char *port)
         return -1;
 
     for (p = ai; p; p = p->ai_next) {
-        struct sock *sock;
+        struct iface *iface;
 
         if (!p->ai_addr)
             continue;
 
-        for (sock = mud->sock; sock; sock = sock->next) {
-            struct path *path = mud_new_path(mud, sock->index, p->ai_addr);
+        for (iface = mud->iface; iface; iface = iface->next) {
+            struct path *path = mud_new_path(mud, iface->index, p->ai_addr);
 
             if (!path)
                 continue;
@@ -495,20 +495,20 @@ int mud_bind (struct mud *mud, const char *name)
     if (!index)
         return -1;
 
-    struct sock *sock = mud_get_sock(mud, index);
+    struct iface *iface = mud_get_iface(mud, index);
 
-    if (sock)
+    if (iface)
         return 0;
 
-    sock = calloc(1, sizeof(struct sock));
+    iface = calloc(1, sizeof(struct iface));
 
-    if (!sock)
+    if (!iface)
         return -1;
 
-    memcpy(sock->name, name, len+1);
-    sock->index = index;
-    sock->next = mud->sock;
-    mud->sock = sock;
+    memcpy(iface->name, name, len+1);
+    iface->index = index;
+    iface->next = mud->iface;
+    mud->iface = iface;
 
     struct path *path;
 
@@ -672,10 +672,10 @@ void mud_delete (struct mud *mud)
     free(mud->tx.packet);
     free(mud->rx.packet);
 
-    while (mud->sock) {
-        struct sock *sock = mud->sock;
-        mud->sock = sock->next;
-        free(sock);
+    while (mud->iface) {
+        struct iface *iface = mud->iface;
+        mud->iface = iface->next;
+        free(iface);
     }
 
     while (mud->path) {
