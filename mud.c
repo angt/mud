@@ -361,7 +361,9 @@ void mud_set_path (struct path *path, unsigned index,
         MUD_ASSERT(sizeof(index)==sizeof(((struct in_pktinfo *)0)->ipi_ifindex));
 
         path->index = index;
-        memcpy(&path->addr, addr, sizeof(struct sockaddr_in));
+
+        if (addr != (struct sockaddr *)&path->addr)
+            memcpy(&path->addr, addr, sizeof(struct sockaddr_in));
 
         cmsg->cmsg_level = IPPROTO_IP;
         cmsg->cmsg_type = IP_PKTINFO;
@@ -381,7 +383,9 @@ void mud_set_path (struct path *path, unsigned index,
         MUD_ASSERT(sizeof(index)==sizeof(((struct in6_pktinfo *)0)->ipi6_ifindex));
 
         path->index = index;
-        memcpy(&path->addr, addr, sizeof(struct sockaddr_in6));
+
+        if (addr != (struct sockaddr *)&path->addr)
+            memcpy(&path->addr, addr, sizeof(struct sockaddr_in6));
 
         cmsg->cmsg_level = IPPROTO_IPV6;
         cmsg->cmsg_type = IPV6_PKTINFO;
@@ -399,29 +403,17 @@ void mud_set_path (struct path *path, unsigned index,
 }
 
 static
-struct path *mud_new_path (struct mud *mud, unsigned index, struct sockaddr *addr)
+void mud_reset_path (struct path *path, unsigned index, struct sockaddr *addr)
 {
-    struct path *path = mud_get_path(mud, index, addr);
+    char name[IF_NAMESIZE];
 
-    if (path)
-        return path;
+    if (if_indextoname(index, name) != name)
+        return;
 
-    struct iface *iface = mud_get_iface(mud, index);
+    struct ifaddrs *ifaddrs = NULL;
 
-    if (!iface)
-        return NULL;
-
-    path = calloc(1, sizeof(struct path));
-
-    if (!path)
-        return NULL;
-
-    struct ifaddrs *ifaddrs;
-
-    if (getifaddrs(&ifaddrs) == -1) {
-        free(path);
-        return NULL;
-    }
+    if ((getifaddrs(&ifaddrs) == -1) || !ifaddrs)
+        return;
 
     for (struct ifaddrs *ifa = ifaddrs; ifa; ifa = ifa->ifa_next) {
         struct sockaddr *ifa_addr = ifa->ifa_addr;
@@ -432,14 +424,31 @@ struct path *mud_new_path (struct mud *mud, unsigned index, struct sockaddr *add
         if (ifa_addr->sa_family != addr->sa_family)
             continue;
 
-        if (strncmp(iface->name, ifa->ifa_name, sizeof(iface->name)))
+        if (strncmp(name, ifa->ifa_name, sizeof(name)))
             continue;
 
         mud_set_path(path, index, addr, ifa_addr);
+
         break;
     }
 
     freeifaddrs(ifaddrs);
+}
+
+static
+struct path *mud_new_path (struct mud *mud, unsigned index, struct sockaddr *addr)
+{
+    struct path *path = mud_get_path(mud, index, addr);
+
+    if (path)
+        return path;
+
+    path = calloc(1, sizeof(struct path));
+
+    if (!path)
+        return NULL;
+
+    mud_reset_path(path, index, addr);
 
     if (!path->index) {
         free(path);
@@ -1123,6 +1132,7 @@ int mud_push (struct mud *mud)
             (now-path->send.time) < mud->send_timeout)
             continue;
 
+        mud_reset_path(path, path->index, (struct sockaddr *)&path->addr);
         mud_ping_path(mud, path, now);
     }
 
