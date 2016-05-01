@@ -463,8 +463,10 @@ struct path *mud_new_path (struct mud *mud, unsigned index, struct sockaddr *add
 
 int mud_peer (struct mud *mud, const char *host, const char *port)
 {
-    if (!host || !port)
+    if (!host || !port) {
+        errno = EINVAL;
         return -1;
+    }
 
     struct addrinfo *p, *ai = mud_addrinfo(host, port, AI_NUMERICSERV);
 
@@ -494,13 +496,17 @@ int mud_peer (struct mud *mud, const char *host, const char *port)
 
 int mud_bind (struct mud *mud, const char *name)
 {
-    if (!name)
+    if (!name) {
+        errno = EINVAL;
         return -1;
+    }
 
     const size_t len = strlen(name);
 
-    if (len >= IF_NAMESIZE)
+    if (len >= IF_NAMESIZE) {
+        errno = EINVAL;
         return -1;
+    }
 
     unsigned index = if_nametoindex(name);
 
@@ -522,29 +528,25 @@ int mud_bind (struct mud *mud, const char *name)
     iface->next = mud->iface;
     mud->iface = iface;
 
-    struct path *path;
-
-    for (path = mud->path; path; path = path->next)
-        mud_new_path(mud, index, (struct sockaddr *)&path->addr);
-
     return 0;
 }
 
-int mud_get_key (struct mud *mud, unsigned char *key, size_t size)
+int mud_get_key (struct mud *mud, unsigned char *key, size_t *size)
 {
-    if (size < MUD_KEY_SIZE) {
+    if (!key || !size || (*size < MUD_KEY_SIZE)) {
         errno = EINVAL;
         return -1;
     }
 
     memcpy(key, mud->crypto.key, MUD_KEY_SIZE);
+    *size = MUD_KEY_SIZE;
 
     return 0;
 }
 
 int mud_set_key (struct mud *mud, unsigned char *key, size_t size)
 {
-    if (size < MUD_KEY_SIZE) {
+    if (!key || (size < MUD_KEY_SIZE)) {
         errno = EINVAL;
         return -1;
     }
@@ -558,6 +560,7 @@ int mud_set_key (struct mud *mud, unsigned char *key, size_t size)
     return 0;
 }
 
+static
 int mud_new_key (struct mud *mud)
 {
     unsigned char key[MUD_KEY_SIZE];
@@ -566,14 +569,28 @@ int mud_new_key (struct mud *mud)
     mud_set_key(mud, key, sizeof(key));
 }
 
-void mud_set_send_timeout_msec (struct mud *mud, unsigned msec)
+int mud_set_send_timeout_msec (struct mud *mud, unsigned msec)
 {
+    if (!msec) {
+        errno = EINVAL;
+        return -1;
+    }
+
     mud->send_timeout = msec*MUD_ONE_MSEC;
+
+    return 0;
 }
 
-void mud_set_time_tolerance_sec (struct mud *mud, unsigned sec)
+int mud_set_time_tolerance_sec (struct mud *mud, unsigned sec)
 {
+    if (!sec) {
+        errno = EINVAL;
+        return -1;
+    }
+
     mud->time_tolerance = sec*MUD_ONE_SEC;
+
+    return 0;
 }
 
 static
@@ -1058,7 +1075,6 @@ int mud_pull (struct mud *mud)
         if (mud_packet) {
             if (ret == (ssize_t)MUD_KEYX_SIZE)
                 mud_recv_keyx(mud, path, now, &packet->data[2*MUD_TIME_SIZE], ret-2*MUD_TIME_SIZE);
-
             continue;
         }
 
