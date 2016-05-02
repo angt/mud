@@ -111,12 +111,6 @@ struct path {
     struct path *next;
 };
 
-struct iface {
-    unsigned index;
-    char name[IF_NAMESIZE];
-    struct iface *next;
-};
-
 struct packet {
     size_t size;
     unsigned char data[MUD_PACKET_MAX_SIZE];
@@ -146,7 +140,6 @@ struct mud {
     uint64_t time_tolerance;
     struct queue tx;
     struct queue rx;
-    struct iface *iface;
     struct path *path;
     struct crypto crypto;
 };
@@ -320,19 +313,6 @@ int mud_cmp_addr (struct sockaddr *a, struct sockaddr *b)
 }
 
 static
-struct iface *mud_get_iface (struct mud *mud, unsigned index)
-{
-    struct iface *iface;
-
-    for (iface = mud->iface; iface; iface = iface->next) {
-        if (iface->index == index)
-            break;
-    }
-
-    return iface;
-}
-
-static
 struct path *mud_get_path (struct mud *mud, int index, struct sockaddr *addr)
 {
     struct path *path;
@@ -461,42 +441,9 @@ struct path *mud_new_path (struct mud *mud, unsigned index, struct sockaddr *add
     return path;
 }
 
-int mud_peer (struct mud *mud, const char *host, const char *port)
+int mud_peer (struct mud *mud, const char *name, const char *host, const char *port)
 {
-    if (!host || !port) {
-        errno = EINVAL;
-        return -1;
-    }
-
-    struct addrinfo *p, *ai = mud_addrinfo(host, port, AI_NUMERICSERV);
-
-    if (!ai)
-        return -1;
-
-    for (p = ai; p; p = p->ai_next) {
-        struct iface *iface;
-
-        if (!p->ai_addr)
-            continue;
-
-        for (iface = mud->iface; iface; iface = iface->next) {
-            struct path *path = mud_new_path(mud, iface->index, p->ai_addr);
-
-            if (!path)
-                continue;
-
-            path->state.active = 1;
-        }
-    }
-
-    freeaddrinfo(ai);
-
-    return 0;
-}
-
-int mud_bind (struct mud *mud, const char *name)
-{
-    if (!name) {
+    if (!name || !host || !port) {
         errno = EINVAL;
         return -1;
     }
@@ -513,20 +460,24 @@ int mud_bind (struct mud *mud, const char *name)
     if (!index)
         return -1;
 
-    struct iface *iface = mud_get_iface(mud, index);
+    struct addrinfo *p, *ai = mud_addrinfo(host, port, AI_NUMERICSERV);
 
-    if (iface)
-        return 0;
-
-    iface = calloc(1, sizeof(struct iface));
-
-    if (!iface)
+    if (!ai)
         return -1;
 
-    memcpy(iface->name, name, len+1);
-    iface->index = index;
-    iface->next = mud->iface;
-    mud->iface = iface;
+    for (p = ai; p; p = p->ai_next) {
+        if (!p->ai_addr)
+            continue;
+
+        struct path *path = mud_new_path(mud, index, p->ai_addr);
+
+        if (!path)
+            continue;
+
+        path->state.active = 1;
+    }
+
+    freeaddrinfo(ai);
 
     return 0;
 }
@@ -700,12 +651,6 @@ void mud_delete (struct mud *mud)
 
     free(mud->tx.packet);
     free(mud->rx.packet);
-
-    while (mud->iface) {
-        struct iface *iface = mud->iface;
-        mud->iface = iface->next;
-        free(iface);
-    }
 
     while (mud->path) {
         struct path *path = mud->path;
