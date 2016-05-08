@@ -16,11 +16,11 @@
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
-#include <netdb.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <arpa/inet.h>
 #include <net/if.h>
 #include <netinet/in.h>
 #include <ifaddrs.h>
@@ -255,36 +255,6 @@ int mud_sso_int (int fd, int level, int optname, int opt)
 }
 
 static
-struct addrinfo *mud_addrinfo (const char *host, const char *port, int flags)
-{
-    struct addrinfo *ai = NULL, hints = {
-        .ai_family = AF_UNSPEC,
-        .ai_socktype = SOCK_DGRAM,
-        .ai_protocol = IPPROTO_UDP,
-        .ai_flags = flags,
-    };
-
-    switch (getaddrinfo(host, port, &hints, &ai)) {
-    case 0:
-        return ai;
-    case EAI_SYSTEM:
-        break;
-    case EAI_FAIL:
-    case EAI_AGAIN:
-        errno = EAGAIN;
-        break;
-    case EAI_MEMORY:
-        errno = ENOMEM;
-        break;
-    default:
-        errno = EINVAL;
-        break;
-    }
-
-    return NULL;
-}
-
-static
 int mud_cmp_addr (struct sockaddr *a, struct sockaddr *b)
 {
     if (a == b)
@@ -441,7 +411,7 @@ struct path *mud_new_path (struct mud *mud, unsigned index, struct sockaddr *add
     return path;
 }
 
-int mud_peer (struct mud *mud, const char *name, const char *host, const char *port)
+int mud_peer (struct mud *mud, const char *name, const char *host, int port)
 {
     if (!name || !host || !port) {
         errno = EINVAL;
@@ -460,24 +430,33 @@ int mud_peer (struct mud *mud, const char *name, const char *host, const char *p
     if (!index)
         return -1;
 
-    struct addrinfo *p, *ai = mud_addrinfo(host, port, AI_NUMERICSERV);
+    struct sockaddr_in sin = {
+        .sin_family = AF_INET,
+        .sin_port = htons(port),
+    };
 
-    if (!ai)
+    struct sockaddr_in6 sin6 = {
+        .sin6_family = AF_INET6,
+        .sin6_port = htons(port),
+    };
+
+    struct sockaddr *addr = (struct sockaddr *)&sin;
+
+    if ((inet_pton(AF_INET, host, &sin.sin_addr) <= 0) &&
+        (addr = (struct sockaddr *)&sin6,
+         inet_pton(AF_INET6, host, &sin6.sin6_addr) <= 0)) {
+        errno = EINVAL;
         return -1;
-
-    for (p = ai; p; p = p->ai_next) {
-        if (!p->ai_addr)
-            continue;
-
-        struct path *path = mud_new_path(mud, index, p->ai_addr);
-
-        if (!path)
-            continue;
-
-        path->state.active = 1;
     }
 
-    freeaddrinfo(ai);
+    mud_unmapv4(addr);
+
+    struct path *path = mud_new_path(mud, index, addr);
+
+    if (!path)
+        return -1;
+
+    path->state.active = 1;
 
     return 0;
 }
@@ -561,38 +540,38 @@ int mud_setup_socket (int fd, int v4, int v6)
 }
 
 static
-int mud_create_socket (const char *port, int v4, int v6)
+int mud_create_socket (int port, int v4, int v6)
 {
-    struct addrinfo *p, *ai = mud_addrinfo(NULL, port, AI_PASSIVE|AI_NUMERICSERV);
+    struct sockaddr_in6 sin6 = {
+        .sin6_family = AF_INET6,
+        .sin6_port = htons(port),
+    };
 
-    if (!ai)
-        return -1;
+    struct sockaddr_in sin = {
+        .sin_family = AF_INET,
+        .sin_port = htons(port),
+    };
 
-    int fd = -1;
+    struct sockaddr *addr = (struct sockaddr *)&sin;
+    size_t addrlen = sizeof(sin);
 
-    for (p = ai; p; p = p->ai_next) {
-        if (v6 && (p->ai_family != AF_INET6))
-            continue;
-
-        if (!p->ai_addr)
-            continue;
-
-        fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
-
-        if (fd == -1)
-            continue;
-
-        if (mud_setup_socket(fd, v4, v6) ||
-            bind(fd, p->ai_addr, p->ai_addrlen)) {
-            close(fd);
-            fd = -1;
-            continue;
-        }
-
-        break;
+    if (v6) {
+        addr = (struct sockaddr *)&sin6;
+        addrlen = sizeof(sin6);
     }
 
-    freeaddrinfo(ai);
+    int fd = socket(addr->sa_family, SOCK_DGRAM, IPPROTO_UDP);
+
+    if (fd == -1)
+        return -1;
+
+    if (mud_setup_socket(fd, v4, v6) ||
+        bind(fd, addr, addrlen)) {
+        int err = errno;
+        close(fd);
+        errno = err;
+        return -1;
+    }
 
     return fd;
 }
@@ -608,7 +587,7 @@ int mud_create_queue (struct queue *queue)
     return 0;
 }
 
-struct mud *mud_create (const char *port, int v4, int v6)
+struct mud *mud_create (int port, int v4, int v6)
 {
     if (sodium_init() == -1)
         return NULL;
