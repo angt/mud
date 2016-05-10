@@ -204,6 +204,34 @@ void mud_unmapv4 (struct sockaddr *addr)
 }
 
 static
+int mud_addrinfo (struct sockaddr_storage *addr, const char *host, int port)
+{
+    struct sockaddr_in sin = {
+        .sin_family = AF_INET,
+        .sin_port = htons(port),
+    };
+
+    if (inet_pton(AF_INET, host, &sin.sin_addr) == 1) {
+        memcpy(addr, &sin, sizeof(sin));
+        return 0;
+    }
+
+    struct sockaddr_in6 sin6 = {
+        .sin6_family = AF_INET6,
+        .sin6_port = htons(port),
+    };
+
+    if (inet_pton(AF_INET6, host, &sin6.sin6_addr) == 1) {
+        memcpy(addr, &sin6, sizeof(sin6));
+        return 0;
+    }
+
+    errno = EINVAL;
+
+    return -1;
+}
+
+static
 ssize_t mud_send_path (struct mud *mud, struct path *path, uint64_t now,
                        void *data, size_t size)
 {
@@ -430,28 +458,14 @@ int mud_peer (struct mud *mud, const char *name, const char *host, int port)
     if (!index)
         return -1;
 
-    struct sockaddr_in sin = {
-        .sin_family = AF_INET,
-        .sin_port = htons(port),
-    };
+    struct sockaddr_storage addr;
 
-    struct sockaddr_in6 sin6 = {
-        .sin6_family = AF_INET6,
-        .sin6_port = htons(port),
-    };
-
-    struct sockaddr *addr = (struct sockaddr *)&sin;
-
-    if ((inet_pton(AF_INET, host, &sin.sin_addr) <= 0) &&
-        (addr = (struct sockaddr *)&sin6,
-         inet_pton(AF_INET6, host, &sin6.sin6_addr) <= 0)) {
-        errno = EINVAL;
+    if (mud_addrinfo(&addr, host, port))
         return -1;
-    }
 
-    mud_unmapv4(addr);
+    mud_unmapv4((struct sockaddr *)&addr);
 
-    struct path *path = mud_new_path(mud, index, addr);
+    struct path *path = mud_new_path(mud, index, (struct sockaddr *)&addr);
 
     if (!path)
         return -1;
@@ -542,31 +556,18 @@ int mud_setup_socket (int fd, int v4, int v6)
 static
 int mud_create_socket (int port, int v4, int v6)
 {
-    struct sockaddr_in6 sin6 = {
-        .sin6_family = AF_INET6,
-        .sin6_port = htons(port),
-    };
+    struct sockaddr_storage addr;
 
-    struct sockaddr_in sin = {
-        .sin_family = AF_INET,
-        .sin_port = htons(port),
-    };
+    if (mud_addrinfo(&addr, v6 ? "::" : "0.0.0.0", port))
+        return -1;
 
-    struct sockaddr *addr = (struct sockaddr *)&sin;
-    size_t addrlen = sizeof(sin);
-
-    if (v6) {
-        addr = (struct sockaddr *)&sin6;
-        addrlen = sizeof(sin6);
-    }
-
-    int fd = socket(addr->sa_family, SOCK_DGRAM, IPPROTO_UDP);
+    int fd = socket(addr.ss_family, SOCK_DGRAM, IPPROTO_UDP);
 
     if (fd == -1)
         return -1;
 
     if (mud_setup_socket(fd, v4, v6) ||
-        bind(fd, addr, addrlen)) {
+        bind(fd, (struct sockaddr *)&addr, sizeof(addr))) {
         int err = errno;
         close(fd);
         errno = err;
