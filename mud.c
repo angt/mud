@@ -27,7 +27,6 @@
 
 #include <sodium.h>
 
-#define MUD_ASSERT(X) (void)sizeof(char[(X)?1:-1])
 #define MUD_COUNT(X)  (sizeof(X)/sizeof(X[0]))
 
 #define MUD_TIME_SIZE (6U)
@@ -335,11 +334,9 @@ void mud_set_path (struct path *path, unsigned index,
 
     struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
 
+    path->index = index;
+
     if (addr->sa_family == AF_INET) {
-        MUD_ASSERT(sizeof(index)==sizeof(((struct in_pktinfo *)0)->ipi_ifindex));
-
-        path->index = index;
-
         if (addr != (struct sockaddr *)&path->addr)
             memcpy(&path->addr, addr, sizeof(struct sockaddr_in));
 
@@ -358,10 +355,6 @@ void mud_set_path (struct path *path, unsigned index,
     }
 
     if (addr->sa_family == AF_INET6) {
-        MUD_ASSERT(sizeof(index)==sizeof(((struct in6_pktinfo *)0)->ipi6_ifindex));
-
-        path->index = index;
-
         if (addr != (struct sockaddr *)&path->addr)
             memcpy(&path->addr, addr, sizeof(struct sockaddr_in6));
 
