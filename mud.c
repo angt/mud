@@ -315,9 +315,11 @@ struct path *mud_get_path (struct mud *mud, int index, struct sockaddr *addr)
     struct path *path;
 
     for (path = mud->path; path; path = path->next) {
-        if ((path->index == index) &&
-            (!mud_cmp_addr(addr, (struct sockaddr *)&path->addr)))
-            break;
+        if (index && (path->index != index))
+            continue;
+        if (mud_cmp_addr(addr, (struct sockaddr *)&path->addr))
+            continue;
+        break;
     }
 
     return path;
@@ -341,6 +343,7 @@ void mud_set_path (struct path *path, unsigned index,
             memcpy(&path->addr, addr, sizeof(struct sockaddr_in));
 
         cmsg->cmsg_level = IPPROTO_IP;
+#if defined IP_PKTINFO
         cmsg->cmsg_type = IP_PKTINFO;
         cmsg->cmsg_len = CMSG_LEN(sizeof(struct in_pktinfo));
 
@@ -352,6 +355,16 @@ void mud_set_path (struct path *path, unsigned index,
                sizeof(struct in_addr));
 
         path->ctrl.size = CMSG_SPACE(sizeof(struct in_pktinfo));
+#elif defined IP_RECVDSTADDR
+        cmsg->cmsg_type = IP_RECVDSTADDR;
+        cmsg->cmsg_len = CMSG_LEN(sizeof(struct in_addr));
+
+        memcpy((struct in_addr *)CMSG_DATA(cmsg),
+               &((struct sockaddr_in *)ifa_addr)->sin_addr,
+               sizeof(struct in_addr));
+
+        path->ctrl.size = CMSG_SPACE(sizeof(struct in_addr));
+#endif
     }
 
     if (addr->sa_family == AF_INET6) {
@@ -525,7 +538,11 @@ static
 int mud_setup_socket (int fd, int v4, int v6)
 {
     if (mud_sso_int(fd, SOL_SOCKET, SO_REUSEADDR, 1) ||
+#if defined IP_PKTINFO
         (v4 && mud_sso_int(fd, IPPROTO_IP, IP_PKTINFO, 1)) ||
+#elif defined IP_RECVDSTADDR
+        (v4 && mud_sso_int(fd, IPPROTO_IP, IP_RECVDSTADDR, 1)) ||
+#endif
         (v6 && mud_sso_int(fd, IPPROTO_IPV6, IPV6_RECVPKTINFO, 1)) ||
         (v6 && mud_sso_int(fd, IPPROTO_IPV6, IPV6_V6ONLY, !v4)) ||
         mud_set_nonblock(fd))
@@ -738,7 +755,12 @@ static
 struct cmsghdr *mud_get_pktinfo (struct msghdr *msg, int family)
 {
     int cmsg_level = IPPROTO_IP;
+
+#if defined IP_PKTINFO
     int cmsg_type = IP_PKTINFO;
+#elif defined IP_RECVDSTADDR
+    int cmsg_type = IP_RECVDSTADDR;
+#endif
 
     if (family == AF_INET6) {
         cmsg_level = IPPROTO_IPV6;
@@ -934,11 +956,17 @@ int mud_pull (struct mud *mud)
 
         unsigned index = 0;
 
+#ifdef IP_PKTINFO
         if (cmsg->cmsg_level == IPPROTO_IP) {
             memcpy(&index,
                    &((struct in_pktinfo *)CMSG_DATA(cmsg))->ipi_ifindex,
                    sizeof(index));
-        } else {
+        }
+#else
+        // TODO
+#endif
+
+        if (cmsg->cmsg_level == IPPROTO_IPV6) {
             memcpy(&index,
                    &((struct in6_pktinfo *)CMSG_DATA(cmsg))->ipi6_ifindex,
                    sizeof(index));
