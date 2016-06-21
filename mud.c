@@ -91,6 +91,7 @@ struct path {
         unsigned active : 1;
     } state;
     unsigned index;
+    struct in_addr ifa_in_addr;
     struct sockaddr_storage addr;
     struct {
         unsigned char data[256];
@@ -310,15 +311,22 @@ int mud_cmp_addr (struct sockaddr *a, struct sockaddr *b)
 }
 
 static
-struct path *mud_get_path (struct mud *mud, int index, struct sockaddr *addr)
+struct path *mud_get_path (struct mud *mud, int index, struct in_addr *ifa_in_addr, struct sockaddr *addr)
 {
     struct path *path;
 
     for (path = mud->path; path; path = path->next) {
-        if (index && (path->index != index))
-            continue;
+        if (index) {
+            if (path->index != index)
+                continue;
+        } else if (ifa_in_addr) {
+            if (memcmp(&path->ifa_in_addr, ifa_in_addr, sizeof(struct in_addr)))
+                continue;
+        }
+
         if (mud_cmp_addr(addr, (struct sockaddr *)&path->addr))
             continue;
+
         break;
     }
 
@@ -341,6 +349,10 @@ void mud_set_path (struct path *path, unsigned index,
     if (addr->sa_family == AF_INET) {
         if (addr != (struct sockaddr *)&path->addr)
             memcpy(&path->addr, addr, sizeof(struct sockaddr_in));
+
+        memcpy(&path->ifa_in_addr,
+               &((struct sockaddr_in *)ifa_addr)->sin_addr,
+               sizeof(struct in_addr));
 
         cmsg->cmsg_level = IPPROTO_IP;
 #if defined IP_PKTINFO
@@ -422,7 +434,7 @@ void mud_reset_path (struct path *path, unsigned index, struct sockaddr *addr)
 static
 struct path *mud_new_path (struct mud *mud, unsigned index, struct sockaddr *addr)
 {
-    struct path *path = mud_get_path(mud, index, addr);
+    struct path *path = mud_get_path(mud, index, NULL, addr);
 
     if (path)
         return path;
@@ -955,16 +967,19 @@ int mud_pull (struct mud *mud)
             continue;
 
         unsigned index = 0;
+        struct in_addr ifa_in_addr;
 
-#ifdef IP_PKTINFO
         if (cmsg->cmsg_level == IPPROTO_IP) {
+#if defined IP_PKTINFO
             memcpy(&index,
                    &((struct in_pktinfo *)CMSG_DATA(cmsg))->ipi_ifindex,
                    sizeof(index));
-        }
-#else
-        // TODO
+#elif defined IP_RECVDSTADDR
+            memcpy(&ifa_in_addr,
+                   (struct in_addr *)CMSG_DATA(cmsg),
+                   sizeof(struct in_addr));
 #endif
+        }
 
         if (cmsg->cmsg_level == IPPROTO_IPV6) {
             memcpy(&index,
@@ -972,7 +987,7 @@ int mud_pull (struct mud *mud)
                    sizeof(index));
         }
 
-        struct path *path = mud_get_path(mud, index, (struct sockaddr *)&addr);
+        struct path *path = mud_get_path(mud, index, &ifa_in_addr, (struct sockaddr *)&addr);
 
         if (!path) {
             if (mud_packet && (ret == (ssize_t)MUD_PONG_SIZE))
