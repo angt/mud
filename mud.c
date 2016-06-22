@@ -125,13 +125,17 @@ struct queue {
 struct crypto {
     uint64_t time;
     unsigned char secret[crypto_scalarmult_SCALARBYTES];
-    unsigned char shared[crypto_scalarmult_BYTES];
-    unsigned char key[MUD_KEY_SIZE];
-    unsigned char old_key[MUD_KEY_SIZE];
     struct {
-        unsigned char public[crypto_scalarmult_BYTES];
-        unsigned char key[MUD_KEY_SIZE];
-    } send, recv;
+        unsigned char secret[crypto_scalarmult_BYTES];
+        unsigned char send[crypto_scalarmult_BYTES];
+        unsigned char recv[crypto_scalarmult_BYTES];
+    } share;
+    struct {
+        unsigned char private[MUD_KEY_SIZE];
+        unsigned char old[MUD_KEY_SIZE];
+        unsigned char send[MUD_KEY_SIZE];
+        unsigned char recv[MUD_KEY_SIZE];
+    } key;
 };
 
 struct mud {
@@ -496,7 +500,7 @@ int mud_get_key (struct mud *mud, unsigned char *key, size_t *size)
         return -1;
     }
 
-    memcpy(key, mud->crypto.key, MUD_KEY_SIZE);
+    memcpy(key, mud->crypto.key.private, MUD_KEY_SIZE);
     *size = MUD_KEY_SIZE;
 
     return 0;
@@ -509,11 +513,11 @@ int mud_set_key (struct mud *mud, unsigned char *key, size_t size)
         return -1;
     }
 
-    memcpy(mud->crypto.key, key, MUD_KEY_SIZE);
-    memcpy(mud->crypto.old_key, key, MUD_KEY_SIZE);
+    memcpy(mud->crypto.key.private, key, MUD_KEY_SIZE);
+    memcpy(mud->crypto.key.old, key, MUD_KEY_SIZE);
 
-    memcpy(mud->crypto.send.key, key, MUD_KEY_SIZE);
-    memcpy(mud->crypto.recv.key, key, MUD_KEY_SIZE);
+    memcpy(mud->crypto.key.send, key, MUD_KEY_SIZE);
+    memcpy(mud->crypto.key.recv, key, MUD_KEY_SIZE);
 
     return 0;
 }
@@ -683,7 +687,7 @@ int mud_encrypt (struct mud *mud, uint64_t nonce,
             dst, ad_size+MUD_NPUB_SIZE,
             NULL,
             npub,
-            mud->crypto.send.key);
+            mud->crypto.key.send);
 
     return size;
 }
@@ -708,9 +712,9 @@ int mud_decrypt (struct mud *mud, uint64_t *nonce,
     memcpy(dst, src+MUD_NPUB_SIZE, ad_size);
 
     unsigned char *keys[] = {
-        mud->crypto.key,
-        mud->crypto.old_key,
-        mud->crypto.recv.key,
+        mud->crypto.key.private,
+        mud->crypto.key.old,
+        mud->crypto.key.recv,
     };
 
     int i = MUD_COUNT(keys);
@@ -826,12 +830,12 @@ void mud_keyx_path (struct mud *mud, struct path *path, uint64_t now)
     mud_write48(data, now);
 
     memcpy(&data[MUD_TIME_SIZE],
-           mud->crypto.send.public,
-           sizeof(mud->crypto.send.public));
+           mud->crypto.share.send,
+           sizeof(mud->crypto.share.send));
 
-    memcpy(&data[MUD_TIME_SIZE+sizeof(mud->crypto.send.public)],
-           mud->crypto.recv.public,
-           sizeof(mud->crypto.recv.public));
+    memcpy(&data[MUD_TIME_SIZE+sizeof(mud->crypto.share.send)],
+           mud->crypto.share.recv,
+           sizeof(mud->crypto.share.recv));
 
     int ret = mud_encrypt(mud, 0, keyx, sizeof(keyx),
                           data, sizeof(data), sizeof(data));
@@ -846,43 +850,34 @@ void mud_keyx_path (struct mud *mud, struct path *path, uint64_t now)
 static
 void mud_recv_keyx (struct mud *mud, struct path *path, uint64_t now, unsigned char *data, size_t size)
 {
-    if ((memcmp(mud->crypto.send.public, &data[crypto_scalarmult_BYTES], crypto_scalarmult_BYTES)) ||
-        (memcmp(mud->crypto.recv.public, data, crypto_scalarmult_BYTES))) {
-        memcpy(mud->crypto.recv.public, data, crypto_scalarmult_BYTES);
+    if ((memcmp(mud->crypto.share.send, &data[crypto_scalarmult_BYTES], crypto_scalarmult_BYTES)) ||
+        (memcmp(mud->crypto.share.recv, data, crypto_scalarmult_BYTES))) {
+        memcpy(mud->crypto.share.recv, data, crypto_scalarmult_BYTES);
         mud_keyx_path(mud, path, now);
         return;
     }
 
-    if (crypto_scalarmult(mud->crypto.shared, mud->crypto.secret, mud->crypto.recv.public))
+    if (crypto_scalarmult(mud->crypto.share.secret, mud->crypto.secret, mud->crypto.share.recv))
         return;
 
-    crypto_generichash_state state;
+    unsigned char tmp[MUD_KEY_SIZE];
 
-    crypto_generichash_init(&state, mud->crypto.key, MUD_KEY_SIZE, MUD_KEY_SIZE);
-    crypto_generichash_update(&state, mud->crypto.shared,
-                              sizeof(mud->crypto.shared));
-    crypto_generichash_update(&state, mud->crypto.send.public,
-                              sizeof(mud->crypto.send.public));
-    crypto_generichash_update(&state, mud->crypto.recv.public,
-                              sizeof(mud->crypto.recv.public));
-    crypto_generichash_final(&state, mud->crypto.send.key, MUD_KEY_SIZE);
+    crypto_generichash(mud->crypto.key.send, MUD_KEY_SIZE,
+                       (unsigned char *)&mud->crypto.share, sizeof(mud->crypto.share),
+                       mud->crypto.key.private, MUD_KEY_SIZE);
 
-    memcpy(mud->crypto.old_key, mud->crypto.recv.key, MUD_KEY_SIZE);
+    memcpy(tmp, mud->crypto.share.recv, sizeof(tmp));
+    memcpy(mud->crypto.share.recv, mud->crypto.share.send, sizeof(tmp));
+    memcpy(mud->crypto.share.send, tmp, sizeof(tmp));
 
-    crypto_generichash_init(&state, mud->crypto.key, MUD_KEY_SIZE, MUD_KEY_SIZE);
-    crypto_generichash_update(&state, mud->crypto.shared,
-                              sizeof(mud->crypto.shared));
-    crypto_generichash_update(&state, mud->crypto.recv.public,
-                              sizeof(mud->crypto.recv.public));
-    crypto_generichash_update(&state, mud->crypto.send.public,
-                              sizeof(mud->crypto.send.public));
-    crypto_generichash_final(&state, mud->crypto.recv.key, MUD_KEY_SIZE);
+    memcpy(mud->crypto.key.old, mud->crypto.key.recv, MUD_KEY_SIZE);
+
+    crypto_generichash(mud->crypto.key.recv, MUD_KEY_SIZE,
+                       (unsigned char *)&mud->crypto.share, sizeof(mud->crypto.share),
+                       mud->crypto.key.private, MUD_KEY_SIZE);
 
     sodium_memzero(mud->crypto.secret, sizeof(mud->crypto.secret));
-    sodium_memzero(mud->crypto.shared, sizeof(mud->crypto.shared));
-
-    memset(mud->crypto.send.public, 0, sizeof(mud->crypto.send.public));
-    memset(mud->crypto.recv.public, 0, sizeof(mud->crypto.recv.public));
+    sodium_memzero(&mud->crypto.share, sizeof(mud->crypto.share));
 }
 
 int mud_pull (struct mud *mud)
@@ -1078,8 +1073,8 @@ int mud_push (struct mud *mud)
 
         if (path->state.up && (now-mud->crypto.time >= MUD_KEYX_TIMEOUT)) {
             randombytes_buf(mud->crypto.secret, sizeof(mud->crypto.secret));
-            crypto_scalarmult_base(mud->crypto.send.public, mud->crypto.secret);
-            memset(mud->crypto.recv.public, 0, sizeof(mud->crypto.recv.public));
+            crypto_scalarmult_base(mud->crypto.share.send, mud->crypto.secret);
+            memset(mud->crypto.share.recv, 0, sizeof(mud->crypto.share.recv));
             mud_keyx_path(mud, path, now);
             continue;
         }
