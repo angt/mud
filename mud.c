@@ -575,8 +575,12 @@ int mud_create_socket (int port, int v4, int v6)
     if (fd == -1)
         return -1;
 
+    socklen_t addrlen = (addr.ss_family == AF_INET)
+                      ? sizeof(struct sockaddr_in)
+                      : sizeof(struct sockaddr_in6);
+
     if (mud_setup_socket(fd, v4, v6) ||
-        bind(fd, (struct sockaddr *)&addr, sizeof(addr))) {
+        bind(fd, (struct sockaddr *)&addr, addrlen)) {
         int err = errno;
         close(fd);
         errno = err;
