@@ -27,6 +27,12 @@
 
 #include <sodium.h>
 
+#if defined IP_PKTINFO
+#define MUD_PKTINFO IP_PKTINFO
+#elif defined IP_RECVDSTADDR
+#define MUD_PKTINFO IP_RECVDSTADDR
+#endif
+
 #define MUD_COUNT(X)  (sizeof(X)/sizeof(X[0]))
 
 #define MUD_TIME_SIZE (6U)
@@ -177,7 +183,7 @@ uint64_t mud_now (struct mud *mud)
 static
 uint64_t mud_dt (uint64_t a, uint64_t b)
 {
-    return (a >= b)?a-b:b-a;
+    return (a >= b) ? a-b : b-a;
 }
 
 static
@@ -347,16 +353,15 @@ void mud_set_path (struct path *path, unsigned index,
     path->index = index;
 
     if (addr->sa_family == AF_INET) {
-        if (addr != (struct sockaddr *)&path->addr)
-            memcpy(&path->addr, addr, sizeof(struct sockaddr_in));
+        memmove(&path->addr, addr, sizeof(struct sockaddr_in));
 
         memcpy(&path->ifa_in_addr,
                &((struct sockaddr_in *)ifa_addr)->sin_addr,
                sizeof(struct in_addr));
 
         cmsg->cmsg_level = IPPROTO_IP;
+        cmsg->cmsg_type = MUD_PKTINFO;
 #if defined IP_PKTINFO
-        cmsg->cmsg_type = IP_PKTINFO;
         cmsg->cmsg_len = CMSG_LEN(sizeof(struct in_pktinfo));
 
         memcpy(&((struct in_pktinfo *)CMSG_DATA(cmsg))->ipi_ifindex,
@@ -368,10 +373,9 @@ void mud_set_path (struct path *path, unsigned index,
 
         path->ctrl.size = CMSG_SPACE(sizeof(struct in_pktinfo));
 #elif defined IP_RECVDSTADDR
-        cmsg->cmsg_type = IP_RECVDSTADDR;
         cmsg->cmsg_len = CMSG_LEN(sizeof(struct in_addr));
 
-        memcpy((struct in_addr *)CMSG_DATA(cmsg),
+        memcpy(CMSG_DATA(cmsg),
                &((struct sockaddr_in *)ifa_addr)->sin_addr,
                sizeof(struct in_addr));
 
@@ -380,8 +384,7 @@ void mud_set_path (struct path *path, unsigned index,
     }
 
     if (addr->sa_family == AF_INET6) {
-        if (addr != (struct sockaddr *)&path->addr)
-            memcpy(&path->addr, addr, sizeof(struct sockaddr_in6));
+        memmove(&path->addr, addr, sizeof(struct sockaddr_in6));
 
         cmsg->cmsg_level = IPPROTO_IPV6;
         cmsg->cmsg_type = IPV6_PKTINFO;
@@ -424,7 +427,6 @@ void mud_reset_path (struct path *path, unsigned index, struct sockaddr *addr)
             continue;
 
         mud_set_path(path, index, addr, ifa_addr);
-
         break;
     }
 
@@ -549,15 +551,11 @@ int mud_set_time_tolerance_sec (struct mud *mud, unsigned sec)
 static
 int mud_setup_socket (int fd, int v4, int v6)
 {
-    if (mud_sso_int(fd, SOL_SOCKET, SO_REUSEADDR, 1) ||
-#if defined IP_PKTINFO
-        (v4 && mud_sso_int(fd, IPPROTO_IP, IP_PKTINFO, 1)) ||
-#elif defined IP_RECVDSTADDR
-        (v4 && mud_sso_int(fd, IPPROTO_IP, IP_RECVDSTADDR, 1)) ||
-#endif
+    if ((mud_sso_int(fd, SOL_SOCKET, SO_REUSEADDR, 1)) ||
+        (v4 && mud_sso_int(fd, IPPROTO_IP, MUD_PKTINFO, 1)) ||
         (v6 && mud_sso_int(fd, IPPROTO_IPV6, IPV6_RECVPKTINFO, 1)) ||
         (v6 && mud_sso_int(fd, IPPROTO_IPV6, IPV6_V6ONLY, !v4)) ||
-        mud_set_nonblock(fd))
+        (mud_set_nonblock(fd)))
         return -1;
 
     mud_sso_int(fd, SOL_SOCKET, SO_RCVBUF, 1<<24);
@@ -767,12 +765,7 @@ static
 struct cmsghdr *mud_get_pktinfo (struct msghdr *msg, int family)
 {
     int cmsg_level = IPPROTO_IP;
-
-#if defined IP_PKTINFO
-    int cmsg_type = IP_PKTINFO;
-#elif defined IP_RECVDSTADDR
-    int cmsg_type = IP_RECVDSTADDR;
-#endif
+    int cmsg_type = MUD_PKTINFO;
 
     if (family == AF_INET6) {
         cmsg_level = IPPROTO_IPV6;
