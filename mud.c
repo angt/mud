@@ -552,8 +552,8 @@ int mud_setup_socket (int fd, int v4, int v6)
         (mud_set_nonblock(fd)))
         return -1;
 
-    mud_sso_int(fd, SOL_SOCKET, SO_RCVBUF, 1<<24);
-    mud_sso_int(fd, SOL_SOCKET, SO_SNDBUF, 1<<24);
+//  mud_sso_int(fd, SOL_SOCKET, SO_RCVBUF, 1<<24);
+//  mud_sso_int(fd, SOL_SOCKET, SO_SNDBUF, 1<<24);
 
     return 0;
 }
