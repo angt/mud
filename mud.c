@@ -84,13 +84,6 @@
 #define MUD_PACKET_COUNT   ((MUD_PACKET_MASK)+1)
 #define MUD_PACKET_NEXT(X) (((X)+1)&(MUD_PACKET_MASK))
 
-struct path_info {
-    uint64_t dt;
-    uint64_t time;
-    uint64_t send_time;
-    uint64_t count;
-};
-
 struct path {
     struct {
         unsigned up : 1;
@@ -108,12 +101,13 @@ struct path {
     uint64_t rtt;
     int64_t  sdt;
     uint64_t limit;
+    uint64_t recv_time;
+    uint64_t recv_send_time;
+    uint64_t send_time;
     uint64_t ping_time;
     uint64_t pong_time;
     uint64_t last_time;
     unsigned last_count;
-    struct path_info recv;
-    struct path_info send;
     struct path *next;
 };
 
@@ -261,12 +255,12 @@ ssize_t mud_send_path (struct mud *mud, struct path *path, uint64_t now,
     ssize_t ret = sendmsg(mud->fd, &msg, 0);
 
     if ((ret == (ssize_t)size) &&
-        (path->recv.time > path->send.time)) {
+        (path->recv_time > path->send_time)) {
         path->last_time = now;
         path->last_count = 0;
     }
 
-    path->send.time = now;
+    path->send_time = now;
 
     return ret;
 }
@@ -810,7 +804,7 @@ void mud_pong_path (struct mud *mud, struct path *path, uint64_t now)
     unsigned char data[MUD_PONG_DATA_SIZE];
 
     mud_write48(data, now);
-    mud_write48(&data[MUD_TIME_SIZE], path->recv.send_time);
+    mud_write48(&data[MUD_TIME_SIZE], path->recv_send_time);
     mud_write48(&data[MUD_TIME_SIZE*2], path->rdt);
 
     int ret = mud_encrypt(mud, 0, pong, sizeof(pong),
@@ -1000,13 +994,13 @@ int mud_pull (struct mud *mud)
 
         path->state.up = 1;
 
-        int64_t dt = (now-path->recv.time)-(send_time-path->recv.send_time);
+        int64_t dt = (now-path->recv_time)-(send_time-path->recv_send_time);
 
-        if (path->recv.time && path->recv.send_time && (dt > 0))
+        if (path->recv_time && path->recv_send_time && (dt > 0))
             path->rdt = (path->rdt*UINT64_C(7)+dt)/UINT64_C(8);
 
-        path->recv.send_time = send_time;
-        path->recv.time = now;
+        path->recv_send_time = send_time;
+        path->recv_time = now;
 
         if (mud_packet && (ret == (ssize_t)MUD_PONG_SIZE)) {
             uint64_t old_send_time = mud_read48(&packet->data[MUD_TIME_SIZE*2]);
@@ -1066,15 +1060,15 @@ int mud_push (struct mud *mud)
         uint64_t now = mud_now(mud);
 
         if ((path->last_time) &&
-            (path->send.time > path->last_time) &&
-            (path->send.time-path->last_time
+            (path->send_time > path->last_time) &&
+            (path->send_time-path->last_time
                              > MUD_PONG_TIMEOUT+path->rtt+(path->rtt>>1))) {
             if (path->last_count == 4) {
                 path->last_time = 0;
                 path->last_count = 0;
                 path->state.up = 0;
             } else {
-                path->last_time = path->send.time;
+                path->last_time = path->send_time;
                 path->last_count++;
             }
         }
@@ -1090,10 +1084,10 @@ int mud_push (struct mud *mud)
             continue;
         }
 
-        if ((path->send.time) &&
+        if ((path->send_time) &&
             (!path->last_count) &&
-            (now > path->send.time) &&
-            (now-path->send.time) < mud->send_timeout)
+            (now > path->send_time) &&
+            (now-path->send_time) < mud->send_timeout)
             continue;
 
         mud_reset_path(path, path->index, (struct sockaddr *)&path->addr);
@@ -1113,7 +1107,7 @@ int mud_push (struct mud *mud)
                 continue;
 
             int64_t limit = path->limit;
-            uint64_t elapsed = now-path->send.time;
+            uint64_t elapsed = now-path->send_time;
 
             if (limit > elapsed) {
                 limit += path->rtt/2-elapsed;
