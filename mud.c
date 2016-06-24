@@ -208,6 +208,13 @@ void mud_unmapv4 (struct sockaddr *addr)
 }
 
 static
+size_t mud_addrlen (struct sockaddr_storage *addr)
+{
+    return (addr->ss_family == AF_INET) ? sizeof(struct sockaddr_in)
+                                        : sizeof(struct sockaddr_in6);
+}
+
+static
 int mud_addrinfo (struct sockaddr_storage *addr, const char *host, int port)
 {
     struct sockaddr_in sin = {
@@ -249,7 +256,7 @@ ssize_t mud_send_path (struct mud *mud, struct path *path, uint64_t now,
 
     struct msghdr msg = {
         .msg_name = &path->addr,
-        .msg_namelen = sizeof(path->addr),
+        .msg_namelen = mud_addrlen(&path->addr),
         .msg_iov = &iov,
         .msg_iovlen = 1,
         .msg_control = path->ctrl.data,
@@ -575,12 +582,8 @@ int mud_create_socket (int port, int v4, int v6)
     if (fd == -1)
         return -1;
 
-    socklen_t addrlen = (addr.ss_family == AF_INET)
-                      ? sizeof(struct sockaddr_in)
-                      : sizeof(struct sockaddr_in6);
-
     if (mud_setup_socket(fd, v4, v6) ||
-        bind(fd, (struct sockaddr *)&addr, addrlen)) {
+        bind(fd, (struct sockaddr *)&addr, mud_addrlen(&addr))) {
         int err = errno;
         close(fd);
         errno = err;
