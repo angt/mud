@@ -322,7 +322,7 @@ int mud_cmp_addr (struct sockaddr *a, struct sockaddr *b)
 }
 
 static
-struct path *mud_get_path (struct mud *mud, int index, struct in_addr *ifa_in_addr, struct sockaddr *addr)
+struct path *mud_get_path (struct mud *mud, unsigned index, struct in_addr *ifa_in_addr, struct sockaddr *addr)
 {
     struct path *path;
 
@@ -979,13 +979,7 @@ int mud_pull (struct mud *mud)
         struct path *path = mud_get_path(mud, index, &ifa_in_addr, (struct sockaddr *)&addr);
 
         if (!path) {
-            if (mud_packet && (ret == (ssize_t)MUD_PONG_SIZE))
-                continue;
-
-            unsigned char tmp[sizeof(packet->data)];
-
-            if (mud_decrypt(mud, NULL, tmp, sizeof(tmp),
-                            packet->data, (size_t)ret, 4) == -1)
+            if (ret != (ssize_t)MUD_PACKET_MIN_SIZE)
                 continue;
 
             path = mud_new_path(mud, index, (struct sockaddr *)&addr);
