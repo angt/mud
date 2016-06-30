@@ -17,6 +17,7 @@
 #include <string.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <time.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -173,9 +174,17 @@ uint64_t mud_read48 (const unsigned char *src)
 static
 uint64_t mud_now (struct mud *mud)
 {
-    struct timeval now;
-    gettimeofday(&now, NULL);
-    return (now.tv_sec*MUD_ONE_SEC+now.tv_usec)&((UINT64_C(1)<<48)-1);
+    uint64_t now;
+#if defined CLOCK_MONOTONIC
+    struct timespec tv;
+    clock_gettime(CLOCK_MONOTONIC, &tv);
+    now = tv.tv_sec*MUD_ONE_SEC+tv.tv_nsec/MUD_ONE_MSEC;
+#else
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    now = tv.tv_sec*MUD_ONE_SEC+tv.tv_usec;
+#endif
+    return now&((UINT64_C(1)<<48)-1);
 }
 
 static
