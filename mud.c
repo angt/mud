@@ -175,9 +175,9 @@ static
 uint64_t mud_now (struct mud *mud)
 {
     uint64_t now;
-#if defined CLOCK_MONOTONIC
+#if defined CLOCK_REALTIME
     struct timespec tv;
-    clock_gettime(CLOCK_MONOTONIC, &tv);
+    clock_gettime(CLOCK_REALTIME, &tv);
     now = tv.tv_sec*MUD_ONE_SEC+tv.tv_nsec/MUD_ONE_MSEC;
 #else
     struct timeval tv;
