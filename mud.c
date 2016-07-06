@@ -4,13 +4,6 @@
 #define __APPLE_USE_RFC_3542
 #endif
 
-#ifdef DEBUG
-#include <stdio.h>
-#define MUD_DEBUG(...) fprintf(stderr, __VA_ARGS__);
-#else
-#define MUD_DEBUG(...)
-#endif
-
 #include <stdlib.h>
 #include <inttypes.h>
 #include <unistd.h>
@@ -85,13 +78,20 @@
 #define MUD_PACKET_COUNT   ((MUD_PACKET_MASK)+1)
 #define MUD_PACKET_NEXT(X) (((X)+1)&(MUD_PACKET_MASK))
 
+struct ipaddr {
+    int family;
+    union {
+        struct in_addr v4;
+        struct in6_addr v6;
+    } ip;
+};
+
 struct path {
     struct {
         unsigned up : 1;
         unsigned active : 1;
     } state;
-    unsigned index;
-    struct in_addr ifa_in_addr;
+    struct ipaddr local_addr;
     struct sockaddr_storage addr;
     struct {
         unsigned char data[256];
@@ -331,16 +331,23 @@ int mud_cmp_addr (struct sockaddr *a, struct sockaddr *b)
 }
 
 static
-struct path *mud_get_path (struct mud *mud, unsigned index, struct in_addr *ifa_in_addr, struct sockaddr *addr)
+struct path *mud_get_path (struct mud *mud, struct ipaddr *local_addr, struct sockaddr *addr)
 {
     struct path *path;
 
     for (path = mud->path; path; path = path->next) {
-        if (index) {
-            if (path->index != index)
+        if (local_addr->family != path->local_addr.family)
+            continue;
+
+        if (local_addr->family == AF_INET) {
+            if (memcmp(&path->local_addr.ip.v4,
+                       &local_addr->ip.v4,
+                       sizeof(local_addr->ip.v4)))
                 continue;
-        } else if (ifa_in_addr) {
-            if (memcmp(&path->ifa_in_addr, ifa_in_addr, sizeof(struct in_addr)))
+        } else {
+            if (memcmp(&path->local_addr.ip.v6,
+                       &local_addr->ip.v6,
+                       sizeof(local_addr->ip.v6)))
                 continue;
         }
 
@@ -354,8 +361,7 @@ struct path *mud_get_path (struct mud *mud, unsigned index, struct in_addr *ifa_
 }
 
 static
-void mud_set_path (struct path *path, unsigned index,
-                   struct sockaddr *addr, struct sockaddr *ifa_addr)
+void mud_set_path (struct path *path, struct ipaddr *local_addr, struct sockaddr *addr)
 {
     struct msghdr msg = {
         .msg_control = path->ctrl.data,
@@ -364,25 +370,19 @@ void mud_set_path (struct path *path, unsigned index,
 
     struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
 
-    path->index = index;
+    memset(path->ctrl.data, 0, sizeof(path->ctrl.data));
+    memmove(&path->local_addr, local_addr, sizeof(struct ipaddr));
 
     if (addr->sa_family == AF_INET) {
         memmove(&path->addr, addr, sizeof(struct sockaddr_in));
-
-        memcpy(&path->ifa_in_addr,
-               &((struct sockaddr_in *)ifa_addr)->sin_addr,
-               sizeof(struct in_addr));
 
         cmsg->cmsg_level = IPPROTO_IP;
         cmsg->cmsg_type = MUD_PKTINFO;
 #if defined IP_PKTINFO
         cmsg->cmsg_len = CMSG_LEN(sizeof(struct in_pktinfo));
 
-        memcpy(&((struct in_pktinfo *)CMSG_DATA(cmsg))->ipi_ifindex,
-               &index, sizeof(index));
-
         memcpy(&((struct in_pktinfo *)CMSG_DATA(cmsg))->ipi_spec_dst,
-               &((struct sockaddr_in *)ifa_addr)->sin_addr,
+               &local_addr->ip.v4,
                sizeof(struct in_addr));
 
         path->ctrl.size = CMSG_SPACE(sizeof(struct in_pktinfo));
@@ -390,7 +390,7 @@ void mud_set_path (struct path *path, unsigned index,
         cmsg->cmsg_len = CMSG_LEN(sizeof(struct in_addr));
 
         memcpy(CMSG_DATA(cmsg),
-               &((struct sockaddr_in *)ifa_addr)->sin_addr,
+               &local_addr->ip.v4,
                sizeof(struct in_addr));
 
         path->ctrl.size = CMSG_SPACE(sizeof(struct in_addr));
@@ -404,11 +404,8 @@ void mud_set_path (struct path *path, unsigned index,
         cmsg->cmsg_type = IPV6_PKTINFO;
         cmsg->cmsg_len = CMSG_LEN(sizeof(struct in6_pktinfo));
 
-        memcpy(&((struct in6_pktinfo *)CMSG_DATA(cmsg))->ipi6_ifindex,
-               &index, sizeof(index));
-
         memcpy(&((struct in6_pktinfo *)CMSG_DATA(cmsg))->ipi6_addr,
-               &((struct sockaddr_in6 *)ifa_addr)->sin6_addr,
+               &local_addr->ip.v6,
                sizeof(struct in6_addr));
 
         path->ctrl.size = CMSG_SPACE(sizeof(struct in6_pktinfo));
@@ -416,41 +413,12 @@ void mud_set_path (struct path *path, unsigned index,
 }
 
 static
-void mud_reset_path (struct path *path, unsigned index, struct sockaddr *addr)
+struct path *mud_new_path (struct mud *mud, struct ipaddr *local_addr, struct sockaddr *addr)
 {
-    char name[IF_NAMESIZE];
+    if (local_addr->family != addr->sa_family)
+        return NULL;
 
-    if (if_indextoname(index, name) != name)
-        return;
-
-    struct ifaddrs *ifaddrs = NULL;
-
-    if ((getifaddrs(&ifaddrs) == -1) || !ifaddrs)
-        return;
-
-    for (struct ifaddrs *ifa = ifaddrs; ifa; ifa = ifa->ifa_next) {
-        struct sockaddr *ifa_addr = ifa->ifa_addr;
-
-        if (!ifa_addr)
-            continue;
-
-        if (ifa_addr->sa_family != addr->sa_family)
-            continue;
-
-        if (strncmp(name, ifa->ifa_name, sizeof(name)))
-            continue;
-
-        mud_set_path(path, index, addr, ifa_addr);
-        break;
-    }
-
-    freeifaddrs(ifaddrs);
-}
-
-static
-struct path *mud_new_path (struct mud *mud, unsigned index, struct sockaddr *addr)
-{
-    struct path *path = mud_get_path(mud, index, NULL, addr);
+    struct path *path = mud_get_path(mud, local_addr, addr);
 
     if (path)
         return path;
@@ -460,17 +428,33 @@ struct path *mud_new_path (struct mud *mud, unsigned index, struct sockaddr *add
     if (!path)
         return NULL;
 
-    mud_reset_path(path, index, addr);
-
-    if (!path->index) {
-        free(path);
-        return NULL;
-    }
+    mud_set_path(path, local_addr, addr);
 
     path->next = mud->path;
     mud->path = path;
 
     return path;
+}
+
+static
+int mud_ipaddrinfo (struct ipaddr *ipaddr, const char *name)
+{
+    if (!name) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (inet_pton(AF_INET, name, &ipaddr->ip.v4) == 1) {
+        ipaddr->family = AF_INET;
+        return 0;
+    }
+
+    if (inet_pton(AF_INET6, name, &ipaddr->ip.v6) == 1) {
+        ipaddr->family = AF_INET6;
+        return 0;
+    }
+
+    return -1;
 }
 
 int mud_peer (struct mud *mud, const char *name, const char *host, int port)
@@ -480,16 +464,9 @@ int mud_peer (struct mud *mud, const char *name, const char *host, int port)
         return -1;
     }
 
-    const size_t len = strlen(name);
+    struct ipaddr local_addr;
 
-    if (len >= IF_NAMESIZE) {
-        errno = EINVAL;
-        return -1;
-    }
-
-    unsigned index = if_nametoindex(name);
-
-    if (!index)
+    if (mud_ipaddrinfo(&local_addr, name))
         return -1;
 
     struct sockaddr_storage addr;
@@ -499,7 +476,7 @@ int mud_peer (struct mud *mud, const char *name, const char *host, int port)
 
     mud_unmapv4((struct sockaddr *)&addr);
 
-    struct path *path = mud_new_path(mud, index, (struct sockaddr *)&addr);
+    struct path *path = mud_new_path(mud, &local_addr, (struct sockaddr *)&addr);
 
     if (!path)
         return -1;
@@ -964,34 +941,35 @@ int mud_pull (struct mud *mud)
         if (!cmsg)
             continue;
 
-        unsigned index = 0;
-        struct in_addr ifa_in_addr;
+        struct ipaddr local_addr;
 
         if (cmsg->cmsg_level == IPPROTO_IP) {
+            local_addr.family = AF_INET;
 #if defined IP_PKTINFO
-            memcpy(&index,
-                   &((struct in_pktinfo *)CMSG_DATA(cmsg))->ipi_ifindex,
-                   sizeof(index));
+            memcpy(&local_addr.ip.v4,
+                   &((struct in_pktinfo *)CMSG_DATA(cmsg))->ipi_addr,
+                   sizeof(local_addr.ip.v4));
 #elif defined IP_RECVDSTADDR
-            memcpy(&ifa_in_addr,
+            memcpy(&local_addr.ip.v4,
                    (struct in_addr *)CMSG_DATA(cmsg),
-                   sizeof(struct in_addr));
+                   sizeof(local_addr.ip.v4));
 #endif
         }
 
         if (cmsg->cmsg_level == IPPROTO_IPV6) {
-            memcpy(&index,
-                   &((struct in6_pktinfo *)CMSG_DATA(cmsg))->ipi6_ifindex,
-                   sizeof(index));
+            local_addr.family = AF_INET6;
+            memcpy(&local_addr.ip.v6,
+                   &((struct in6_pktinfo *)CMSG_DATA(cmsg))->ipi6_addr,
+                   sizeof(local_addr.ip.v6));
         }
 
-        struct path *path = mud_get_path(mud, index, &ifa_in_addr, (struct sockaddr *)&addr);
+        struct path *path = mud_get_path(mud, &local_addr, (struct sockaddr *)&addr);
 
         if (!path) {
             if (ret != (ssize_t)MUD_PACKET_MIN_SIZE)
                 continue;
 
-            path = mud_new_path(mud, index, (struct sockaddr *)&addr);
+            path = mud_new_path(mud, &local_addr, (struct sockaddr *)&addr);
 
             if (!path)
                 return -1;
@@ -1095,7 +1073,6 @@ int mud_push (struct mud *mud)
             (now-path->send_time) < mud->send_timeout)
             continue;
 
-        mud_reset_path(path, path->index, (struct sockaddr *)&path->addr);
         mud_ping_path(mud, path, now);
     }
 
