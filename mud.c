@@ -22,9 +22,19 @@
 #include <sodium.h>
 
 #if defined IP_PKTINFO
+
 #define MUD_PKTINFO IP_PKTINFO
+#define MUD_PKTINFO_SRC(X) &((struct in_pktinfo *)(X))->ipi_addr
+#define MUD_PKTINFO_DST(X) &((struct in_pktinfo *)(X))->ipi_spec_dst
+#define MUD_PKTINFO_SIZE sizeof(struct in_pktinfo)
+
 #elif defined IP_RECVDSTADDR
+
 #define MUD_PKTINFO IP_RECVDSTADDR
+#define MUD_PKTINFO_SRC(X) (X)
+#define MUD_PKTINFO_DST(X) (X)
+#define MUD_PKTINFO_SIZE sizeof(struct in_addr)
+
 #endif
 
 #define MUD_COUNT(X)  (sizeof(X)/sizeof(X[0]))
@@ -378,23 +388,13 @@ void mud_set_path (struct path *path, struct ipaddr *local_addr, struct sockaddr
 
         cmsg->cmsg_level = IPPROTO_IP;
         cmsg->cmsg_type = MUD_PKTINFO;
-#if defined IP_PKTINFO
-        cmsg->cmsg_len = CMSG_LEN(sizeof(struct in_pktinfo));
+        cmsg->cmsg_len = CMSG_LEN(MUD_PKTINFO_SIZE);
 
-        memcpy(&((struct in_pktinfo *)CMSG_DATA(cmsg))->ipi_spec_dst,
+        memcpy(MUD_PKTINFO_DST(CMSG_DATA(cmsg)),
                &local_addr->ip.v4,
                sizeof(struct in_addr));
 
-        path->ctrl.size = CMSG_SPACE(sizeof(struct in_pktinfo));
-#elif defined IP_RECVDSTADDR
-        cmsg->cmsg_len = CMSG_LEN(sizeof(struct in_addr));
-
-        memcpy(CMSG_DATA(cmsg),
-               &local_addr->ip.v4,
-               sizeof(struct in_addr));
-
-        path->ctrl.size = CMSG_SPACE(sizeof(struct in_addr));
-#endif
+        path->ctrl.size = CMSG_SPACE(MUD_PKTINFO_SIZE);
     }
 
     if (addr->sa_family == AF_INET6) {
@@ -945,22 +945,16 @@ int mud_pull (struct mud *mud)
 
         if (cmsg->cmsg_level == IPPROTO_IP) {
             local_addr.family = AF_INET;
-#if defined IP_PKTINFO
             memcpy(&local_addr.ip.v4,
-                   &((struct in_pktinfo *)CMSG_DATA(cmsg))->ipi_addr,
-                   sizeof(local_addr.ip.v4));
-#elif defined IP_RECVDSTADDR
-            memcpy(&local_addr.ip.v4,
-                   (struct in_addr *)CMSG_DATA(cmsg),
-                   sizeof(local_addr.ip.v4));
-#endif
+                   MUD_PKTINFO_SRC(CMSG_DATA(cmsg)),
+                   sizeof(struct in_addr));
         }
 
         if (cmsg->cmsg_level == IPPROTO_IPV6) {
             local_addr.family = AF_INET6;
             memcpy(&local_addr.ip.v6,
                    &((struct in6_pktinfo *)CMSG_DATA(cmsg))->ipi6_addr,
-                   sizeof(local_addr.ip.v6));
+                   sizeof(struct in6_addr));
         }
 
         struct path *path = mud_get_path(mud, &local_addr, (struct sockaddr *)&addr);
