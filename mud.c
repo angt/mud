@@ -47,7 +47,7 @@
 
 #define MUD_PACKET_MIN_SIZE (MUD_NPUB_SIZE+MUD_AD_SIZE)
 
-#define MUD_PONG_DATA_SIZE (3*MUD_TIME_SIZE)
+#define MUD_PONG_DATA_SIZE (MUD_TIME_SIZE*3)
 #define MUD_PONG_SIZE      (MUD_PONG_DATA_SIZE+MUD_PACKET_MIN_SIZE)
 
 #define MUD_KEYX_DATA_SIZE (MUD_TIME_SIZE+2*crypto_scalarmult_BYTES)
@@ -133,17 +133,18 @@ struct queue {
     unsigned end;
 };
 
+struct public {
+    unsigned char send[crypto_scalarmult_BYTES];
+    unsigned char recv[crypto_scalarmult_BYTES];
+};
+
 struct crypto {
     uint64_t time;
     unsigned char secret[crypto_scalarmult_SCALARBYTES];
-    struct {
-        unsigned char secret[crypto_scalarmult_BYTES];
-        unsigned char send[crypto_scalarmult_BYTES];
-        unsigned char recv[crypto_scalarmult_BYTES];
-    } share;
+    struct public public;
     struct {
         unsigned char private[MUD_KEY_SIZE];
-        unsigned char old[MUD_KEY_SIZE];
+        unsigned char last[MUD_KEY_SIZE];
         unsigned char send[MUD_KEY_SIZE];
         unsigned char recv[MUD_KEY_SIZE];
     } key;
@@ -341,7 +342,8 @@ int mud_cmp_addr (struct sockaddr *a, struct sockaddr *b)
 }
 
 static
-struct path *mud_get_path (struct mud *mud, struct ipaddr *local_addr, struct sockaddr *addr)
+struct path *mud_get_path (struct mud *mud, struct ipaddr *local_addr,
+                           struct sockaddr *addr)
 {
     struct path *path;
 
@@ -371,7 +373,8 @@ struct path *mud_get_path (struct mud *mud, struct ipaddr *local_addr, struct so
 }
 
 static
-void mud_set_path (struct path *path, struct ipaddr *local_addr, struct sockaddr *addr)
+void mud_set_path (struct path *path, struct ipaddr *local_addr,
+                   struct sockaddr *addr)
 {
     struct msghdr msg = {
         .msg_control = path->ctrl.data,
@@ -413,7 +416,8 @@ void mud_set_path (struct path *path, struct ipaddr *local_addr, struct sockaddr
 }
 
 static
-struct path *mud_new_path (struct mud *mud, struct ipaddr *local_addr, struct sockaddr *addr)
+struct path *mud_new_path (struct mud *mud, struct ipaddr *local_addr,
+                           struct sockaddr *addr)
 {
     if (local_addr->family != addr->sa_family)
         return NULL;
@@ -507,8 +511,7 @@ int mud_set_key (struct mud *mud, unsigned char *key, size_t size)
     }
 
     memcpy(mud->crypto.key.private, key, MUD_KEY_SIZE);
-    memcpy(mud->crypto.key.old, key, MUD_KEY_SIZE);
-
+    memcpy(mud->crypto.key.last, key, MUD_KEY_SIZE);
     memcpy(mud->crypto.key.send, key, MUD_KEY_SIZE);
     memcpy(mud->crypto.key.recv, key, MUD_KEY_SIZE);
 
@@ -706,7 +709,7 @@ int mud_decrypt (struct mud *mud, uint64_t *nonce,
 
     unsigned char *keys[] = {
         mud->crypto.key.private,
-        mud->crypto.key.old,
+        mud->crypto.key.last,
         mud->crypto.key.recv,
     };
 
@@ -753,7 +756,7 @@ int mud_is_up (struct mud *mud)
 }
 
 static
-struct cmsghdr *mud_get_pktinfo (struct msghdr *msg, int family)
+int mud_localaddr (struct ipaddr *local_addr, struct msghdr *msg, int family)
 {
     int cmsg_level = IPPROTO_IP;
     int cmsg_type = MUD_PKTINFO;
@@ -768,10 +771,25 @@ struct cmsghdr *mud_get_pktinfo (struct msghdr *msg, int family)
     for (; cmsg; cmsg = CMSG_NXTHDR(msg, cmsg)) {
         if ((cmsg->cmsg_level == cmsg_level) &&
             (cmsg->cmsg_type == cmsg_type))
-            return cmsg;
+            break;
     }
 
-    return NULL;
+    if (!cmsg)
+        return 1;
+
+    local_addr->family = family;
+
+    if (family == AF_INET) {
+        memcpy(&local_addr->ip.v4,
+               MUD_PKTINFO_SRC(CMSG_DATA(cmsg)),
+               sizeof(struct in_addr));
+    } else {
+        memcpy(&local_addr->ip.v6,
+               &((struct in6_pktinfo *)CMSG_DATA(cmsg))->ipi6_addr,
+               sizeof(struct in6_addr));
+    }
+
+    return 0;
 }
 
 static
@@ -823,12 +841,8 @@ void mud_keyx_path (struct mud *mud, struct path *path, uint64_t now)
     mud_write48(data, now);
 
     memcpy(&data[MUD_TIME_SIZE],
-           mud->crypto.share.send,
-           sizeof(mud->crypto.share.send));
-
-    memcpy(&data[MUD_TIME_SIZE+sizeof(mud->crypto.share.send)],
-           mud->crypto.share.recv,
-           sizeof(mud->crypto.share.recv));
+           &mud->crypto.public,
+           sizeof(mud->crypto.public));
 
     int ret = mud_encrypt(mud, 0, keyx, sizeof(keyx),
                           data, sizeof(data), sizeof(data));
@@ -841,36 +855,54 @@ void mud_keyx_path (struct mud *mud, struct path *path, uint64_t now)
 }
 
 static
-void mud_recv_keyx (struct mud *mud, struct path *path, uint64_t now, unsigned char *data, size_t size)
+void mud_recv_keyx (struct mud *mud, struct path *path, uint64_t now,
+                    unsigned char *data)
 {
-    if ((memcmp(mud->crypto.share.send, &data[crypto_scalarmult_BYTES], crypto_scalarmult_BYTES)) ||
-        (memcmp(mud->crypto.share.recv, data, crypto_scalarmult_BYTES))) {
-        memcpy(mud->crypto.share.recv, data, crypto_scalarmult_BYTES);
+    struct {
+        unsigned char secret[crypto_scalarmult_BYTES];
+        struct public public;
+    } shared_send, shared_recv;
+
+    memcpy(&shared_recv.public, data, sizeof(shared_recv.public));
+
+    memcpy(shared_send.public.send, shared_recv.public.recv,
+           sizeof(shared_send.public.send));
+
+    memcpy(shared_send.public.recv, shared_recv.public.send,
+           sizeof(shared_send.public.recv));
+
+    if (memcmp(&shared_send.public, &mud->crypto.public,
+               sizeof(shared_recv.public))) {
+        memcpy(mud->crypto.public.recv, shared_recv.public.send,
+               sizeof(mud->crypto.public.recv));
         mud_keyx_path(mud, path, now);
         return;
     }
 
-    if (crypto_scalarmult(mud->crypto.share.secret, mud->crypto.secret, mud->crypto.share.recv))
+    if (crypto_scalarmult(shared_recv.secret, mud->crypto.secret,
+                          mud->crypto.public.recv))
         return;
 
-    unsigned char tmp[MUD_KEY_SIZE];
+    memcpy(shared_send.secret, shared_recv.secret,
+           sizeof(shared_send.secret));
+
+    memcpy(mud->crypto.key.last, mud->crypto.key.recv, MUD_KEY_SIZE);
 
     crypto_generichash(mud->crypto.key.send, MUD_KEY_SIZE,
-                       (unsigned char *)&mud->crypto.share, sizeof(mud->crypto.share),
+                       (unsigned char *)&shared_send,
+                       sizeof(shared_send),
                        mud->crypto.key.private, MUD_KEY_SIZE);
 
-    memcpy(tmp, mud->crypto.share.recv, sizeof(tmp));
-    memcpy(mud->crypto.share.recv, mud->crypto.share.send, sizeof(tmp));
-    memcpy(mud->crypto.share.send, tmp, sizeof(tmp));
-
-    memcpy(mud->crypto.key.old, mud->crypto.key.recv, MUD_KEY_SIZE);
-
     crypto_generichash(mud->crypto.key.recv, MUD_KEY_SIZE,
-                       (unsigned char *)&mud->crypto.share, sizeof(mud->crypto.share),
+                       (unsigned char *)&shared_recv,
+                       sizeof(shared_recv),
                        mud->crypto.key.private, MUD_KEY_SIZE);
 
     sodium_memzero(mud->crypto.secret, sizeof(mud->crypto.secret));
-    sodium_memzero(&mud->crypto.share, sizeof(mud->crypto.share));
+    sodium_memzero(&mud->crypto.public, sizeof(mud->crypto.public));
+
+    sodium_memzero(&shared_recv, sizeof(shared_recv));
+    sodium_memzero(&shared_send, sizeof(shared_send));
 }
 
 int mud_pull (struct mud *mud)
@@ -936,28 +968,13 @@ int mud_pull (struct mud *mud)
 
         mud_unmapv4((struct sockaddr *)&addr);
 
-        struct cmsghdr *cmsg = mud_get_pktinfo(&msg, addr.ss_family);
-
-        if (!cmsg)
-            continue;
-
         struct ipaddr local_addr;
 
-        if (cmsg->cmsg_level == IPPROTO_IP) {
-            local_addr.family = AF_INET;
-            memcpy(&local_addr.ip.v4,
-                   MUD_PKTINFO_SRC(CMSG_DATA(cmsg)),
-                   sizeof(struct in_addr));
-        }
+        if (mud_localaddr(&local_addr, &msg, addr.ss_family))
+            continue;
 
-        if (cmsg->cmsg_level == IPPROTO_IPV6) {
-            local_addr.family = AF_INET6;
-            memcpy(&local_addr.ip.v6,
-                   &((struct in6_pktinfo *)CMSG_DATA(cmsg))->ipi6_addr,
-                   sizeof(struct in6_addr));
-        }
-
-        struct path *path = mud_get_path(mud, &local_addr, (struct sockaddr *)&addr);
+        struct path *path = mud_get_path(mud, &local_addr,
+                                         (struct sockaddr *)&addr);
 
         if (!path) {
             if (ret != (ssize_t)MUD_PACKET_MIN_SIZE)
@@ -993,7 +1010,7 @@ int mud_pull (struct mud *mud)
 
         if (mud_packet) {
             if (ret == (ssize_t)MUD_KEYX_SIZE)
-                mud_recv_keyx(mud, path, now, &packet->data[2*MUD_TIME_SIZE], ret-2*MUD_TIME_SIZE);
+                mud_recv_keyx(mud, path, now, &packet->data[MUD_TIME_SIZE*2]);
             continue;
         }
 
@@ -1054,9 +1071,9 @@ int mud_push (struct mud *mud)
             continue;
 
         if (path->state.up && (now-mud->crypto.time >= MUD_KEYX_TIMEOUT)) {
+            memset(&mud->crypto.public, 0, sizeof(mud->crypto.public));
             randombytes_buf(mud->crypto.secret, sizeof(mud->crypto.secret));
-            crypto_scalarmult_base(mud->crypto.share.send, mud->crypto.secret);
-            memset(mud->crypto.share.recv, 0, sizeof(mud->crypto.share.recv));
+            crypto_scalarmult_base(mud->crypto.public.send, mud->crypto.secret);
             mud_keyx_path(mud, path, now);
             continue;
         }
@@ -1100,7 +1117,8 @@ int mud_push (struct mud *mud)
         if (!path_min)
             break;
 
-        ssize_t ret = mud_send_path(mud, path_min, now, packet->data, packet->size);
+        ssize_t ret = mud_send_path(mud, path_min, now,
+                                    packet->data, packet->size);
 
         mud->tx.start = MUD_PACKET_NEXT(mud->tx.start);
 
