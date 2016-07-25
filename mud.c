@@ -697,6 +697,9 @@ int mud_encrypt (struct mud *mud, uint64_t nonce,
                  const unsigned char *src, size_t src_size,
                  size_t ad_size)
 {
+    if (!nonce)
+        return 0;
+
     if (ad_size > src_size)
         ad_size = src_size;
 
@@ -719,14 +722,10 @@ int mud_encrypt (struct mud *mud, uint64_t nonce,
     if (src)
         memcpy(dst+MUD_TIME_SIZE, src, ad_size);
 
-    if (nonce) {
-        if (mud->crypto.use_next) {
-            mud_encrypt_opt(&mud->crypto.next, &opt);
-        } else {
-            mud_encrypt_opt(&mud->crypto.current, &opt);
-        }
+    if (mud->crypto.use_next) {
+        mud_encrypt_opt(&mud->crypto.next, &opt);
     } else {
-        mud_encrypt_opt(&mud->crypto.private, &opt);
+        mud_encrypt_opt(&mud->crypto.current, &opt);
     }
 
     return size;
@@ -836,30 +835,36 @@ static
 void mud_ctrl_path (struct mud *mud, enum mud_msg msg, struct path *path,
                     uint64_t now)
 {
-    unsigned char data[256];
-    unsigned char ctrl[sizeof(data)+MUD_PACKET_MIN_SIZE];
-    size_t size = MUD_TIME_SIZE;
+    struct {
+        unsigned char zero[MUD_TIME_SIZE];
+        unsigned char time[MUD_TIME_SIZE];
+        unsigned char data[128+MUD_MAC_SIZE];
+    } ctrl;
 
-    mud_write48(data, now);
+    size_t size = 0;
+
+    memset(ctrl.zero, 0, MUD_TIME_SIZE);
+    mud_write48(ctrl.time, now);
 
     if (msg == mud_pong) {
-        mud_write48(&data[MUD_TIME_SIZE], path->recv_send_time);
-        mud_write48(&data[MUD_TIME_SIZE*2], path->rdt);
-        size += MUD_TIME_SIZE*2;
+        mud_write48(&ctrl.data[0], path->recv_send_time);
+        mud_write48(&ctrl.data[MUD_TIME_SIZE], path->rdt);
+        size = MUD_TIME_SIZE*2;
     }
 
     if (msg == mud_keyx) {
-        memcpy(&data[MUD_TIME_SIZE], &mud->crypto.public,
-               sizeof(mud->crypto.public));
-        size += sizeof(mud->crypto.public);
+        memcpy(ctrl.data, &mud->crypto.public, sizeof(mud->crypto.public));
+        size = sizeof(mud->crypto.public);
     }
 
-    int ret = mud_encrypt(mud, 0, ctrl, sizeof(ctrl), data, size, size);
+    struct crypto_opt opt = {
+        .dst = ctrl.data+size,
+        .ad  = { .data = ctrl.zero,
+                 .size = size+2*MUD_TIME_SIZE },
+    };
 
-    if (ret <= 0)
-        return;
-
-    mud_send_path(mud, path, now, ctrl, ret);
+    mud_encrypt_opt(&mud->crypto.private, &opt);
+    mud_send_path(mud, path, now, &ctrl, size+2*MUD_TIME_SIZE+MUD_MAC_SIZE);
 }
 
 static
