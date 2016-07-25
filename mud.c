@@ -85,6 +85,7 @@ struct path {
         unsigned char data[256];
         size_t size;
     } ctrl;
+    unsigned char *tc;
     uint64_t dt;
     uint64_t rdt;
     uint64_t rtt;
@@ -102,6 +103,7 @@ struct path {
 
 struct packet {
     size_t size;
+    int tc;
     unsigned char data[MUD_PACKET_MAX_SIZE];
 };
 
@@ -286,7 +288,7 @@ int mud_addrinfo (struct sockaddr_storage *addr, const char *host, int port)
 
 static
 ssize_t mud_send_path (struct mud *mud, struct path *path, uint64_t now,
-                       void *data, size_t size)
+                       void *data, size_t size, int tc)
 {
     if (!size)
         return 0;
@@ -304,6 +306,9 @@ ssize_t mud_send_path (struct mud *mud, struct path *path, uint64_t now,
         .msg_control = path->ctrl.data,
         .msg_controllen = path->ctrl.size,
     };
+
+    if (path->tc)
+        memcpy(path->tc, &tc, sizeof(tc));
 
     ssize_t ret = sendmsg(mud->fd, &msg, 0);
 
@@ -419,7 +424,15 @@ void mud_set_path (struct path *path, struct ipaddr *local_addr,
                &local_addr->ip.v4,
                sizeof(struct in_addr));
 
-        path->ctrl.size = CMSG_SPACE(MUD_PKTINFO_SIZE);
+        cmsg = CMSG_NXTHDR(&msg, cmsg);
+
+        cmsg->cmsg_level = IPPROTO_IP;
+        cmsg->cmsg_type = IP_TOS;
+        cmsg->cmsg_len = CMSG_LEN(sizeof(int));
+
+        path->tc = CMSG_DATA(cmsg);
+        path->ctrl.size = CMSG_SPACE(MUD_PKTINFO_SIZE)
+                        + CMSG_SPACE(sizeof(int));
     }
 
     if (addr->sa_family == AF_INET6) {
@@ -433,7 +446,15 @@ void mud_set_path (struct path *path, struct ipaddr *local_addr,
                &local_addr->ip.v6,
                sizeof(struct in6_addr));
 
-        path->ctrl.size = CMSG_SPACE(sizeof(struct in6_pktinfo));
+        cmsg = CMSG_NXTHDR(&msg, cmsg);
+
+        cmsg->cmsg_level = IPPROTO_IPV6;
+        cmsg->cmsg_type = IPV6_TCLASS;
+        cmsg->cmsg_len = CMSG_LEN(sizeof(int));
+
+        path->tc = CMSG_DATA(cmsg);
+        path->ctrl.size = CMSG_SPACE(sizeof(struct in6_pktinfo))
+                        + CMSG_SPACE(sizeof(int));
     }
 }
 
@@ -694,14 +715,10 @@ void mud_delete (struct mud *mud)
 static
 int mud_encrypt (struct mud *mud, uint64_t nonce,
                  unsigned char *dst, size_t dst_size,
-                 const unsigned char *src, size_t src_size,
-                 size_t ad_size)
+                 const unsigned char *src, size_t src_size)
 {
     if (!nonce)
         return 0;
-
-    if (ad_size > src_size)
-        ad_size = src_size;
 
     size_t size = src_size+MUD_PACKET_MIN_SIZE;
 
@@ -709,18 +726,15 @@ int mud_encrypt (struct mud *mud, uint64_t nonce,
         return 0;
 
     struct crypto_opt opt = {
-        .dst = dst+ad_size+MUD_TIME_SIZE,
-        .src = { .data = src+ad_size,
-                 .size = src_size-ad_size },
+        .dst = dst+MUD_TIME_SIZE,
+        .src = { .data = src,
+                 .size = src_size },
         .ad  = { .data = dst,
-                 .size = ad_size+MUD_TIME_SIZE },
+                 .size = MUD_TIME_SIZE },
     };
 
     mud_write48(opt.npub, nonce);
     memcpy(dst, opt.npub, MUD_TIME_SIZE);
-
-    if (src)
-        memcpy(dst+MUD_TIME_SIZE, src, ad_size);
 
     if (mud->crypto.use_next) {
         mud_encrypt_opt(&mud->crypto.next, &opt);
@@ -734,27 +748,22 @@ int mud_encrypt (struct mud *mud, uint64_t nonce,
 static
 int mud_decrypt (struct mud *mud,
                  unsigned char *dst, size_t dst_size,
-                 const unsigned char *src, size_t src_size,
-                 size_t ad_size)
+                 const unsigned char *src, size_t src_size)
 {
     size_t size = src_size-MUD_PACKET_MIN_SIZE;
-
-    if (ad_size > size)
-        ad_size = size;
 
     if (size > dst_size)
         return 0;
 
     struct crypto_opt opt = {
-        .dst = dst+ad_size,
-        .src = { .data = src+ad_size+MUD_TIME_SIZE,
-                 .size = src_size-ad_size-MUD_TIME_SIZE },
+        .dst = dst,
+        .src = { .data = src+MUD_TIME_SIZE,
+                 .size = src_size-MUD_TIME_SIZE },
         .ad  = { .data = src,
-                 .size = ad_size+MUD_TIME_SIZE },
+                 .size = MUD_TIME_SIZE },
     };
 
     memcpy(opt.npub, src, MUD_TIME_SIZE);
-    memcpy(dst, src+MUD_TIME_SIZE, ad_size);
 
     if (mud_decrypt_opt(&mud->crypto.current, &opt)) {
         if (!mud_decrypt_opt(&mud->crypto.next, &opt)) {
@@ -864,7 +873,7 @@ void mud_ctrl_path (struct mud *mud, enum mud_msg msg, struct path *path,
     };
 
     mud_encrypt_opt(&mud->crypto.private, &opt);
-    mud_send_path(mud, path, now, &ctrl, size+2*MUD_TIME_SIZE+MUD_MAC_SIZE);
+    mud_send_path(mud, path, now, &ctrl, size+2*MUD_TIME_SIZE+MUD_MAC_SIZE, 0);
 }
 
 static
@@ -1060,8 +1069,7 @@ int mud_recv (struct mud *mud, void *data, size_t size)
 
     struct packet *packet = &mud->rx.packet[mud->rx.start];
 
-    int ret = mud_decrypt(mud, data, size,
-                          packet->data, packet->size, 4);
+    int ret = mud_decrypt(mud, data, size, packet->data, packet->size);
 
     mud->rx.start = MUD_PACKET_NEXT(mud->rx.start);
 
@@ -1146,7 +1154,7 @@ int mud_push (struct mud *mud)
             break;
 
         ssize_t ret = mud_send_path(mud, path_min, now,
-                                    packet->data, packet->size);
+                                    packet->data, packet->size, packet->tc);
 
         mud->tx.start = MUD_PACKET_NEXT(mud->tx.start);
 
@@ -1159,7 +1167,7 @@ int mud_push (struct mud *mud)
     return 0;
 }
 
-int mud_send (struct mud *mud, const void *data, size_t size)
+int mud_send (struct mud *mud, const void *data, size_t size, int tc)
 {
     if (!size)
         return 0;
@@ -1175,7 +1183,7 @@ int mud_send (struct mud *mud, const void *data, size_t size)
 
     int ret = mud_encrypt(mud, mud_now(mud),
                           packet->data, sizeof(packet->data),
-                          data, size, 4);
+                          data, size);
 
     if (!ret) {
         errno = EMSGSIZE;
@@ -1183,6 +1191,8 @@ int mud_send (struct mud *mud, const void *data, size_t size)
     }
 
     packet->size = ret;
+    packet->tc = tc;
+
     mud->tx.end = next;
 
     return size;

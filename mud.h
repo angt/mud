@@ -25,4 +25,4 @@ int mud_pull (struct mud *);
 int mud_push (struct mud *);
 
 int mud_recv (struct mud *, void *, size_t);
-int mud_send (struct mud *, const void *, size_t);
+int mud_send (struct mud *, const void *, size_t, int);
