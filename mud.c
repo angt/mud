@@ -77,6 +77,7 @@ struct ipaddr {
 struct path {
     struct {
         unsigned up : 1;
+        unsigned on : 1;
         unsigned active : 1;
     } state;
     struct ipaddr local_addr;
@@ -341,6 +342,24 @@ int mud_sso_int (int fd, int level, int optname, int opt)
 }
 
 static
+int mud_cmp_ipaddr (struct ipaddr *a, struct ipaddr *b)
+{
+    if (a == b)
+        return 0;
+
+    if (a->family != b->family)
+        return 1;
+
+    if (a->family == AF_INET)
+        return memcmp(&a->ip.v4, &b->ip.v4, sizeof(a->ip.v4));
+
+    if (a->family == AF_INET6)
+        return memcmp(&a->ip.v6, &b->ip.v6, sizeof(a->ip.v6));
+
+    return 1;
+}
+
+static
 int mud_cmp_addr (struct sockaddr *a, struct sockaddr *b)
 {
     if (a == b)
@@ -377,18 +396,8 @@ struct path *mud_get_path (struct mud *mud, struct ipaddr *local_addr,
     struct path *path;
 
     for (path = mud->path; path; path = path->next) {
-        if (local_addr->family != path->local_addr.family)
+        if (mud_cmp_ipaddr(local_addr, &path->local_addr))
             continue;
-
-        if (local_addr->family == AF_INET) {
-            if (memcmp(&path->local_addr.ip.v4, &local_addr->ip.v4,
-                       sizeof(local_addr->ip.v4)))
-                continue;
-        } else {
-            if (memcmp(&path->local_addr.ip.v6, &local_addr->ip.v6,
-                       sizeof(local_addr->ip.v6)))
-                continue;
-        }
 
         if (mud_cmp_addr(addr, (struct sockaddr *)&path->addr))
             continue;
@@ -477,6 +486,8 @@ struct path *mud_new_path (struct mud *mud, struct ipaddr *local_addr,
 
     mud_set_path(path, local_addr, addr);
 
+    path->state.on = 1;
+
     path->next = mud->path;
     mud->path = path;
 
@@ -502,6 +513,33 @@ int mud_ipaddrinfo (struct ipaddr *ipaddr, const char *name)
     }
 
     return -1;
+}
+
+int mud_set_on (struct mud *mud, const char *name, int on)
+{
+    if (!name) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    struct ipaddr local_addr;
+
+    if (mud_ipaddrinfo(&local_addr, name))
+        return -1;
+
+    struct path *path = NULL;
+
+    for (path = mud->path; path; path = path->next) {
+        if (!path->state.active)
+            continue;
+
+        if (mud_cmp_ipaddr(&local_addr, &path->local_addr))
+            continue;
+
+        path->state.on = on;
+    }
+
+    return 0;
 }
 
 int mud_peer (struct mud *mud, const char *name, const char *host, int port)
@@ -1086,6 +1124,9 @@ int mud_push (struct mud *mud)
     struct path *path;
 
     for (path = mud->path; path; path = path->next) {
+        if (!path->state.on)
+            continue;
+
         uint64_t now = mud_now(mud);
 
         if ((path->last_time) &&
@@ -1132,7 +1173,7 @@ int mud_push (struct mud *mud)
         int64_t limit_min = INT64_MAX;
 
         for (path = mud->path; path; path = path->next) {
-            if (!path->state.up)
+            if (!path->state.up || !path->state.on)
                 continue;
 
             int64_t limit = path->limit;
