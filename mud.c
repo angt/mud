@@ -833,12 +833,14 @@ int mud_is_up (struct mud *mud)
 {
     struct path *path;
 
-    int ret = 0;
+    int up = 0;
 
-    for (path = mud->path; path; path = path->next)
-        ret += path->state.up;
+    for (path = mud->path; path; path = path->next) {
+        if (path->state.on)
+            up += path->state.up;
+    }
 
-    return ret;
+    return up;
 }
 
 static
