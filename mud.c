@@ -390,25 +390,6 @@ int mud_cmp_addr (struct sockaddr *a, struct sockaddr *b)
 }
 
 static
-struct path *mud_get_path (struct mud *mud, struct ipaddr *local_addr,
-                           struct sockaddr *addr)
-{
-    struct path *path;
-
-    for (path = mud->path; path; path = path->next) {
-        if (mud_cmp_ipaddr(local_addr, &path->local_addr))
-            continue;
-
-        if (mud_cmp_addr(addr, (struct sockaddr *)&path->addr))
-            continue;
-
-        break;
-    }
-
-    return path;
-}
-
-static
 void mud_set_path (struct path *path, struct ipaddr *local_addr,
                    struct sockaddr *addr)
 {
@@ -468,15 +449,27 @@ void mud_set_path (struct path *path, struct ipaddr *local_addr,
 }
 
 static
-struct path *mud_new_path (struct mud *mud, struct ipaddr *local_addr,
-                           struct sockaddr *addr)
+struct path *mud_path (struct mud *mud, struct ipaddr *local_addr,
+                       struct sockaddr *addr, int create)
 {
-    if (local_addr->family != addr->sa_family)
+    if (local_addr->family != addr->sa_family) {
+        errno = EINVAL;
         return NULL;
+    }
 
-    struct path *path = mud_get_path(mud, local_addr, addr);
+    struct path *path;
 
-    if (path)
+    for (path = mud->path; path; path = path->next) {
+        if (mud_cmp_ipaddr(local_addr, &path->local_addr))
+            continue;
+
+        if (mud_cmp_addr(addr, (struct sockaddr *)&path->addr))
+            continue;
+
+        break;
+    }
+
+    if (path || !create)
         return path;
 
     path = calloc(1, sizeof(struct path));
@@ -561,7 +554,8 @@ int mud_peer (struct mud *mud, const char *name, const char *host, int port)
 
     mud_unmapv4((struct sockaddr *)&addr);
 
-    struct path *path = mud_new_path(mud, &local_addr, (struct sockaddr *)&addr);
+    struct path *path = mud_path(mud, &local_addr,
+            (struct sockaddr *)&addr, 1);
 
     if (!path)
         return -1;
@@ -1049,18 +1043,11 @@ int mud_pull (struct mud *mud)
         if (mud_localaddr(&local_addr, &msg, addr.ss_family))
             continue;
 
-        struct path *path = mud_get_path(mud, &local_addr,
-                                         (struct sockaddr *)&addr);
+        struct path *path = mud_path(mud, &local_addr,
+                (struct sockaddr *)&addr, mud_packet);
 
-        if (!path) {
-            if (!mud_packet)
-                continue;
-
-            path = mud_new_path(mud, &local_addr, (struct sockaddr *)&addr);
-
-            if (!path)
-                return -1;
-        }
+        if (!path)
+            return -1;
 
         path->state.up = 1;
 
