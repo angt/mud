@@ -143,6 +143,7 @@ struct crypto {
     struct crypto_key private, last, next, current;
     int use_next;
     int aes;
+    int bad_key;
 };
 
 struct mud {
@@ -1049,7 +1050,8 @@ int mud_pull (struct mud *mud)
         if (!path)
             return -1;
 
-        path->state.up = 1;
+        if (mud_packet)
+            path->state.up = 1;
 
         int64_t dt = (now-path->recv_time)-(send_time-path->recv_send_time);
 
@@ -1101,6 +1103,7 @@ int mud_recv (struct mud *mud, void *data, size_t size)
     mud->rx.start = MUD_PACKET_NEXT(mud->rx.start);
 
     if (ret == -1) {
+        mud->crypto.bad_key = 1;
         errno = EINVAL;
         return -1;
     }
@@ -1132,10 +1135,15 @@ int mud_push (struct mud *mud)
             }
         }
 
-        if (!path->state.active)
+        if (!path->state.active) {
+            if (mud->crypto.bad_key) {
+                mud_ctrl_path(mud, mud_keyx, path, now);
+                mud->crypto.bad_key = 0;
+            }
             continue;
+        }
 
-        if (path->state.up && (now-mud->crypto.time >= MUD_KEYX_TIMEOUT)) {
+        if ((now-mud->crypto.time >= MUD_KEYX_TIMEOUT)) {
             mud_ctrl_path(mud, mud_keyx, path, now);
             mud->crypto.time = now;
             continue;
