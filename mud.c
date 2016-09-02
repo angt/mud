@@ -824,6 +824,29 @@ int mud_can_push (struct mud *mud)
     return (mud->tx.start != mud->tx.end);
 }
 
+int mud_peer_is_up (struct mud *mud, const char *name, const char *host, int port)
+{
+    if (!name || !host || !port)
+        return 0;
+
+    struct ipaddr local_addr;
+
+    if (mud_ipaddrinfo(&local_addr, name))
+        return 0;
+
+    struct sockaddr_storage addr;
+
+    if (mud_addrinfo(&addr, host, port))
+        return 0;
+
+    mud_unmapv4((struct sockaddr *)&addr);
+
+    struct path *path = mud_path(mud, &local_addr,
+            (struct sockaddr *)&addr, 0);
+
+    return path->state.on && path->state.up;
+}
+
 int mud_is_up (struct mud *mud)
 {
     struct path *path;
