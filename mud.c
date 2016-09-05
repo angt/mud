@@ -54,7 +54,6 @@
 #define MUD_PKEY_SIZE      (crypto_scalarmult_BYTES+1)
 #define MUD_KEYX_SIZE      MUD_PACKET_SIZEOF(MUD_TIME_SIZE+2*MUD_PKEY_SIZE)
 
-#define MUD_PING_TIMEOUT   (100*MUD_ONE_MSEC)
 #define MUD_PONG_TIMEOUT   (100*MUD_ONE_MSEC)
 #define MUD_KEYX_TIMEOUT   (60*MUD_ONE_MIN)
 #define MUD_SEND_TIMEOUT   (10*MUD_ONE_SEC)
@@ -95,10 +94,7 @@ struct path {
     uint64_t recv_time;
     uint64_t recv_send_time;
     uint64_t send_time;
-    uint64_t ping_time;
     uint64_t pong_time;
-    uint64_t last_time;
-    unsigned last_count;
     struct path *next;
 };
 
@@ -313,13 +309,6 @@ ssize_t mud_send_path (struct mud *mud, struct path *path, uint64_t now,
         memcpy(path->tc, &tc, sizeof(tc));
 
     ssize_t ret = sendmsg(mud->fd, &msg, 0);
-
-    if ((ret == (ssize_t)size) &&
-        (path->recv_time > path->send_time)) {
-        path->last_time = now;
-        path->last_count = 0;
-    }
-
     path->send_time = now;
 
     return ret;
@@ -1094,7 +1083,8 @@ int mud_pull (struct mud *mud)
             continue;
         }
 
-        if (now-path->pong_time >= MUD_PONG_TIMEOUT) {
+        if ((!path->pong_time) ||
+            (now-path->pong_time >= MUD_PONG_TIMEOUT)) {
             mud_ctrl_path(mud, mud_pong, path, now);
             path->pong_time = now;
         }
@@ -1144,19 +1134,15 @@ int mud_push (struct mud *mud)
 
         uint64_t now = mud_now(mud);
 
-        if ((path->last_time) &&
-            (path->send_time > path->last_time) &&
-            (path->send_time-path->last_time
-                             > MUD_PONG_TIMEOUT+path->rtt+(path->rtt>>1))) {
-            if (path->last_count == 4) {
-                path->last_time = 0;
-                path->last_count = 0;
+        if (path->state.up) {
+            if ((!path->recv_time) ||
+                (now-path->recv_time >= mud->send_timeout))
                 path->state.up = 0;
-            } else {
-                path->last_time = path->send_time;
-                path->last_count++;
-            }
         }
+
+        if ((path->send_time) &&
+            (now-path->send_time < (mud->send_timeout>>1)))
+            continue;
 
         if (!path->state.active) {
             if (mud->crypto.bad_key) {
@@ -1166,22 +1152,14 @@ int mud_push (struct mud *mud)
             continue;
         }
 
-        if ((now-mud->crypto.time >= MUD_KEYX_TIMEOUT)) {
+        if ((!mud->crypto.time) ||
+            (now-mud->crypto.time >= MUD_KEYX_TIMEOUT)) {
             mud_ctrl_path(mud, mud_keyx, path, now);
             mud->crypto.time = now;
             continue;
         }
 
-        if ((path->send_time) &&
-            (!path->last_count) &&
-            (now > path->send_time) &&
-            (now-path->send_time) < mud->send_timeout)
-            continue;
-
-        if (now-path->ping_time >= MUD_PING_TIMEOUT) {
-            mud_ctrl_path(mud, mud_ping, path, now);
-            path->ping_time = now;
-        }
+        mud_ctrl_path(mud, mud_ping, path, now);
     }
 
     while (mud->tx.start != mud->tx.end) {
