@@ -1195,11 +1195,10 @@ int mud_push (struct mud *mud)
         ssize_t ret = mud_send_path(mud, path_min, now,
                                     packet->data, packet->size, packet->tc);
 
-        mud->tx.start = MUD_PACKET_NEXT(mud->tx.start);
-
         if (ret != packet->size)
             break;
 
+        mud->tx.start = MUD_PACKET_NEXT(mud->tx.start);
         path_min->limit = limit_min;
     }
 
