@@ -1117,8 +1117,7 @@ int mud_recv (struct mud *mud, void *data, size_t size)
 
     if (ret == -1) {
         mud->crypto.bad_key = 1;
-        errno = EINVAL;
-        return -1;
+        return 0;
     }
 
     return ret;
