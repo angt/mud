@@ -979,6 +979,8 @@ void mud_recv_keyx (struct mud *mud, struct path *path, uint64_t now,
 
     key->aes = (shared_recv.public.send[MUD_PKEY_SIZE-1] == 1) &&
                (shared_recv.public.recv[MUD_PKEY_SIZE-1] == 1);
+
+    mud->crypto.time = now;
 }
 
 int mud_pull (struct mud *mud)
@@ -1154,7 +1156,6 @@ int mud_push (struct mud *mud)
         if ((!mud->crypto.time) ||
             (now-mud->crypto.time >= MUD_KEYX_TIMEOUT)) {
             mud_ctrl_path(mud, mud_keyx, path, now);
-            mud->crypto.time = now;
             continue;
         }
 
