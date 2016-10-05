@@ -995,11 +995,13 @@ void mud_recv_keyx (struct mud *mud, struct path *path, uint64_t now,
                        (unsigned char *)&shared_recv, sizeof(shared_recv),
                        mud->crypto.private.encrypt.key, MUD_KEY_SIZE);
 
-    crypto_aead_aes256gcm_beforenm(&key->encrypt.state, key->encrypt.key);
-    crypto_aead_aes256gcm_beforenm(&key->decrypt.state, key->decrypt.key);
-
     key->aes = (shared_recv.public.send[MUD_PKEY_SIZE-1] == 1) &&
                (shared_recv.public.recv[MUD_PKEY_SIZE-1] == 1);
+
+    if (key->aes) {
+        crypto_aead_aes256gcm_beforenm(&key->encrypt.state, key->encrypt.key);
+        crypto_aead_aes256gcm_beforenm(&key->decrypt.state, key->decrypt.key);
+    }
 
     mud->crypto.time = now;
 }
