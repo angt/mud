@@ -150,6 +150,7 @@ struct mud {
     uint64_t time_tolerance;
     uint64_t mtu;
     uint64_t recv_mtu;
+    int send_mtu;
     struct queue tx;
     struct queue rx;
     struct path *path;
@@ -620,6 +621,16 @@ int mud_get_mtu (struct mud *mud)
         return mud->mtu;
 
     return mud->recv_mtu;
+}
+
+int mud_set_mtu (struct mud *mud, int mtu)
+{
+    if (mud->mtu != mtu) {
+        mud->mtu = mtu;
+        mud->send_mtu = 1;
+    }
+
+    return 0;
 }
 
 static
@@ -1119,6 +1130,7 @@ int mud_pull (struct mud *mud)
                 mud_recv_keyx(mud, path, now, &packet->data[MUD_U48_SIZE*2]);
             } else if (ret == (ssize_t)MUD_MTUX_SIZE) {
                 mud->recv_mtu = mud_read48(&packet->data[MUD_U48_SIZE*2]);
+                mud->send_mtu = 0;
                 if (!path->state.active)
                     mud_ctrl_path(mud, mud_mtux, path, now);
             }
@@ -1181,7 +1193,7 @@ int mud_push (struct mud *mud)
             continue;
         }
 
-        if (!mud->recv_mtu) {
+        if (!mud->recv_mtu || mud->send_mtu) {
             mud_ctrl_path(mud, mud_mtux, path, now);
             continue;
         }
@@ -1228,11 +1240,20 @@ int mud_push (struct mud *mud)
         ssize_t ret = mud_send_path(mud, path_min, now,
                                     packet->data, packet->size, packet->tc);
 
-        if (ret != packet->size)
-            break;
+        if (ret == -1) {
+            switch (errno) {
+            case EAGAIN:
+            case EINTR:
+            case ENOMEM:
+            case ENOBUFS:
+                return 0;
+            }
+        }
 
         mud->tx.start = MUD_PACKET_NEXT(mud->tx.start);
-        path_min->limit = limit_min;
+
+        if (ret == packet->size)
+            path_min->limit = limit_min;
     }
 
     return 0;
