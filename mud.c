@@ -33,6 +33,14 @@
 #define MUD_PKTINFO_SIZE sizeof(struct in_addr)
 #endif
 
+#if defined IP_DONTFRAG
+#define MUD_DFRAG IP_DONTFRAG
+#define MUD_DFRAG_OPT 1
+#elif defined IP_MTU_DISCOVER
+#define MUD_DFRAG IP_MTU_DISCOVER
+#define MUD_DFRAG_OPT IP_PMTUDISC_DO
+#endif
+
 #define MUD_COUNT(X)  (sizeof(X)/sizeof(X[0]))
 
 #define MUD_ONE_MSEC (UINT64_C(1000))
@@ -625,6 +633,12 @@ int mud_get_mtu (struct mud *mud)
 
 int mud_set_mtu (struct mud *mud, int mtu)
 {
+    if ((mtu < 500) ||
+        (mtu > MUD_PACKET_MAX_SIZE-50)) {
+        errno = EINVAL;
+        return -1;
+    }
+
     if (mud->mtu != mtu) {
         mud->mtu = mtu;
         mud->send_mtu = 1;
@@ -640,6 +654,7 @@ int mud_setup_socket (int fd, int v4, int v6)
         (v4 && mud_sso_int(fd, IPPROTO_IP, MUD_PKTINFO, 1)) ||
         (v6 && mud_sso_int(fd, IPPROTO_IPV6, IPV6_RECVPKTINFO, 1)) ||
         (v6 && mud_sso_int(fd, IPPROTO_IPV6, IPV6_V6ONLY, !v4)) ||
+        (v4 && mud_sso_int(fd, IPPROTO_IP, MUD_DFRAG, MUD_DFRAG_OPT)) ||
         (mud_set_nonblock(fd)))
         return -1;
 
@@ -1251,6 +1266,9 @@ int mud_push (struct mud *mud)
         }
 
         mud->tx.start = MUD_PACKET_NEXT(mud->tx.start);
+
+    //  if (ret == -1 && errno == EMSGSIZE)
+    //      return -1;
 
         if (ret == packet->size)
             path_min->limit = limit_min;
