@@ -22,12 +22,7 @@ int mud_set_on (struct mud *, const char *, int);
 int mud_peer       (struct mud *, const char *, const char *, int);
 int mud_peer_is_up (struct mud *, const char *, const char *, int);
 
-int mud_can_pull (struct mud *);
-int mud_can_push (struct mud *);
 int mud_is_up    (struct mud *);
-
-int mud_pull (struct mud *);
-int mud_push (struct mud *);
 
 int mud_recv (struct mud *, void *, size_t);
 int mud_send (struct mud *, const void *, size_t, int);
