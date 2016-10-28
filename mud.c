@@ -436,10 +436,8 @@ static
 struct path *mud_path (struct mud *mud, struct ipaddr *local_addr,
                        struct sockaddr *addr, int create)
 {
-    if (local_addr->family != addr->sa_family) {
-        errno = EINVAL;
+    if (local_addr->family != addr->sa_family)
         return NULL;
-    }
 
     struct path *path;
 
@@ -539,10 +537,12 @@ int mud_peer (struct mud *mud, const char *name, const char *host, int port)
     mud_unmapv4((struct sockaddr *)&addr);
 
     struct path *path = mud_path(mud, &local_addr,
-            (struct sockaddr *)&addr, 1);
+                                 (struct sockaddr *)&addr, 1);
 
-    if (!path)
+    if (!path) {
+        errno = ENOMEM;
         return -1;
+    }
 
     path->state.active = 1;
 
@@ -826,7 +826,10 @@ int mud_peer_is_up (struct mud *mud, const char *name, const char *host, int por
     mud_unmapv4((struct sockaddr *)&addr);
 
     struct path *path = mud_path(mud, &local_addr,
-            (struct sockaddr *)&addr, 0);
+                                 (struct sockaddr *)&addr, 0);
+
+    if (!path)
+        return 0;
 
     return path->state.on && path->state.up;
 }
@@ -1010,11 +1013,8 @@ int mud_recv (struct mud *mud, void *data, size_t size)
 
     ssize_t packet_size = recvmsg(mud->fd, &msg, 0);
 
-    if (packet_size <= (ssize_t)MUD_PACKET_MIN_SIZE) {
-        if (packet_size == (ssize_t)-1)
-            return -1;
-        return 0;
-    }
+    if (packet_size <= (ssize_t)MUD_PACKET_MIN_SIZE)
+        return -(packet_size == (ssize_t)-1);
 
     uint64_t now = mud_now(mud);
     uint64_t send_time = mud_read48(packet);
@@ -1054,10 +1054,10 @@ int mud_recv (struct mud *mud, void *data, size_t size)
         return 0;
 
     struct path *path = mud_path(mud, &local_addr,
-            (struct sockaddr *)&addr, mud_packet);
+                                 (struct sockaddr *)&addr, mud_packet);
 
     if (!path)
-        return -1;
+        return 0;
 
     if (mud_packet)
         path->state.up = 1;
