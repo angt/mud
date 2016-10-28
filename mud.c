@@ -635,9 +635,13 @@ int mud_setup_socket (int fd, int v4, int v6)
         (v4 && mud_sso_int(fd, IPPROTO_IP, MUD_PKTINFO, 1)) ||
         (v6 && mud_sso_int(fd, IPPROTO_IPV6, IPV6_RECVPKTINFO, 1)) ||
         (v6 && mud_sso_int(fd, IPPROTO_IPV6, IPV6_V6ONLY, !v4)) ||
-        (v4 && mud_sso_int(fd, IPPROTO_IP, MUD_DFRAG, MUD_DFRAG_OPT)) ||
         (mud_set_nonblock(fd)))
         return -1;
+
+#ifdef __linux__
+        if (v4)
+            mud_sso_int(fd, IPPROTO_IP, MUD_DFRAG, MUD_DFRAG_OPT);
+#endif
 
 //  mud_sso_int(fd, SOL_SOCKET, SO_RCVBUF, 1<<24);
 //  mud_sso_int(fd, SOL_SOCKET, SO_SNDBUF, 1<<24);
