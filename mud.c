@@ -1185,21 +1185,18 @@ int mud_send (struct mud *mud, const void *data, size_t size, int tc)
     }
 
     if (!path_min)
-        return -1;
+        return 0;
 
     unsigned char packet[2048];
 
-    int packet_size = mud_encrypt(mud, now,
-                          packet, sizeof(packet),
-                          data, size);
+    int packet_size = mud_encrypt(mud, now, packet, sizeof(packet), data, size);
 
     if (!packet_size) {
-        errno = EMSGSIZE;
+        errno = EINVAL;
         return -1;
     }
 
-    ssize_t ret = mud_send_path(mud, path_min, now,
-                                packet, packet_size, tc);
+    ssize_t ret = mud_send_path(mud, path_min, now, packet, packet_size, tc);
 
     if (ret == packet_size)
         path_min->limit = limit_min;
