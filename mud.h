@@ -19,10 +19,7 @@ int mud_set_time_tolerance_sec (struct mud *, unsigned);
 
 int mud_set_on (struct mud *, const char *, int);
 
-int mud_peer       (struct mud *, const char *, const char *, int);
-int mud_peer_is_up (struct mud *, const char *, const char *, int);
-
-int mud_is_up    (struct mud *);
+int mud_peer (struct mud *, const char *, const char *, int);
 
 int mud_recv (struct mud *, void *, size_t);
 int mud_send (struct mud *, const void *, size_t, int);

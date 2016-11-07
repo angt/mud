@@ -60,7 +60,7 @@
 
 #define MUD_PONG_TIMEOUT   (100*MUD_ONE_MSEC)
 #define MUD_KEYX_TIMEOUT   (60*MUD_ONE_MIN)
-#define MUD_SEND_TIMEOUT   (10*MUD_ONE_SEC)
+#define MUD_SEND_TIMEOUT   (MUD_ONE_SEC)
 #define MUD_TIME_TOLERANCE (10*MUD_ONE_MIN)
 
 enum mud_msg {
@@ -80,8 +80,6 @@ struct ipaddr {
 
 struct path {
     struct {
-        unsigned up : 1;
-        unsigned on : 1;
         unsigned active : 1;
     } state;
     struct ipaddr local_addr;
@@ -125,25 +123,26 @@ struct crypto_key {
     int aes;
 };
 
-struct crypto {
-    uint64_t time;
-    unsigned char secret[crypto_scalarmult_SCALARBYTES];
-    struct public public;
-    struct crypto_key private, last, next, current;
-    int use_next;
-    int aes;
-    int bad_key;
-};
-
 struct mud {
     int fd;
     uint64_t send_timeout;
     uint64_t time_tolerance;
-    uint64_t mtu;
-    uint64_t recv_mtu;
-    int send_mtu;
     struct path *path;
-    struct crypto crypto;
+    struct {
+        uint64_t recv_time;
+        uint64_t send_time;
+        unsigned char secret[crypto_scalarmult_SCALARBYTES];
+        struct public public;
+        struct crypto_key private, last, next, current;
+        int use_next;
+        int aes;
+        int bad_key;
+    } crypto;
+    struct {
+        uint64_t send_time;
+        int remote;
+        int local;
+    } mtu;
 };
 
 static
@@ -218,6 +217,12 @@ static
 uint64_t mud_dt (uint64_t a, uint64_t b)
 {
     return (a >= b) ? a-b : b-a;
+}
+
+static
+int mud_timeout (uint64_t now, uint64_t last, uint64_t timeout)
+{
+    return ((!last) || (now-last >= timeout));
 }
 
 static
@@ -461,8 +466,6 @@ struct path *mud_path (struct mud *mud, struct ipaddr *local_addr,
 
     mud_set_path(path, local_addr, addr);
 
-    path->state.on = 1;
-
     path->next = mud->path;
     mud->path = path;
 
@@ -488,33 +491,6 @@ int mud_ipaddrinfo (struct ipaddr *ipaddr, const char *name)
     }
 
     return -1;
-}
-
-int mud_set_on (struct mud *mud, const char *name, int on)
-{
-    if (!name) {
-        errno = EINVAL;
-        return -1;
-    }
-
-    struct ipaddr local_addr;
-
-    if (mud_ipaddrinfo(&local_addr, name))
-        return -1;
-
-    struct path *path = NULL;
-
-    for (path = mud->path; path; path = path->next) {
-        if (!path->state.active)
-            continue;
-
-        if (mud_cmp_ipaddr(&local_addr, &path->local_addr))
-            continue;
-
-        path->state.on = on;
-    }
-
-    return 0;
 }
 
 int mud_peer (struct mud *mud, const char *name, const char *host, int port)
@@ -605,11 +581,11 @@ int mud_set_time_tolerance_sec (struct mud *mud, unsigned sec)
 
 int mud_get_mtu (struct mud *mud)
 {
-    if ((!mud->recv_mtu) ||
-        (mud->mtu <= mud->recv_mtu))
-        return mud->mtu;
+    if ((!mud->mtu.remote) ||
+        (mud->mtu.local < mud->mtu.remote))
+        return mud->mtu.local;
 
-    return mud->recv_mtu;
+    return mud->mtu.remote;
 }
 
 int mud_set_mtu (struct mud *mud, int mtu)
@@ -620,9 +596,9 @@ int mud_set_mtu (struct mud *mud, int mtu)
         return -1;
     }
 
-    if (mud->mtu != mtu) {
-        mud->mtu = mtu;
-        mud->send_mtu = 1;
+    if (mud->mtu.local != mtu) {
+        mud->mtu.local = mtu;
+        mud->mtu.send_time = UINT64_C(0);
     }
 
     return 0;
@@ -701,7 +677,7 @@ struct mud *mud_create (int port, int v4, int v6, int aes, int mtu)
 
     mud->send_timeout = MUD_SEND_TIMEOUT;
     mud->time_tolerance = MUD_TIME_TOLERANCE;
-    mud->mtu = mtu;
+    mud->mtu.local = mtu;
 
     unsigned char key[MUD_KEY_SIZE];
 
@@ -808,46 +784,6 @@ int mud_decrypt (struct mud *mud,
     return size;
 }
 
-int mud_peer_is_up (struct mud *mud, const char *name, const char *host, int port)
-{
-    if (!name || !host || !port)
-        return 0;
-
-    struct ipaddr local_addr;
-
-    if (mud_ipaddrinfo(&local_addr, name))
-        return 0;
-
-    struct sockaddr_storage addr;
-
-    if (mud_addrinfo(&addr, host, port))
-        return 0;
-
-    mud_unmapv4((struct sockaddr *)&addr);
-
-    struct path *path = mud_path(mud, &local_addr,
-                                 (struct sockaddr *)&addr, 0);
-
-    if (!path)
-        return 0;
-
-    return path->state.on && path->state.up;
-}
-
-int mud_is_up (struct mud *mud)
-{
-    struct path *path;
-
-    int up = 0;
-
-    for (path = mud->path; path; path = path->next) {
-        if (path->state.on)
-            up += path->state.up;
-    }
-
-    return up;
-}
-
 static
 int mud_localaddr (struct ipaddr *local_addr, struct msghdr *msg, int family)
 {
@@ -911,7 +847,7 @@ void mud_ctrl_path (struct mud *mud, enum mud_msg msg, struct path *path,
         size = sizeof(mud->crypto.public);
         break;
     case mud_mtux:
-        mud_write48(ctrl.data, mud->mtu);
+        mud_write48(ctrl.data, (uint64_t)mud->mtu.local);
         size = MUD_U48_SIZE;
         break;
     default:
@@ -925,7 +861,10 @@ void mud_ctrl_path (struct mud *mud, enum mud_msg msg, struct path *path,
     };
 
     mud_encrypt_opt(&mud->crypto.private, &opt);
-    mud_send_path(mud, path, now, &ctrl, size+2*MUD_U48_SIZE+MUD_MAC_SIZE, 0);
+
+    size += 2*MUD_U48_SIZE+MUD_MAC_SIZE;
+
+    mud_send_path(mud, path, now, &ctrl, size, 0);
 }
 
 static
@@ -987,7 +926,7 @@ void mud_recv_keyx (struct mud *mud, struct path *path, uint64_t now,
         crypto_aead_aes256gcm_beforenm(&key->decrypt.state, key->decrypt.key);
     }
 
-    mud->crypto.time = now;
+    mud->crypto.recv_time = now;
 }
 
 int mud_recv (struct mud *mud, void *data, size_t size)
@@ -1059,9 +998,6 @@ int mud_recv (struct mud *mud, void *data, size_t size)
     if (!path)
         return 0;
 
-    if (mud_packet)
-        path->state.up = 1;
-
     int64_t dt = (now-path->recv_time)-(send_time-path->recv_send_time);
 
     if (path->recv_time && path->recv_send_time && (dt > 0))
@@ -1080,8 +1016,7 @@ int mud_recv (struct mud *mud, void *data, size_t size)
         return 0;
     }
 
-    if ((!path->pong_time) ||
-        (now-path->pong_time >= MUD_PONG_TIMEOUT)) {
+    if (mud_timeout(now, path->pong_time, MUD_PONG_TIMEOUT)) {
         mud_ctrl_path(mud, mud_pong, path, now);
         path->pong_time = now;
     }
@@ -1090,8 +1025,7 @@ int mud_recv (struct mud *mud, void *data, size_t size)
         if (packet_size == (ssize_t)MUD_KEYX_SIZE) {
             mud_recv_keyx(mud, path, now, &packet[MUD_U48_SIZE*2]);
         } else if (packet_size == (ssize_t)MUD_MTUX_SIZE) {
-            mud->recv_mtu = mud_read48(&packet[MUD_U48_SIZE*2]);
-            mud->send_mtu = 0;
+            mud->mtu.remote = (int)mud_read48(&packet[MUD_U48_SIZE*2]);
             if (!path->state.active)
                 mud_ctrl_path(mud, mud_mtux, path, now);
         }
@@ -1113,20 +1047,7 @@ int mud_send_ctrl (struct mud *mud)
     struct path *path;
 
     for (path = mud->path; path; path = path->next) {
-        if (!path->state.on)
-            continue;
-
         uint64_t now = mud_now(mud);
-
-        if (path->state.up) {
-            if ((!path->recv_time) ||
-                (now-path->recv_time >= mud->send_timeout))
-                path->state.up = 0;
-        }
-
-        if ((path->send_time) &&
-            (now-path->send_time < (mud->send_timeout>>1)))
-            continue;
 
         if (!path->state.active) {
             if (mud->crypto.bad_key) {
@@ -1136,18 +1057,19 @@ int mud_send_ctrl (struct mud *mud)
             continue;
         }
 
-        if (!mud->recv_mtu || mud->send_mtu) {
-            mud_ctrl_path(mud, mud_mtux, path, now);
-            continue;
-        }
-
-        if ((!mud->crypto.time) ||
-            (now-mud->crypto.time >= MUD_KEYX_TIMEOUT)) {
+        if ((mud_timeout(now, mud->crypto.send_time, mud->send_timeout)) &&
+            (mud_timeout(now, mud->crypto.recv_time, MUD_KEYX_TIMEOUT))) {
             mud_ctrl_path(mud, mud_keyx, path, now);
+            mud->crypto.send_time = now;
             continue;
         }
 
-        mud_ctrl_path(mud, mud_ping, path, now);
+        if ((!mud->mtu.remote) &&
+            (mud_timeout(now, mud->mtu.send_time, mud->send_timeout))) {
+            mud_ctrl_path(mud, mud_mtux, path, now);
+            mud->mtu.send_time = now;
+            continue;
+        }
     }
 }
 
@@ -1170,9 +1092,6 @@ int mud_send (struct mud *mud, const void *data, size_t size, int tc)
     int64_t limit_min = INT64_MAX;
 
     for (path = mud->path; path; path = path->next) {
-        if (!path->state.up || !path->state.on)
-            continue;
-
         int64_t limit = path->limit;
         uint64_t elapsed = now-path->send_time;
 
