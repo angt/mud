@@ -53,7 +53,7 @@
 #define MUD_PACKET_MAX_SIZE  (1500U)
 #define MUD_PACKET_SIZEOF(X) ((X)+MUD_PACKET_MIN_SIZE)
 
-#define MUD_PONG_SIZE      MUD_PACKET_SIZEOF(MUD_U48_SIZE*3)
+#define MUD_PONG_SIZE      MUD_PACKET_SIZEOF(MUD_U48_SIZE*4)
 #define MUD_PKEY_SIZE      (crypto_scalarmult_BYTES+1)
 #define MUD_KEYX_SIZE      MUD_PACKET_SIZEOF(MUD_U48_SIZE+2*MUD_PKEY_SIZE)
 #define MUD_MTUX_SIZE      MUD_PACKET_SIZEOF(MUD_U48_SIZE*2)
@@ -89,13 +89,16 @@ struct path {
         size_t size;
     } ctrl;
     unsigned char *tc;
-    uint64_t dt;
     uint64_t rdt;
     uint64_t rtt;
-    int64_t  sdt;
+    uint64_t sdt;
+    uint64_t rst;
+    uint64_t r_sdt;
+    uint64_t r_rdt;
+    uint64_t r_rst;
+    int64_t r_dt;
     uint64_t limit;
     uint64_t recv_time;
-    uint64_t recv_send_time;
     uint64_t send_time;
     uint64_t pong_time;
     struct path *next;
@@ -214,7 +217,7 @@ uint64_t mud_now (struct mud *mud)
 }
 
 static
-uint64_t mud_dt (uint64_t a, uint64_t b)
+uint64_t mud_abs_diff (uint64_t a, uint64_t b)
 {
     return (a >= b) ? a-b : b-a;
 }
@@ -838,9 +841,10 @@ void mud_ctrl_path (struct mud *mud, enum mud_msg msg, struct path *path,
 
     switch (msg) {
     case mud_pong:
-        mud_write48(ctrl.data, path->recv_send_time);
+        mud_write48(ctrl.data, path->sdt);
         mud_write48(&ctrl.data[MUD_U48_SIZE], path->rdt);
-        size = MUD_U48_SIZE*2;
+        mud_write48(&ctrl.data[2*MUD_U48_SIZE], path->rst);
+        size = MUD_U48_SIZE*3;
         break;
     case mud_keyx:
         memcpy(ctrl.data, &mud->crypto.public, sizeof(mud->crypto.public));
@@ -967,7 +971,7 @@ int mud_recv (struct mud *mud, void *data, size_t size)
         send_time = mud_read48(&packet[MUD_U48_SIZE]);
     }
 
-    if (mud_dt(now, send_time) >= mud->time_tolerance)
+    if (mud_abs_diff(now, send_time) >= mud->time_tolerance)
         return 0;
 
     if (mud_packet) {
@@ -998,28 +1002,23 @@ int mud_recv (struct mud *mud, void *data, size_t size)
     if (!path)
         return 0;
 
-    int64_t dt = (now-path->recv_time)-(send_time-path->recv_send_time);
-
-    if (path->recv_time && path->recv_send_time && (dt > 0))
-        path->rdt = (path->rdt*UINT64_C(7)+dt)/UINT64_C(8);
-
-    path->recv_send_time = send_time;
-    path->recv_time = now;
-
-    if (mud_packet && (packet_size == (ssize_t)MUD_PONG_SIZE)) {
-        uint64_t st = mud_read48(&packet[MUD_U48_SIZE*2]);
-        uint64_t dt = mud_read48(&packet[MUD_U48_SIZE*3]);
-
-        path->dt = dt;
-        path->sdt = send_time-st;
-        path->rtt = now-st;
-        return 0;
+    if (path->rdt) {
+        path->rdt = ((now-path->recv_time)+UINT64_C(7)*path->rdt)/UINT64_C(8);
+        path->sdt = ((send_time-path->rst)+UINT64_C(7)*path->sdt)/UINT64_C(8);
+    } else if (path->recv_time) {
+        path->rdt = now-path->recv_time;
+        path->sdt = send_time-path->rst;
     }
 
-    if (mud_timeout(now, path->pong_time, MUD_PONG_TIMEOUT)) {
+    path->rst = send_time;
+
+    if ((path->recv_time) &&
+        (mud_timeout(now, path->pong_time, MUD_PONG_TIMEOUT))) {
         mud_ctrl_path(mud, mud_pong, path, now);
         path->pong_time = now;
     }
+
+    path->recv_time = now;
 
     if (mud_packet) {
         if (packet_size == (ssize_t)MUD_KEYX_SIZE) {
@@ -1028,6 +1027,12 @@ int mud_recv (struct mud *mud, void *data, size_t size)
             mud->mtu.remote = (int)mud_read48(&packet[MUD_U48_SIZE*2]);
             if (!path->state.active)
                 mud_ctrl_path(mud, mud_mtux, path, now);
+        } else if (packet_size == (ssize_t)MUD_PONG_SIZE) {
+            path->r_sdt = mud_read48(&packet[MUD_U48_SIZE*2]);
+            path->r_rdt = mud_read48(&packet[MUD_U48_SIZE*3]);
+            path->r_rst = mud_read48(&packet[MUD_U48_SIZE*4]);
+            path->r_dt = send_time-path->r_rst;
+            path->rtt = now-path->r_rst;
         }
         return 0;
     }
@@ -1054,21 +1059,20 @@ int mud_send_ctrl (struct mud *mud)
                 mud_ctrl_path(mud, mud_keyx, path, now);
                 mud->crypto.bad_key = 0;
             }
-            continue;
-        }
+        } else {
+            if ((mud_timeout(now, mud->crypto.send_time, mud->send_timeout)) &&
+                (mud_timeout(now, mud->crypto.recv_time, MUD_KEYX_TIMEOUT))) {
+                mud_ctrl_path(mud, mud_keyx, path, now);
+                mud->crypto.send_time = now;
+                continue;
+            }
 
-        if ((mud_timeout(now, mud->crypto.send_time, mud->send_timeout)) &&
-            (mud_timeout(now, mud->crypto.recv_time, MUD_KEYX_TIMEOUT))) {
-            mud_ctrl_path(mud, mud_keyx, path, now);
-            mud->crypto.send_time = now;
-            continue;
-        }
-
-        if ((!mud->mtu.remote) &&
-            (mud_timeout(now, mud->mtu.send_time, mud->send_timeout))) {
-            mud_ctrl_path(mud, mud_mtux, path, now);
-            mud->mtu.send_time = now;
-            continue;
+            if ((!mud->mtu.remote) &&
+                (mud_timeout(now, mud->mtu.send_time, mud->send_timeout))) {
+                mud_ctrl_path(mud, mud_mtux, path, now);
+                mud->mtu.send_time = now;
+                continue;
+            }
         }
     }
 }
@@ -1107,8 +1111,10 @@ int mud_send (struct mud *mud, const void *data, size_t size, int tc)
         }
     }
 
-    if (!path_min)
-        return 0;
+    if (!path_min) {
+        errno = ENOTCONN;
+        return -1;
+    }
 
     unsigned char packet[2048];
 

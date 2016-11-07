@@ -17,8 +17,6 @@ int mud_set_mtu (struct mud *, int mtu);
 int mud_set_send_timeout_msec  (struct mud *, unsigned);
 int mud_set_time_tolerance_sec (struct mud *, unsigned);
 
-int mud_set_on (struct mud *, const char *, int);
-
 int mud_peer (struct mud *, const char *, const char *, int);
 
 int mud_recv (struct mud *, void *, size_t);
