@@ -9,7 +9,6 @@
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
-#include <fcntl.h>
 #include <time.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
@@ -317,17 +316,6 @@ ssize_t mud_send_path (struct mud *mud, struct path *path, uint64_t now,
 }
 
 static
-int mud_set_nonblock (int fd)
-{
-    int flags = fcntl(fd, F_GETFL, 0);
-
-    if (flags == -1)
-        flags = 0;
-
-    return fcntl(fd, F_SETFL, flags|O_NONBLOCK);
-}
-
-static
 int mud_sso_int (int fd, int level, int optname, int opt)
 {
     return setsockopt(fd, level, optname, &opt, sizeof(opt));
@@ -613,8 +601,7 @@ int mud_setup_socket (int fd, int v4, int v6)
     if ((mud_sso_int(fd, SOL_SOCKET, SO_REUSEADDR, 1)) ||
         (v4 && mud_sso_int(fd, IPPROTO_IP, MUD_PKTINFO, 1)) ||
         (v6 && mud_sso_int(fd, IPPROTO_IPV6, IPV6_RECVPKTINFO, 1)) ||
-        (v6 && mud_sso_int(fd, IPPROTO_IPV6, IPV6_V6ONLY, !v4)) ||
-        (mud_set_nonblock(fd)))
+        (v6 && mud_sso_int(fd, IPPROTO_IPV6, IPV6_V6ONLY, !v4)))
         return -1;
 
 #ifdef __linux__
