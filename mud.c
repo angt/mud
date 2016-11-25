@@ -841,8 +841,6 @@ void mud_ctrl_path (struct mud *mud, enum mud_msg msg, struct path *path,
         mud_write48(ctrl.data, (uint64_t)mud->mtu.local);
         size = MUD_U48_SIZE;
         break;
-    default:
-        return;
     }
 
     struct crypto_opt opt = {
@@ -1077,6 +1075,14 @@ int mud_send (struct mud *mud, const void *data, size_t size, int tc)
     }
 
     uint64_t now = mud_now(mud);
+    unsigned char packet[2048];
+
+    int packet_size = mud_encrypt(mud, now, packet, sizeof(packet), data, size);
+
+    if (!packet_size) {
+        errno = EINVAL;
+        return -1;
+    }
 
     struct path *path;
     struct path *path_min = NULL;
@@ -1092,25 +1098,21 @@ int mud_send (struct mud *mud, const void *data, size_t size, int tc)
             limit = path->rtt/2;
         }
 
+        if ((path->r_rst) &&
+            (now > path->r_rst+MUD_ONE_SEC)) {
+            mud_send_path(mud, path, now, packet, packet_size, tc);
+            path->limit = limit;
+            continue;
+        }
+
         if (limit_min > limit) {
             limit_min = limit;
             path_min = path;
         }
     }
 
-    if (!path_min) {
-        errno = ENOTCONN;
-        return -1;
-    }
-
-    unsigned char packet[2048];
-
-    int packet_size = mud_encrypt(mud, now, packet, sizeof(packet), data, size);
-
-    if (!packet_size) {
-        errno = EINVAL;
-        return -1;
-    }
+    if (!path_min)
+        return 0;
 
     ssize_t ret = mud_send_path(mud, path_min, now, packet, packet_size, tc);
 
