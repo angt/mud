@@ -56,6 +56,7 @@
 #define MUD_PKEY_SIZE      (crypto_scalarmult_BYTES+1)
 #define MUD_KEYX_SIZE      MUD_PACKET_SIZEOF(MUD_U48_SIZE+2*MUD_PKEY_SIZE)
 #define MUD_MTUX_SIZE      MUD_PACKET_SIZEOF(MUD_U48_SIZE*2)
+#define MUD_BAKX_SIZE      MUD_PACKET_SIZEOF(MUD_U48_SIZE+1)
 
 #define MUD_PONG_TIMEOUT   (100*MUD_ONE_MSEC)
 #define MUD_KEYX_TIMEOUT   (60*MUD_ONE_MIN)
@@ -67,6 +68,7 @@ enum mud_msg {
     mud_pong,
     mud_keyx,
     mud_mtux,
+    mud_bakx,
 };
 
 struct ipaddr {
@@ -87,6 +89,11 @@ struct path {
         unsigned char data[256];
         size_t size;
     } ctrl;
+    struct {
+        uint64_t send_time;
+        int remote;
+        int local;
+    } bak;
     unsigned char *tc;
     uint64_t rdt;
     uint64_t rtt;
@@ -224,7 +231,7 @@ uint64_t mud_abs_diff (uint64_t a, uint64_t b)
 static
 int mud_timeout (uint64_t now, uint64_t last, uint64_t timeout)
 {
-    return ((!last) || (now-last >= timeout));
+    return ((!last) || ((now > last) && (now-last >= timeout)));
 }
 
 static
@@ -484,7 +491,7 @@ int mud_ipaddrinfo (struct ipaddr *ipaddr, const char *name)
     return -1;
 }
 
-int mud_peer (struct mud *mud, const char *name, const char *host, int port)
+int mud_peer (struct mud *mud, const char *name, const char *host, int port, int backup)
 {
     if (!name || !host || !port) {
         errno = EINVAL;
@@ -512,6 +519,7 @@ int mud_peer (struct mud *mud, const char *name, const char *host, int port)
     }
 
     path->state.active = 1;
+    path->bak.local = !!backup;
 
     return 0;
 }
@@ -841,6 +849,10 @@ void mud_ctrl_path (struct mud *mud, enum mud_msg msg, struct path *path,
         mud_write48(ctrl.data, (uint64_t)mud->mtu.local);
         size = MUD_U48_SIZE;
         break;
+    case mud_bakx:
+        ctrl.data[0] = (unsigned char)path->bak.local;
+        size = 1;
+        break;
     }
 
     struct crypto_opt opt = {
@@ -849,10 +861,9 @@ void mud_ctrl_path (struct mud *mud, enum mud_msg msg, struct path *path,
                  .size = size+2*MUD_U48_SIZE },
     };
 
-    mud_encrypt_opt(&mud->crypto.private, &opt);
-
     size += 2*MUD_U48_SIZE+MUD_MAC_SIZE;
 
+    mud_encrypt_opt(&mud->crypto.private, &opt);
     mud_send_path(mud, path, now, &ctrl, size, 0);
 }
 
@@ -997,7 +1008,7 @@ int mud_recv (struct mud *mud, void *data, size_t size)
 
     path->rst = send_time;
 
-    if ((path->recv_time) &&
+    if ((!path->bak.local) && (path->recv_time) &&
         (mud_timeout(now, path->pong_time, MUD_PONG_TIMEOUT))) {
         mud_ctrl_path(mud, mud_pong, path, now);
         path->pong_time = now;
@@ -1018,6 +1029,11 @@ int mud_recv (struct mud *mud, void *data, size_t size)
             path->r_rst = mud_read48(&packet[MUD_U48_SIZE*4]);
             path->r_dt = send_time-path->r_rst;
             path->rtt = now-path->r_rst;
+        } else if (packet_size == (ssize_t)MUD_BAKX_SIZE) {
+            path->bak.local = 1;
+            path->bak.remote = (int)packet[MUD_U48_SIZE*2];
+            if (!path->state.active)
+                mud_ctrl_path(mud, mud_bakx, path, now);
         }
         return 0;
     }
@@ -1058,6 +1074,13 @@ int mud_send_ctrl (struct mud *mud)
                 mud->mtu.send_time = now;
                 continue;
             }
+
+            if ((path->bak.local && !path->bak.remote) &&
+                (mud_timeout(now, path->bak.send_time, mud->send_timeout))) {
+                mud_ctrl_path(mud, mud_bakx, path, now);
+                path->bak.send_time = now;
+                continue;
+            }
         }
     }
 }
@@ -1089,6 +1112,9 @@ int mud_send (struct mud *mud, const void *data, size_t size, int tc)
     int64_t limit_min = INT64_MAX;
 
     for (path = mud->path; path; path = path->next) {
+        if (path->bak.local)
+            continue;
+
         int64_t limit = path->limit;
         uint64_t elapsed = now-path->send_time;
 
@@ -1098,8 +1124,7 @@ int mud_send (struct mud *mud, const void *data, size_t size, int tc)
             limit = path->rtt/2;
         }
 
-        if ((path->r_rst) &&
-            (now > path->r_rst+MUD_ONE_SEC)) {
+        if (mud_timeout(now, path->recv_time, mud->send_timeout)) {
             mud_send_path(mud, path, now, packet, packet_size, tc);
             path->limit = limit;
             continue;
@@ -1111,8 +1136,17 @@ int mud_send (struct mud *mud, const void *data, size_t size, int tc)
         }
     }
 
-    if (!path_min)
-        return 0;
+    if (!path_min) {
+        for (path = mud->path; path; path = path->next) {
+            if (path->bak.local) {
+                path_min = path;
+                break;
+            }
+        }
+
+        if (!path_min)
+            return 0;
+    }
 
     ssize_t ret = mud_send_path(mud, path_min, now, packet, packet_size, tc);
 
