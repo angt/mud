@@ -1083,6 +1083,9 @@ int mud_send_ctrl (struct mud *mud)
                 path->bak.send_time = now;
                 continue;
             }
+
+            if (!path->send_time)
+                mud_ctrl_path(mud, mud_ping, path, now);
         }
     }
 }
