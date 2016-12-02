@@ -1056,8 +1056,10 @@ int mud_send_ctrl (struct mud *mud)
         uint64_t now = mud_now(mud);
 
         if (!path->state.active) {
-            if (mud->crypto.bad_key) {
+            if ((mud->crypto.bad_key) &&
+                (mud_timeout(now, mud->crypto.send_time, mud->send_timeout))) {
                 mud_ctrl_path(mud, mud_keyx, path, now);
+                mud->crypto.send_time = now;
                 mud->crypto.bad_key = 0;
             }
         } else {
