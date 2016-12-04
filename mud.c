@@ -1088,6 +1088,7 @@ int mud_send_ctrl (struct mud *mud)
                 mud_ctrl_path(mud, mud_ping, path, now);
         }
     }
+    return 0;
 }
 
 int mud_send (struct mud *mud, const void *data, size_t size, int tc)
