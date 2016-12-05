@@ -145,7 +145,6 @@ struct mud {
         struct crypto_key private, last, next, current;
         int use_next;
         int aes;
-        int bad_key;
     } crypto;
     struct {
         uint64_t send_time;
@@ -1041,54 +1040,51 @@ int mud_recv (struct mud *mud, void *data, size_t size)
     int ret = mud_decrypt(mud, data, size, packet, packet_size);
 
     if (ret == -1) {
-        mud->crypto.bad_key = 1;
+        if ((!path->state.active) &&
+            (mud_timeout(now, mud->crypto.send_time, mud->send_timeout))) {
+            mud_ctrl_path(mud, mud_keyx, path, now);
+            mud->crypto.send_time = now;
+        }
         return 0;
     }
 
     return ret;
 }
 
-int mud_send_ctrl (struct mud *mud)
+void mud_send_ctrl (struct mud *mud)
 {
     struct path *path;
 
     for (path = mud->path; path; path = path->next) {
+        if (!path->state.active)
+            continue;
+
         uint64_t now = mud_now(mud);
 
-        if (!path->state.active) {
-            if ((mud->crypto.bad_key) &&
-                (mud_timeout(now, mud->crypto.send_time, mud->send_timeout))) {
-                mud_ctrl_path(mud, mud_keyx, path, now);
-                mud->crypto.send_time = now;
-                mud->crypto.bad_key = 0;
-            }
-        } else {
-            if ((mud_timeout(now, mud->crypto.send_time, mud->send_timeout)) &&
-                (mud_timeout(now, mud->crypto.recv_time, MUD_KEYX_TIMEOUT))) {
-                mud_ctrl_path(mud, mud_keyx, path, now);
-                mud->crypto.send_time = now;
-                continue;
-            }
-
-            if ((!mud->mtu.remote) &&
-                (mud_timeout(now, mud->mtu.send_time, mud->send_timeout))) {
-                mud_ctrl_path(mud, mud_mtux, path, now);
-                mud->mtu.send_time = now;
-                continue;
-            }
-
-            if ((path->bak.local && !path->bak.remote) &&
-                (mud_timeout(now, path->bak.send_time, mud->send_timeout))) {
-                mud_ctrl_path(mud, mud_bakx, path, now);
-                path->bak.send_time = now;
-                continue;
-            }
-
-            if (!path->send_time)
-                mud_ctrl_path(mud, mud_ping, path, now);
+        if ((mud_timeout(now, mud->crypto.send_time, mud->send_timeout)) &&
+            (mud_timeout(now, mud->crypto.recv_time, MUD_KEYX_TIMEOUT))) {
+            mud_ctrl_path(mud, mud_keyx, path, now);
+            mud->crypto.send_time = now;
+            continue;
         }
+
+        if ((!mud->mtu.remote) &&
+            (mud_timeout(now, mud->mtu.send_time, mud->send_timeout))) {
+            mud_ctrl_path(mud, mud_mtux, path, now);
+            mud->mtu.send_time = now;
+            continue;
+        }
+
+        if ((path->bak.local && !path->bak.remote) &&
+            (mud_timeout(now, path->bak.send_time, mud->send_timeout))) {
+            mud_ctrl_path(mud, mud_bakx, path, now);
+            path->bak.send_time = now;
+            continue;
+        }
+
+        if (!path->send_time)
+            mud_ctrl_path(mud, mud_ping, path, now);
     }
-    return 0;
 }
 
 int mud_send (struct mud *mud, const void *data, size_t size, int tc)
