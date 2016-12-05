@@ -4,19 +4,19 @@
 #define __APPLE_USE_RFC_3542
 #endif
 
-#include <stdlib.h>
-#include <inttypes.h>
-#include <unistd.h>
-#include <string.h>
+#include <arpa/inet.h>
 #include <errno.h>
-#include <time.h>
+#include <ifaddrs.h>
+#include <inttypes.h>
+#include <net/if.h>
+#include <netinet/in.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/time.h>
-#include <arpa/inet.h>
-#include <net/if.h>
-#include <netinet/in.h>
-#include <ifaddrs.h>
+#include <time.h>
+#include <unistd.h>
 
 #include <sodium.h>
 
@@ -41,27 +41,27 @@
 #endif
 
 #define MUD_ONE_MSEC (UINT64_C(1000))
-#define MUD_ONE_SEC  (1000*MUD_ONE_MSEC)
-#define MUD_ONE_MIN  (60*MUD_ONE_SEC)
+#define MUD_ONE_SEC (1000 * MUD_ONE_MSEC)
+#define MUD_ONE_MIN (60 * MUD_ONE_SEC)
 
 #define MUD_U48_SIZE (6U)
 #define MUD_KEY_SIZE (32U)
 #define MUD_MAC_SIZE (16U)
 
-#define MUD_PACKET_MIN_SIZE  (MUD_U48_SIZE+MUD_MAC_SIZE)
-#define MUD_PACKET_MAX_SIZE  (1500U)
-#define MUD_PACKET_SIZEOF(X) ((X)+MUD_PACKET_MIN_SIZE)
+#define MUD_PACKET_MIN_SIZE (MUD_U48_SIZE + MUD_MAC_SIZE)
+#define MUD_PACKET_MAX_SIZE (1500U)
+#define MUD_PACKET_SIZEOF(X) ((X) + MUD_PACKET_MIN_SIZE)
 
-#define MUD_PONG_SIZE      MUD_PACKET_SIZEOF(MUD_U48_SIZE*4)
-#define MUD_PKEY_SIZE      (crypto_scalarmult_BYTES+1)
-#define MUD_KEYX_SIZE      MUD_PACKET_SIZEOF(MUD_U48_SIZE+2*MUD_PKEY_SIZE)
-#define MUD_MTUX_SIZE      MUD_PACKET_SIZEOF(MUD_U48_SIZE*2)
-#define MUD_BAKX_SIZE      MUD_PACKET_SIZEOF(MUD_U48_SIZE+1)
+#define MUD_PONG_SIZE MUD_PACKET_SIZEOF(MUD_U48_SIZE * 4)
+#define MUD_PKEY_SIZE (crypto_scalarmult_BYTES + 1)
+#define MUD_KEYX_SIZE MUD_PACKET_SIZEOF(MUD_U48_SIZE + 2 * MUD_PKEY_SIZE)
+#define MUD_MTUX_SIZE MUD_PACKET_SIZEOF(MUD_U48_SIZE * 2)
+#define MUD_BAKX_SIZE MUD_PACKET_SIZEOF(MUD_U48_SIZE + 1)
 
-#define MUD_PONG_TIMEOUT   (100*MUD_ONE_MSEC)
-#define MUD_KEYX_TIMEOUT   (60*MUD_ONE_MIN)
-#define MUD_SEND_TIMEOUT   (MUD_ONE_SEC)
-#define MUD_TIME_TOLERANCE (10*MUD_ONE_MIN)
+#define MUD_PONG_TIMEOUT (100 * MUD_ONE_MSEC)
+#define MUD_KEYX_TIMEOUT (60 * MUD_ONE_MIN)
+#define MUD_SEND_TIMEOUT (MUD_ONE_SEC)
+#define MUD_TIME_TOLERANCE (10 * MUD_ONE_MIN)
 
 enum mud_msg {
     mud_ping,
@@ -110,7 +110,7 @@ struct path {
     struct path *next;
 };
 
-struct public {
+struct crypto_pub {
     unsigned char send[MUD_PKEY_SIZE];
     unsigned char recv[MUD_PKEY_SIZE];
 };
@@ -141,7 +141,7 @@ struct mud {
         uint64_t recv_time;
         uint64_t send_time;
         unsigned char secret[crypto_scalarmult_SCALARBYTES];
-        struct public public;
+        struct crypto_pub public;
         struct crypto_key private, last, next, current;
         int use_next;
         int aes;
@@ -153,88 +153,89 @@ struct mud {
     } mtu;
 };
 
-static
-int mud_encrypt_opt (const struct crypto_key *k, const struct crypto_opt *c)
+static int
+mud_encrypt_opt(const struct crypto_key *k, const struct crypto_opt *c)
 {
     if (k->aes) {
         return crypto_aead_aes256gcm_encrypt_afternm(
-                    c->dst, NULL, c->src.data, c->src.size,
-                    c->ad.data, c->ad.size, NULL, c->npub,
-                    (const crypto_aead_aes256gcm_state *)&k->encrypt.state);
+            c->dst, NULL, c->src.data, c->src.size,
+            c->ad.data, c->ad.size, NULL, c->npub,
+            (const crypto_aead_aes256gcm_state *)&k->encrypt.state);
     } else {
         return crypto_aead_chacha20poly1305_encrypt(
-                    c->dst, NULL, c->src.data, c->src.size,
-                    c->ad.data, c->ad.size, NULL, c->npub, k->encrypt.key);
+            c->dst, NULL, c->src.data, c->src.size,
+            c->ad.data, c->ad.size, NULL, c->npub, k->encrypt.key);
     }
 }
 
-static
-int mud_decrypt_opt (const struct crypto_key *k, const struct crypto_opt *c)
+static int
+mud_decrypt_opt(const struct crypto_key *k, const struct crypto_opt *c)
 {
     if (k->aes) {
         return crypto_aead_aes256gcm_decrypt_afternm(
-                    c->dst, NULL, NULL, c->src.data, c->src.size,
-                    c->ad.data, c->ad.size, c->npub,
-                    (const crypto_aead_aes256gcm_state *)&k->decrypt.state);
+            c->dst, NULL, NULL, c->src.data, c->src.size,
+            c->ad.data, c->ad.size, c->npub,
+            (const crypto_aead_aes256gcm_state *)&k->decrypt.state);
     } else {
         return crypto_aead_chacha20poly1305_decrypt(
-                    c->dst, NULL, NULL, c->src.data, c->src.size,
-                    c->ad.data, c->ad.size, c->npub, k->decrypt.key);
+            c->dst, NULL, NULL, c->src.data, c->src.size,
+            c->ad.data, c->ad.size, c->npub, k->decrypt.key);
     }
 }
 
-static
-void mud_write48 (unsigned char *dst, uint64_t src)
+static void
+mud_write48(unsigned char *dst, uint64_t src)
 {
-    dst[0] = (unsigned char)(UINT64_C(255)&(src));
-    dst[1] = (unsigned char)(UINT64_C(255)&(src>>8));
-    dst[2] = (unsigned char)(UINT64_C(255)&(src>>16));
-    dst[3] = (unsigned char)(UINT64_C(255)&(src>>24));
-    dst[4] = (unsigned char)(UINT64_C(255)&(src>>32));
-    dst[5] = (unsigned char)(UINT64_C(255)&(src>>40));
+    dst[0] = (unsigned char)(UINT64_C(255) & (src));
+    dst[1] = (unsigned char)(UINT64_C(255) & (src >> 8));
+    dst[2] = (unsigned char)(UINT64_C(255) & (src >> 16));
+    dst[3] = (unsigned char)(UINT64_C(255) & (src >> 24));
+    dst[4] = (unsigned char)(UINT64_C(255) & (src >> 32));
+    dst[5] = (unsigned char)(UINT64_C(255) & (src >> 40));
 }
 
-static
-uint64_t mud_read48 (const unsigned char *src)
+static uint64_t
+mud_read48(const unsigned char *src)
 {
-    return ((uint64_t)src[0])
-         | ((uint64_t)src[1]<<8)
-         | ((uint64_t)src[2]<<16)
-         | ((uint64_t)src[3]<<24)
-         | ((uint64_t)src[4]<<32)
-         | ((uint64_t)src[5]<<40);
+    uint64_t ret = src[0];
+    ret |= ((uint64_t)src[1]) << 8;
+    ret |= ((uint64_t)src[2]) << 16;
+    ret |= ((uint64_t)src[3]) << 24;
+    ret |= ((uint64_t)src[4]) << 32;
+    ret |= ((uint64_t)src[5]) << 40;
+    return ret;
 }
 
-static
-uint64_t mud_now (struct mud *mud)
+static uint64_t
+mud_now(struct mud *mud)
 {
     uint64_t now;
 #if defined CLOCK_REALTIME
     struct timespec tv;
     clock_gettime(CLOCK_REALTIME, &tv);
-    now = tv.tv_sec*MUD_ONE_SEC+tv.tv_nsec/MUD_ONE_MSEC;
+    now = tv.tv_sec * MUD_ONE_SEC + tv.tv_nsec / MUD_ONE_MSEC;
 #else
     struct timeval tv;
     gettimeofday(&tv, NULL);
-    now = tv.tv_sec*MUD_ONE_SEC+tv.tv_usec;
+    now = tv.tv_sec * MUD_ONE_SEC + tv.tv_usec;
 #endif
-    return now&((UINT64_C(1)<<48)-1);
+    return now & ((UINT64_C(1) << 48) - 1);
 }
 
-static
-uint64_t mud_abs_diff (uint64_t a, uint64_t b)
+static uint64_t
+mud_abs_diff(uint64_t a, uint64_t b)
 {
-    return (a >= b) ? a-b : b-a;
+    return (a >= b) ? a - b : b - a;
 }
 
-static
-int mud_timeout (uint64_t now, uint64_t last, uint64_t timeout)
+static int
+mud_timeout(uint64_t now, uint64_t last, uint64_t timeout)
 {
-    return ((!last) || ((now > last) && (now-last >= timeout)));
+    return ((!last) || ((now > last) && (now - last >= timeout)));
 }
 
-static
-void mud_unmapv4 (struct sockaddr *addr)
+static void
+mud_unmapv4(struct sockaddr *addr)
 {
     if (addr->sa_family != AF_INET6)
         return;
@@ -256,15 +257,15 @@ void mud_unmapv4 (struct sockaddr *addr)
     memcpy(addr, &sin, sizeof(sin));
 }
 
-static
-size_t mud_addrlen (struct sockaddr_storage *addr)
+static size_t
+mud_addrlen(struct sockaddr_storage *addr)
 {
     return (addr->ss_family == AF_INET) ? sizeof(struct sockaddr_in)
                                         : sizeof(struct sockaddr_in6);
 }
 
-static
-int mud_addrinfo (struct sockaddr_storage *addr, const char *host, int port)
+static int
+mud_addrinfo(struct sockaddr_storage *addr, const char *host, int port)
 {
     struct sockaddr_in sin = {
         .sin_family = AF_INET,
@@ -291,9 +292,9 @@ int mud_addrinfo (struct sockaddr_storage *addr, const char *host, int port)
     return -1;
 }
 
-static
-ssize_t mud_send_path (struct mud *mud, struct path *path, uint64_t now,
-                       void *data, size_t size, int tc)
+static ssize_t
+mud_send_path(struct mud *mud, struct path *path, uint64_t now,
+              void *data, size_t size, int tc)
 {
     if (!size)
         return 0;
@@ -321,14 +322,14 @@ ssize_t mud_send_path (struct mud *mud, struct path *path, uint64_t now,
     return ret;
 }
 
-static
-int mud_sso_int (int fd, int level, int optname, int opt)
+static int
+mud_sso_int(int fd, int level, int optname, int opt)
 {
     return setsockopt(fd, level, optname, &opt, sizeof(opt));
 }
 
-static
-int mud_cmp_ipaddr (struct ipaddr *a, struct ipaddr *b)
+static int
+mud_cmp_ipaddr(struct ipaddr *a, struct ipaddr *b)
 {
     if (a == b)
         return 0;
@@ -345,8 +346,8 @@ int mud_cmp_ipaddr (struct ipaddr *a, struct ipaddr *b)
     return 1;
 }
 
-static
-int mud_cmp_addr (struct sockaddr *a, struct sockaddr *b)
+static int
+mud_cmp_addr(struct sockaddr *a, struct sockaddr *b)
 {
     if (a == b)
         return 0;
@@ -375,9 +376,9 @@ int mud_cmp_addr (struct sockaddr *a, struct sockaddr *b)
     return 1;
 }
 
-static
-void mud_set_path (struct path *path, struct ipaddr *local_addr,
-                   struct sockaddr *addr)
+static void
+mud_set_path(struct path *path, struct ipaddr *local_addr,
+             struct sockaddr *addr)
 {
     struct msghdr msg = {
         .msg_control = path->ctrl.data,
@@ -407,8 +408,8 @@ void mud_set_path (struct path *path, struct ipaddr *local_addr,
         cmsg->cmsg_len = CMSG_LEN(sizeof(int));
 
         path->tc = CMSG_DATA(cmsg);
-        path->ctrl.size = CMSG_SPACE(MUD_PKTINFO_SIZE)
-                        + CMSG_SPACE(sizeof(int));
+        path->ctrl.size = CMSG_SPACE(MUD_PKTINFO_SIZE) +
+                          CMSG_SPACE(sizeof(int));
     }
 
     if (addr->sa_family == AF_INET6) {
@@ -429,14 +430,14 @@ void mud_set_path (struct path *path, struct ipaddr *local_addr,
         cmsg->cmsg_len = CMSG_LEN(sizeof(int));
 
         path->tc = CMSG_DATA(cmsg);
-        path->ctrl.size = CMSG_SPACE(sizeof(struct in6_pktinfo))
-                        + CMSG_SPACE(sizeof(int));
+        path->ctrl.size = CMSG_SPACE(sizeof(struct in6_pktinfo)) +
+                          CMSG_SPACE(sizeof(int));
     }
 }
 
-static
-struct path *mud_path (struct mud *mud, struct ipaddr *local_addr,
-                       struct sockaddr *addr, int create)
+static struct path *
+mud_path(struct mud *mud, struct ipaddr *local_addr,
+         struct sockaddr *addr, int create)
 {
     if (local_addr->family != addr->sa_family)
         return NULL;
@@ -469,8 +470,8 @@ struct path *mud_path (struct mud *mud, struct ipaddr *local_addr,
     return path;
 }
 
-static
-int mud_ipaddrinfo (struct ipaddr *ipaddr, const char *name)
+static int
+mud_ipaddrinfo(struct ipaddr *ipaddr, const char *name)
 {
     if (!name) {
         errno = EINVAL;
@@ -490,7 +491,9 @@ int mud_ipaddrinfo (struct ipaddr *ipaddr, const char *name)
     return -1;
 }
 
-int mud_peer (struct mud *mud, const char *name, const char *host, int port, int backup)
+int
+mud_peer(struct mud *mud, const char *name, const char *host, int port,
+         int backup)
 {
     if (!name || !host || !port) {
         errno = EINVAL;
@@ -509,8 +512,7 @@ int mud_peer (struct mud *mud, const char *name, const char *host, int port, int
 
     mud_unmapv4((struct sockaddr *)&addr);
 
-    struct path *path = mud_path(mud, &local_addr,
-                                 (struct sockaddr *)&addr, 1);
+    struct path *path = mud_path(mud, &local_addr, (struct sockaddr *)&addr, 1);
 
     if (!path) {
         errno = ENOMEM;
@@ -523,7 +525,8 @@ int mud_peer (struct mud *mud, const char *name, const char *host, int port, int
     return 0;
 }
 
-int mud_get_key (struct mud *mud, unsigned char *key, size_t *size)
+int
+mud_get_key(struct mud *mud, unsigned char *key, size_t *size)
 {
     if (!key || !size || (*size < MUD_KEY_SIZE)) {
         errno = EINVAL;
@@ -536,7 +539,8 @@ int mud_get_key (struct mud *mud, unsigned char *key, size_t *size)
     return 0;
 }
 
-int mud_set_key (struct mud *mud, unsigned char *key, size_t size)
+int
+mud_set_key(struct mud *mud, unsigned char *key, size_t size)
 {
     if (!key || (size < MUD_KEY_SIZE)) {
         errno = EINVAL;
@@ -553,31 +557,34 @@ int mud_set_key (struct mud *mud, unsigned char *key, size_t size)
     return 0;
 }
 
-int mud_set_send_timeout_msec (struct mud *mud, unsigned msec)
+int
+mud_set_send_timeout_msec(struct mud *mud, unsigned msec)
 {
     if (!msec) {
         errno = EINVAL;
         return -1;
     }
 
-    mud->send_timeout = msec*MUD_ONE_MSEC;
+    mud->send_timeout = msec * MUD_ONE_MSEC;
 
     return 0;
 }
 
-int mud_set_time_tolerance_sec (struct mud *mud, unsigned sec)
+int
+mud_set_time_tolerance_sec(struct mud *mud, unsigned sec)
 {
     if (!sec) {
         errno = EINVAL;
         return -1;
     }
 
-    mud->time_tolerance = sec*MUD_ONE_SEC;
+    mud->time_tolerance = sec * MUD_ONE_SEC;
 
     return 0;
 }
 
-int mud_get_mtu (struct mud *mud)
+int
+mud_get_mtu(struct mud *mud)
 {
     if ((!mud->mtu.remote) ||
         (mud->mtu.local < mud->mtu.remote))
@@ -586,10 +593,11 @@ int mud_get_mtu (struct mud *mud)
     return mud->mtu.remote;
 }
 
-int mud_set_mtu (struct mud *mud, int mtu)
+int
+mud_set_mtu(struct mud *mud, int mtu)
 {
     if ((mtu < 500) ||
-        (mtu > MUD_PACKET_MAX_SIZE-50)) {
+        (mtu > MUD_PACKET_MAX_SIZE - 50)) {
         errno = EINVAL;
         return -1;
     }
@@ -602,8 +610,8 @@ int mud_set_mtu (struct mud *mud, int mtu)
     return 0;
 }
 
-static
-int mud_setup_socket (int fd, int v4, int v6)
+static int
+mud_setup_socket(int fd, int v4, int v6)
 {
     if ((mud_sso_int(fd, SOL_SOCKET, SO_REUSEADDR, 1)) ||
         (v4 && mud_sso_int(fd, IPPROTO_IP, MUD_PKTINFO, 1)) ||
@@ -612,18 +620,15 @@ int mud_setup_socket (int fd, int v4, int v6)
         return -1;
 
 #ifdef __linux__
-        if (v4)
-            mud_sso_int(fd, IPPROTO_IP, MUD_DFRAG, MUD_DFRAG_OPT);
+    if (v4)
+        mud_sso_int(fd, IPPROTO_IP, MUD_DFRAG, MUD_DFRAG_OPT);
 #endif
-
-//  mud_sso_int(fd, SOL_SOCKET, SO_RCVBUF, 1<<24);
-//  mud_sso_int(fd, SOL_SOCKET, SO_SNDBUF, 1<<24);
 
     return 0;
 }
 
-static
-int mud_create_socket (int port, int v4, int v6)
+static int
+mud_create_socket(int port, int v4, int v6)
 {
     struct sockaddr_storage addr;
 
@@ -646,16 +651,17 @@ int mud_create_socket (int port, int v4, int v6)
     return fd;
 }
 
-static
-void mud_keyx_init (struct mud *mud)
+static void
+mud_keyx_init(struct mud *mud)
 {
     randombytes_buf(mud->crypto.secret, sizeof(mud->crypto.secret));
     crypto_scalarmult_base(mud->crypto.public.send, mud->crypto.secret);
     memset(mud->crypto.public.recv, 0, sizeof(mud->crypto.public.recv));
-    mud->crypto.public.send[MUD_PKEY_SIZE-1] = mud->crypto.aes;
+    mud->crypto.public.send[MUD_PKEY_SIZE - 1] = mud->crypto.aes;
 }
 
-struct mud *mud_create (int port, int v4, int v6, int aes, int mtu)
+struct mud *
+mud_create(int port, int v4, int v6, int aes, int mtu)
 {
     if (sodium_init() == -1)
         return NULL;
@@ -687,12 +693,14 @@ struct mud *mud_create (int port, int v4, int v6, int aes, int mtu)
     return mud;
 }
 
-int mud_get_fd (struct mud *mud)
+int
+mud_get_fd(struct mud *mud)
 {
     return mud->fd;
 }
 
-void mud_delete (struct mud *mud)
+void
+mud_delete(struct mud *mud)
 {
     if (!mud)
         return;
@@ -712,25 +720,28 @@ void mud_delete (struct mud *mud)
     free(mud);
 }
 
-static
-int mud_encrypt (struct mud *mud, uint64_t nonce,
-                 unsigned char *dst, size_t dst_size,
-                 const unsigned char *src, size_t src_size)
+static int
+mud_encrypt(struct mud *mud, uint64_t nonce,
+            unsigned char *dst, size_t dst_size,
+            const unsigned char *src, size_t src_size)
 {
     if (!nonce)
         return 0;
 
-    size_t size = src_size+MUD_PACKET_MIN_SIZE;
+    size_t size = src_size + MUD_PACKET_MIN_SIZE;
 
     if (size > dst_size)
         return 0;
 
     struct crypto_opt opt = {
-        .dst = dst+MUD_U48_SIZE,
-        .src = { .data = src,
-                 .size = src_size },
-        .ad  = { .data = dst,
-                 .size = MUD_U48_SIZE },
+        .dst = dst + MUD_U48_SIZE,
+        .src = {
+            .data = src,
+            .size = src_size,
+        },
+        .ad = {
+            .data = dst, .size = MUD_U48_SIZE,
+        },
     };
 
     mud_write48(opt.npub, nonce);
@@ -745,22 +756,25 @@ int mud_encrypt (struct mud *mud, uint64_t nonce,
     return size;
 }
 
-static
-int mud_decrypt (struct mud *mud,
-                 unsigned char *dst, size_t dst_size,
-                 const unsigned char *src, size_t src_size)
+static int
+mud_decrypt(struct mud *mud,
+            unsigned char *dst, size_t dst_size,
+            const unsigned char *src, size_t src_size)
 {
-    size_t size = src_size-MUD_PACKET_MIN_SIZE;
+    size_t size = src_size - MUD_PACKET_MIN_SIZE;
 
     if (size > dst_size)
         return 0;
 
     struct crypto_opt opt = {
         .dst = dst,
-        .src = { .data = src+MUD_U48_SIZE,
-                 .size = src_size-MUD_U48_SIZE },
-        .ad  = { .data = src,
-                 .size = MUD_U48_SIZE },
+        .src = {
+            .data = src + MUD_U48_SIZE,
+            .size = src_size - MUD_U48_SIZE,
+        },
+        .ad = {
+            .data = src, .size = MUD_U48_SIZE,
+        },
     };
 
     memcpy(opt.npub, src, MUD_U48_SIZE);
@@ -781,8 +795,8 @@ int mud_decrypt (struct mud *mud,
     return size;
 }
 
-static
-int mud_localaddr (struct ipaddr *local_addr, struct msghdr *msg, int family)
+static int
+mud_localaddr(struct ipaddr *local_addr, struct msghdr *msg, int family)
 {
     int cmsg_level = IPPROTO_IP;
     int cmsg_type = MUD_PKTINFO;
@@ -818,14 +832,14 @@ int mud_localaddr (struct ipaddr *local_addr, struct msghdr *msg, int family)
     return 0;
 }
 
-static
-void mud_ctrl_path (struct mud *mud, enum mud_msg msg, struct path *path,
-                    uint64_t now)
+static void
+mud_ctrl_path(struct mud *mud, enum mud_msg msg, struct path *path,
+              uint64_t now)
 {
     struct {
         unsigned char zero[MUD_U48_SIZE];
         unsigned char time[MUD_U48_SIZE];
-        unsigned char data[128+MUD_MAC_SIZE];
+        unsigned char data[128 + MUD_MAC_SIZE];
     } ctrl;
 
     size_t size = 0;
@@ -837,8 +851,8 @@ void mud_ctrl_path (struct mud *mud, enum mud_msg msg, struct path *path,
     case mud_pong:
         mud_write48(ctrl.data, path->sdt);
         mud_write48(&ctrl.data[MUD_U48_SIZE], path->rdt);
-        mud_write48(&ctrl.data[2*MUD_U48_SIZE], path->rst);
-        size = MUD_U48_SIZE*3;
+        mud_write48(&ctrl.data[2 * MUD_U48_SIZE], path->rst);
+        size = MUD_U48_SIZE * 3;
         break;
     case mud_keyx:
         memcpy(ctrl.data, &mud->crypto.public, sizeof(mud->crypto.public));
@@ -855,26 +869,28 @@ void mud_ctrl_path (struct mud *mud, enum mud_msg msg, struct path *path,
     }
 
     struct crypto_opt opt = {
-        .dst = ctrl.data+size,
-        .ad  = { .data = ctrl.zero,
-                 .size = size+2*MUD_U48_SIZE },
+        .dst = ctrl.data + size,
+        .ad = {
+            .data = ctrl.zero,
+            .size = size + 2 * MUD_U48_SIZE,
+        },
     };
 
-    size += 2*MUD_U48_SIZE+MUD_MAC_SIZE;
+    size += 2 * MUD_U48_SIZE + MUD_MAC_SIZE;
 
     mud_encrypt_opt(&mud->crypto.private, &opt);
     mud_send_path(mud, path, now, &ctrl, size, 0);
 }
 
-static
-void mud_recv_keyx (struct mud *mud, struct path *path, uint64_t now,
-                    unsigned char *data)
+static void
+mud_recv_keyx(struct mud *mud, struct path *path, uint64_t now,
+              unsigned char *data)
 {
     struct crypto_key *key = &mud->crypto.next;
 
     struct {
         unsigned char secret[crypto_scalarmult_BYTES];
-        struct public public;
+        struct crypto_pub public;
     } shared_send, shared_recv;
 
     memcpy(&shared_recv.public, data, sizeof(shared_recv.public));
@@ -917,8 +933,8 @@ void mud_recv_keyx (struct mud *mud, struct path *path, uint64_t now,
                        (unsigned char *)&shared_recv, sizeof(shared_recv),
                        mud->crypto.private.encrypt.key, MUD_KEY_SIZE);
 
-    key->aes = (shared_recv.public.send[MUD_PKEY_SIZE-1] == 1) &&
-               (shared_recv.public.recv[MUD_PKEY_SIZE-1] == 1);
+    key->aes = (shared_recv.public.send[MUD_PKEY_SIZE - 1] == 1) &&
+               (shared_recv.public.recv[MUD_PKEY_SIZE - 1] == 1);
 
     if (key->aes) {
         crypto_aead_aes256gcm_beforenm(&key->encrypt.state, key->encrypt.key);
@@ -928,7 +944,8 @@ void mud_recv_keyx (struct mud *mud, struct path *path, uint64_t now,
     mud->crypto.recv_time = now;
 }
 
-int mud_recv (struct mud *mud, void *data, size_t size)
+int
+mud_recv(struct mud *mud, void *data, size_t size)
 {
     unsigned char packet[MUD_PACKET_MAX_SIZE];
 
@@ -974,10 +991,13 @@ int mud_recv (struct mud *mud, void *data, size_t size)
 
         struct crypto_opt opt = {
             .dst = tmp,
-            .src = { .data = packet+packet_size-MUD_MAC_SIZE,
-                     .size = MUD_MAC_SIZE },
-            .ad  = { .data = packet,
-                     .size = packet_size-MUD_MAC_SIZE },
+            .src = {
+                .data = packet + packet_size - MUD_MAC_SIZE,
+                .size = MUD_MAC_SIZE,
+            },
+            .ad = {
+                .data = packet, .size = packet_size - MUD_MAC_SIZE,
+            },
         };
 
         if (mud_decrypt_opt(&mud->crypto.private, &opt))
@@ -998,11 +1018,11 @@ int mud_recv (struct mud *mud, void *data, size_t size)
         return 0;
 
     if (path->rdt) {
-        path->rdt = ((now-path->recv_time)+UINT64_C(7)*path->rdt)/UINT64_C(8);
-        path->sdt = ((send_time-path->rst)+UINT64_C(7)*path->sdt)/UINT64_C(8);
+        path->rdt = ((now - path->recv_time) + UINT64_C(7) * path->rdt) / UINT64_C(8);
+        path->sdt = ((send_time - path->rst) + UINT64_C(7) * path->sdt) / UINT64_C(8);
     } else if (path->recv_time) {
-        path->rdt = now-path->recv_time;
-        path->sdt = send_time-path->rst;
+        path->rdt = now - path->recv_time;
+        path->sdt = send_time - path->rst;
     }
 
     path->rst = send_time;
@@ -1017,20 +1037,20 @@ int mud_recv (struct mud *mud, void *data, size_t size)
 
     if (mud_packet) {
         if (packet_size == (ssize_t)MUD_KEYX_SIZE) {
-            mud_recv_keyx(mud, path, now, &packet[MUD_U48_SIZE*2]);
+            mud_recv_keyx(mud, path, now, &packet[MUD_U48_SIZE * 2]);
         } else if (packet_size == (ssize_t)MUD_MTUX_SIZE) {
-            mud->mtu.remote = (int)mud_read48(&packet[MUD_U48_SIZE*2]);
+            mud->mtu.remote = (int)mud_read48(&packet[MUD_U48_SIZE * 2]);
             if (!path->state.active)
                 mud_ctrl_path(mud, mud_mtux, path, now);
         } else if (packet_size == (ssize_t)MUD_PONG_SIZE) {
-            path->r_sdt = mud_read48(&packet[MUD_U48_SIZE*2]);
-            path->r_rdt = mud_read48(&packet[MUD_U48_SIZE*3]);
-            path->r_rst = mud_read48(&packet[MUD_U48_SIZE*4]);
-            path->r_dt = send_time-path->r_rst;
-            path->rtt = now-path->r_rst;
+            path->r_sdt = mud_read48(&packet[MUD_U48_SIZE * 2]);
+            path->r_rdt = mud_read48(&packet[MUD_U48_SIZE * 3]);
+            path->r_rst = mud_read48(&packet[MUD_U48_SIZE * 4]);
+            path->r_dt = send_time - path->r_rst;
+            path->rtt = now - path->r_rst;
         } else if (packet_size == (ssize_t)MUD_BAKX_SIZE) {
             path->bak.local = 1;
-            path->bak.remote = (int)packet[MUD_U48_SIZE*2];
+            path->bak.remote = (int)packet[MUD_U48_SIZE * 2];
             if (!path->state.active)
                 mud_ctrl_path(mud, mud_bakx, path, now);
         }
@@ -1051,7 +1071,8 @@ int mud_recv (struct mud *mud, void *data, size_t size)
     return ret;
 }
 
-void mud_send_ctrl (struct mud *mud)
+void
+mud_send_ctrl(struct mud *mud)
 {
     struct path *path;
 
@@ -1087,7 +1108,8 @@ void mud_send_ctrl (struct mud *mud)
     }
 }
 
-int mud_send (struct mud *mud, const void *data, size_t size, int tc)
+int
+mud_send(struct mud *mud, const void *data, size_t size, int tc)
 {
     mud_send_ctrl(mud);
 
@@ -1118,12 +1140,12 @@ int mud_send (struct mud *mud, const void *data, size_t size, int tc)
             continue;
 
         int64_t limit = path->limit;
-        uint64_t elapsed = now-path->send_time;
+        uint64_t elapsed = now - path->send_time;
 
         if (limit > elapsed) {
-            limit += path->rtt/2-elapsed;
+            limit += path->rtt / 2 - elapsed;
         } else {
-            limit = path->rtt/2;
+            limit = path->rtt / 2;
         }
 
         if (mud_timeout(now, path->recv_time, mud->send_timeout)) {
