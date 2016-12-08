@@ -52,12 +52,12 @@
 #define MUD_PACKET_MIN_SIZE (MUD_U48_SIZE + MUD_MAC_SIZE)
 #define MUD_PACKET_MAX_SIZE (1500U)
 
-#define MUD_PONG_TIMEOUT (100 * MUD_ONE_MSEC)
+#define MUD_STAT_TIMEOUT (100 * MUD_ONE_MSEC)
 #define MUD_KEYX_TIMEOUT (60 * MUD_ONE_MIN)
 #define MUD_SEND_TIMEOUT (MUD_ONE_SEC)
 #define MUD_TIME_TOLERANCE (10 * MUD_ONE_MIN)
 
-struct ipaddr {
+struct mud_ipaddr {
     int family;
     union {
         struct in_addr v4;
@@ -65,11 +65,11 @@ struct ipaddr {
     } ip;
 };
 
-struct path {
+struct mud_path {
     struct {
         unsigned active : 1;
     } state;
-    struct ipaddr local_addr;
+    struct mud_ipaddr local_addr;
     struct sockaddr_storage addr;
     struct {
         unsigned char data[256];
@@ -92,16 +92,16 @@ struct path {
     uint64_t limit;
     uint64_t recv_time;
     uint64_t send_time;
-    uint64_t pong_time;
-    struct path *next;
+    uint64_t stat_time;
+    struct mud_path *next;
 };
 
-struct crypto_pub {
-    unsigned char send[MUD_PUB_SIZE+1];
-    unsigned char recv[MUD_PUB_SIZE+1];
+struct mud_crypto_pub {
+    unsigned char send[MUD_PUB_SIZE + 1];
+    unsigned char recv[MUD_PUB_SIZE + 1];
 };
 
-struct crypto_opt {
+struct mud_crypto_opt {
     unsigned char *dst;
     struct {
         const unsigned char *data;
@@ -110,7 +110,7 @@ struct crypto_opt {
     unsigned char npub[16];
 };
 
-struct crypto_key {
+struct mud_crypto_key {
     struct {
         unsigned char key[MUD_KEY_SIZE];
         crypto_aead_aes256gcm_state state;
@@ -118,30 +118,9 @@ struct crypto_key {
     int aes;
 };
 
-struct mud {
-    int fd;
-    uint64_t send_timeout;
-    uint64_t time_tolerance;
-    struct path *path;
-    struct {
-        uint64_t recv_time;
-        uint64_t send_time;
-        unsigned char secret[crypto_scalarmult_SCALARBYTES];
-        struct crypto_pub public;
-        struct crypto_key private, last, next, current;
-        int use_next;
-        int aes;
-    } crypto;
-    struct {
-        uint64_t send_time;
-        int remote;
-        int local;
-    } mtu;
-};
-
-enum mud_msg {
+enum mud_packet_code {
     mud_ping,
-    mud_pong,
+    mud_stat,
     mud_keyx,
     mud_mtux,
     mud_bakx,
@@ -158,16 +137,37 @@ struct mud_packet {
             unsigned char sdt[MUD_U48_SIZE];
             unsigned char rdt[MUD_U48_SIZE];
             unsigned char rst[MUD_U48_SIZE];
-        } pong;
-        struct crypto_pub public;
+        } stat;
+        struct mud_crypto_pub public;
         unsigned char mtu[MUD_U48_SIZE];
         unsigned char backup;
     } data;
     unsigned char _do_not_use_[MUD_MAC_SIZE];
 };
 
+struct mud {
+    int fd;
+    uint64_t send_timeout;
+    uint64_t time_tolerance;
+    struct mud_path *path;
+    struct {
+        uint64_t recv_time;
+        uint64_t send_time;
+        unsigned char secret[crypto_scalarmult_SCALARBYTES];
+        struct mud_crypto_pub public;
+        struct mud_crypto_key private, last, next, current;
+        int use_next;
+        int aes;
+    } crypto;
+    struct {
+        uint64_t send_time;
+        int remote;
+        int local;
+    } mtu;
+};
+
 static int
-mud_encrypt_opt(const struct crypto_key *k, const struct crypto_opt *c)
+mud_encrypt_opt(const struct mud_crypto_key *k, const struct mud_crypto_opt *c)
 {
     if (k->aes) {
         return crypto_aead_aes256gcm_encrypt_afternm(
@@ -182,7 +182,7 @@ mud_encrypt_opt(const struct crypto_key *k, const struct crypto_opt *c)
 }
 
 static int
-mud_decrypt_opt(const struct crypto_key *k, const struct crypto_opt *c)
+mud_decrypt_opt(const struct mud_crypto_key *k, const struct mud_crypto_opt *c)
 {
     if (k->aes) {
         return crypto_aead_aes256gcm_decrypt_afternm(
@@ -306,7 +306,7 @@ mud_addrinfo(struct sockaddr_storage *addr, const char *host, int port)
 }
 
 static ssize_t
-mud_send_path(struct mud *mud, struct path *path, uint64_t now,
+mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
               void *data, size_t size, int tc)
 {
     if (!size)
@@ -342,7 +342,7 @@ mud_sso_int(int fd, int level, int optname, int opt)
 }
 
 static int
-mud_cmp_ipaddr(struct ipaddr *a, struct ipaddr *b)
+mud_cmp_ipaddr(struct mud_ipaddr *a, struct mud_ipaddr *b)
 {
     if (a == b)
         return 0;
@@ -390,7 +390,7 @@ mud_cmp_addr(struct sockaddr *a, struct sockaddr *b)
 }
 
 static void
-mud_set_path(struct path *path, struct ipaddr *local_addr,
+mud_set_path(struct mud_path *path, struct mud_ipaddr *local_addr,
              struct sockaddr *addr)
 {
     struct msghdr msg = {
@@ -401,7 +401,7 @@ mud_set_path(struct path *path, struct ipaddr *local_addr,
     struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
 
     memset(path->ctrl.data, 0, sizeof(path->ctrl.data));
-    memmove(&path->local_addr, local_addr, sizeof(struct ipaddr));
+    memmove(&path->local_addr, local_addr, sizeof(struct mud_ipaddr));
 
     if (addr->sa_family == AF_INET) {
         memmove(&path->addr, addr, sizeof(struct sockaddr_in));
@@ -448,14 +448,14 @@ mud_set_path(struct path *path, struct ipaddr *local_addr,
     }
 }
 
-static struct path *
-mud_path(struct mud *mud, struct ipaddr *local_addr,
+static struct mud_path *
+mud_path(struct mud *mud, struct mud_ipaddr *local_addr,
          struct sockaddr *addr, int create)
 {
     if (local_addr->family != addr->sa_family)
         return NULL;
 
-    struct path *path;
+    struct mud_path *path;
 
     for (path = mud->path; path; path = path->next) {
         if (mud_cmp_ipaddr(local_addr, &path->local_addr))
@@ -470,7 +470,7 @@ mud_path(struct mud *mud, struct ipaddr *local_addr,
     if (path || !create)
         return path;
 
-    path = calloc(1, sizeof(struct path));
+    path = calloc(1, sizeof(struct mud_path));
 
     if (!path)
         return NULL;
@@ -483,27 +483,6 @@ mud_path(struct mud *mud, struct ipaddr *local_addr,
     return path;
 }
 
-static int
-mud_ipaddrinfo(struct ipaddr *ipaddr, const char *name)
-{
-    if (!name) {
-        errno = EINVAL;
-        return -1;
-    }
-
-    if (inet_pton(AF_INET, name, &ipaddr->ip.v4) == 1) {
-        ipaddr->family = AF_INET;
-        return 0;
-    }
-
-    if (inet_pton(AF_INET6, name, &ipaddr->ip.v6) == 1) {
-        ipaddr->family = AF_INET6;
-        return 0;
-    }
-
-    return -1;
-}
-
 int
 mud_peer(struct mud *mud, const char *name, const char *host, int port,
          int backup)
@@ -513,10 +492,18 @@ mud_peer(struct mud *mud, const char *name, const char *host, int port,
         return -1;
     }
 
-    struct ipaddr local_addr;
+    struct mud_ipaddr local_addr;
 
-    if (mud_ipaddrinfo(&local_addr, name))
-        return -1;
+    if (inet_pton(AF_INET, name, &local_addr.ip.v4) == 1) {
+        local_addr.family = AF_INET;
+    } else {
+        if (inet_pton(AF_INET6, name, &local_addr.ip.v6) == 1) {
+            local_addr.family = AF_INET6;
+        } else {
+            errno = EINVAL;
+            return -1;
+        }
+    }
 
     struct sockaddr_storage addr;
 
@@ -525,7 +512,7 @@ mud_peer(struct mud *mud, const char *name, const char *host, int port,
 
     mud_unmapv4((struct sockaddr *)&addr);
 
-    struct path *path = mud_path(mud, &local_addr, (struct sockaddr *)&addr, 1);
+    struct mud_path *path = mud_path(mud, &local_addr, (struct sockaddr *)&addr, 1);
 
     if (!path) {
         errno = ENOMEM;
@@ -719,7 +706,7 @@ mud_delete(struct mud *mud)
         return;
 
     while (mud->path) {
-        struct path *path = mud->path;
+        struct mud_path *path = mud->path;
         mud->path = path->next;
         free(path);
     }
@@ -746,7 +733,7 @@ mud_encrypt(struct mud *mud, uint64_t nonce,
     if (size > dst_size)
         return 0;
 
-    struct crypto_opt opt = {
+    struct mud_crypto_opt opt = {
         .dst = dst + MUD_U48_SIZE,
         .src = {
             .data = src,
@@ -779,7 +766,7 @@ mud_decrypt(struct mud *mud,
     if (size > dst_size)
         return 0;
 
-    struct crypto_opt opt = {
+    struct mud_crypto_opt opt = {
         .dst = dst,
         .src = {
             .data = src + MUD_U48_SIZE,
@@ -809,7 +796,7 @@ mud_decrypt(struct mud *mud,
 }
 
 static int
-mud_localaddr(struct ipaddr *local_addr, struct msghdr *msg, int family)
+mud_localaddr(struct mud_ipaddr *local_addr, struct msghdr *msg, int family)
 {
     int cmsg_level = IPPROTO_IP;
     int cmsg_type = MUD_PKTINFO;
@@ -848,43 +835,42 @@ mud_localaddr(struct ipaddr *local_addr, struct msghdr *msg, int family)
 static size_t
 mud_packet_size(size_t size)
 {
-    return (sizeof(((struct mud_packet *)0)->hdr)+size+MUD_MAC_SIZE);
+    return (sizeof(((struct mud_packet *)0)->hdr) + size + MUD_MAC_SIZE);
 }
 
 static void
-mud_packet_send(struct mud *mud, enum mud_msg msg, struct path *path,
-                uint64_t now)
+mud_packet_send(struct mud *mud, enum mud_packet_code code,
+                struct mud_path *path, uint64_t now)
 {
     struct mud_packet packet;
     size_t size = 0;
 
     memset(packet.hdr.zero, 0, MUD_U48_SIZE);
     mud_write48(packet.hdr.time, now);
-    packet.hdr.code = (unsigned char)msg;
+    packet.hdr.code = (unsigned char)code;
 
-    switch (msg) {
-    case mud_pong:
-        mud_write48(packet.data.pong.sdt, path->sdt);
-        mud_write48(packet.data.pong.rdt, path->rdt);
-        mud_write48(packet.data.pong.rst, path->rst);
-        size = sizeof(packet.data.pong);
+    switch (code) {
+    case mud_stat:
+        size = sizeof(packet.data.stat);
+        mud_write48(packet.data.stat.sdt, path->sdt);
+        mud_write48(packet.data.stat.rdt, path->rdt);
+        mud_write48(packet.data.stat.rst, path->rst);
         break;
     case mud_keyx:
-        memcpy(&packet.data.public, &mud->crypto.public,
-               sizeof(mud->crypto.public));
         size = sizeof(packet.data.public);
+        memcpy(&packet.data.public, &mud->crypto.public, size);
         break;
     case mud_mtux:
-        mud_write48(packet.data.mtu, mud->mtu.local);
         size = sizeof(packet.data.mtu);
+        mud_write48(packet.data.mtu, mud->mtu.local);
         break;
     case mud_bakx:
-        packet.data.backup = (unsigned char)path->bak.local;
         size = sizeof(packet.data.backup);
+        packet.data.backup = (unsigned char)path->bak.local;
         break;
     }
 
-    struct crypto_opt opt = {
+    struct mud_crypto_opt opt = {
         .dst = (unsigned char *)&packet.data + size,
         .ad = {
             .data = packet.hdr.zero,
@@ -897,14 +883,14 @@ mud_packet_send(struct mud *mud, enum mud_msg msg, struct path *path,
 }
 
 static void
-mud_recv_keyx(struct mud *mud, struct path *path, uint64_t now,
-              struct crypto_pub *public)
+mud_recv_keyx(struct mud *mud, struct mud_path *path, uint64_t now,
+              struct mud_crypto_pub *public)
 {
-    struct crypto_key *key = &mud->crypto.next;
+    struct mud_crypto_key *key = &mud->crypto.next;
 
     struct {
         unsigned char secret[crypto_scalarmult_BYTES];
-        struct crypto_pub public;
+        struct mud_crypto_pub public;
     } shared_send, shared_recv;
 
     memcpy(&shared_recv.public, public, sizeof(shared_recv.public));
@@ -959,8 +945,8 @@ mud_recv_keyx(struct mud *mud, struct path *path, uint64_t now,
 }
 
 static void
-mud_packet_recv(struct mud *mud, struct path *path, uint64_t now,
-              unsigned char *data, size_t size)
+mud_packet_recv(struct mud *mud, struct mud_path *path, uint64_t now,
+                unsigned char *data, size_t size)
 {
     struct mud_packet *packet = (struct mud_packet *)data;
 
@@ -968,12 +954,12 @@ mud_packet_recv(struct mud *mud, struct path *path, uint64_t now,
         return;
 
     switch (packet->hdr.code) {
-    case mud_pong:
-        if (size < mud_packet_size(sizeof(packet->data.pong)))
+    case mud_stat:
+        if (size < mud_packet_size(sizeof(packet->data.stat)))
             return;
-        path->r_sdt = mud_read48(packet->data.pong.sdt);
-        path->r_rdt = mud_read48(packet->data.pong.rdt);
-        path->r_rst = mud_read48(packet->data.pong.rst);
+        path->r_sdt = mud_read48(packet->data.stat.sdt);
+        path->r_rdt = mud_read48(packet->data.stat.rdt);
+        path->r_rst = mud_read48(packet->data.stat.rst);
         path->r_dt = path->rst - path->r_rst;
         path->rtt = now - path->r_rst;
         break;
@@ -1047,7 +1033,7 @@ mud_recv(struct mud *mud, void *data, size_t size)
     if (mud_packet) {
         unsigned char tmp[sizeof(packet)];
 
-        struct crypto_opt opt = {
+        struct mud_crypto_opt opt = {
             .dst = tmp,
             .src = {
                 .data = packet + packet_size - MUD_MAC_SIZE,
@@ -1064,13 +1050,13 @@ mud_recv(struct mud *mud, void *data, size_t size)
 
     mud_unmapv4((struct sockaddr *)&addr);
 
-    struct ipaddr local_addr;
+    struct mud_ipaddr local_addr;
 
     if (mud_localaddr(&local_addr, &msg, addr.ss_family))
         return 0;
 
-    struct path *path = mud_path(mud, &local_addr,
-                                 (struct sockaddr *)&addr, mud_packet);
+    struct mud_path *path = mud_path(mud, &local_addr,
+                                     (struct sockaddr *)&addr, mud_packet);
 
     if (!path)
         return 0;
@@ -1086,9 +1072,9 @@ mud_recv(struct mud *mud, void *data, size_t size)
     path->rst = send_time;
 
     if ((!path->bak.local) && (path->recv_time) &&
-        (mud_timeout(now, path->pong_time, MUD_PONG_TIMEOUT))) {
-        mud_packet_send(mud, mud_pong, path, now);
-        path->pong_time = now;
+        (mud_timeout(now, path->stat_time, MUD_STAT_TIMEOUT))) {
+        mud_packet_send(mud, mud_stat, path, now);
+        path->stat_time = now;
     }
 
     path->recv_time = now;
@@ -1115,7 +1101,7 @@ mud_recv(struct mud *mud, void *data, size_t size)
 static void
 mud_update(struct mud *mud)
 {
-    struct path *path;
+    struct mud_path *path;
 
     for (path = mud->path; path; path = path->next) {
         if (!path->state.active)
@@ -1172,8 +1158,8 @@ mud_send(struct mud *mud, const void *data, size_t size, int tc)
         return -1;
     }
 
-    struct path *path;
-    struct path *path_min = NULL;
+    struct mud_path *path;
+    struct mud_path *path_min = NULL;
     int64_t limit_min = INT64_MAX;
 
     for (path = mud->path; path; path = path->next) {
