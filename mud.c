@@ -48,6 +48,7 @@
 #define MUD_KEY_SIZE (32U)
 #define MUD_MAC_SIZE (16U)
 #define MUD_PUB_SIZE (crypto_scalarmult_BYTES)
+#define MUD_SID_SIZE (8U)
 
 #define MUD_PACKET_MIN_SIZE (MUD_U48_SIZE + MUD_MAC_SIZE)
 #define MUD_PACKET_MAX_SIZE (1500U)
@@ -75,6 +76,10 @@ struct mud_path {
         unsigned char data[256];
         size_t size;
     } ctrl;
+    struct {
+        uint64_t send_time;
+        int remote;
+    } kiss;
     struct {
         uint64_t send_time;
         int remote;
@@ -119,7 +124,7 @@ struct mud_crypto_key {
 };
 
 enum mud_packet_code {
-    mud_ping,
+    mud_kiss,
     mud_stat,
     mud_keyx,
     mud_mtux,
@@ -133,6 +138,7 @@ struct mud_packet {
         unsigned char code;
     } hdr;
     union {
+        unsigned char kiss[MUD_SID_SIZE];
         struct {
             unsigned char sdt[MUD_U48_SIZE];
             unsigned char rdt[MUD_U48_SIZE];
@@ -164,6 +170,7 @@ struct mud {
         int remote;
         int local;
     } mtu;
+    unsigned char kiss[MUD_SID_SIZE];
 };
 
 static int
@@ -690,6 +697,8 @@ mud_create(int port, int v4, int v6, int aes, int mtu)
     mud->crypto.aes = aes && crypto_aead_aes256gcm_is_available();
     mud_keyx_init(mud);
 
+    randombytes_buf(mud->kiss, sizeof(mud->kiss));
+
     return mud;
 }
 
@@ -850,6 +859,10 @@ mud_packet_send(struct mud *mud, enum mud_packet_code code,
     packet.hdr.code = (unsigned char)code;
 
     switch (code) {
+    case mud_kiss:
+        size = sizeof(packet.data.kiss);
+        memcpy(&packet.data.kiss, &mud->kiss, size);
+        break;
     case mud_stat:
         size = sizeof(packet.data.stat);
         mud_write48(packet.data.stat.sdt, path->sdt);
@@ -945,6 +958,19 @@ mud_recv_keyx(struct mud *mud, struct mud_path *path, uint64_t now,
 }
 
 static void
+mud_kiss_path(struct mud *mud, struct mud_path *path)
+{
+    while (mud->path) {
+        struct mud_path *p = mud->path;
+        mud->path = p->next;
+        if (p != path)
+            free(p);
+    }
+
+    mud->path = path;
+}
+
+static void
 mud_packet_recv(struct mud *mud, struct mud_path *path, uint64_t now,
                 unsigned char *data, size_t size)
 {
@@ -954,6 +980,20 @@ mud_packet_recv(struct mud *mud, struct mud_path *path, uint64_t now,
         return;
 
     switch (packet->hdr.code) {
+    case mud_kiss:
+        if (size < mud_packet_size(sizeof(packet->data.kiss)))
+            return;
+        path->kiss.remote = !memcmp(mud->kiss, packet->data.kiss,
+                                    sizeof(mud->kiss));
+        if (path->state.active)
+            break;
+        if (!path->kiss.remote) {
+            memcpy(mud->kiss, packet->data.kiss, sizeof(mud->kiss));
+            mud_kiss_path(mud, path);
+            path->kiss.remote = 1;
+        }
+        mud_packet_send(mud, mud_kiss, path, now);
+        break;
     case mud_stat:
         if (size < mud_packet_size(sizeof(packet->data.stat)))
             return;
@@ -1109,6 +1149,13 @@ mud_update(struct mud *mud)
 
         uint64_t now = mud_now(mud);
 
+        if ((!path->kiss.remote) &&
+            (mud_timeout(now, path->kiss.send_time, mud->send_timeout))) {
+            mud_packet_send(mud, mud_kiss, path, now);
+            path->kiss.send_time = now;
+            continue;
+        }
+
         if ((mud_timeout(now, mud->crypto.send_time, mud->send_timeout)) &&
             (mud_timeout(now, mud->crypto.recv_time, MUD_KEYX_TIMEOUT))) {
             mud_packet_send(mud, mud_keyx, path, now);
@@ -1129,9 +1176,6 @@ mud_update(struct mud *mud)
             path->bak.send_time = now;
             continue;
         }
-
-        if (!path->send_time)
-            mud_packet_send(mud, mud_ping, path, now);
     }
 }
 
