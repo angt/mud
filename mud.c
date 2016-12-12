@@ -53,6 +53,9 @@
 #define MUD_PACKET_MIN_SIZE (MUD_U48_SIZE + MUD_MAC_SIZE)
 #define MUD_PACKET_MAX_SIZE (1500U)
 
+#define MUD_PACKET_SIZE(X) \
+    (sizeof(((struct mud_packet *)0)->hdr) + (X) + MUD_MAC_SIZE)
+
 #define MUD_STAT_TIMEOUT (100 * MUD_ONE_MSEC)
 #define MUD_KEYX_TIMEOUT (60 * MUD_ONE_MIN)
 #define MUD_SEND_TIMEOUT (MUD_ONE_SEC)
@@ -841,12 +844,6 @@ mud_localaddr(struct mud_ipaddr *local_addr, struct msghdr *msg, int family)
     return 0;
 }
 
-static size_t
-mud_packet_size(size_t size)
-{
-    return (sizeof(((struct mud_packet *)0)->hdr) + size + MUD_MAC_SIZE);
-}
-
 static void
 mud_packet_send(struct mud *mud, enum mud_packet_code code,
                 struct mud_path *path, uint64_t now)
@@ -892,7 +889,7 @@ mud_packet_send(struct mud *mud, enum mud_packet_code code,
     };
 
     mud_encrypt_opt(&mud->crypto.private, &opt);
-    mud_send_path(mud, path, now, &packet, mud_packet_size(size), 0);
+    mud_send_path(mud, path, now, &packet, MUD_PACKET_SIZE(size), 0);
 }
 
 static void
@@ -970,19 +967,34 @@ mud_kiss_path(struct mud *mud, struct mud_path *path)
     mud->path = path;
 }
 
-static void
-mud_packet_recv(struct mud *mud, struct mud_path *path, uint64_t now,
-                unsigned char *data, size_t size)
+static int
+mud_packet_check_size(unsigned char *data, size_t size)
 {
     struct mud_packet *packet = (struct mud_packet *)data;
 
-    if (size <= mud_packet_size(0))
-        return;
+    if (size <= MUD_PACKET_SIZE(0))
+        return -1;
+
+    const size_t sizes[] = {
+        [mud_kiss] = MUD_PACKET_SIZE(sizeof(packet->data.kiss)),
+        [mud_stat] = MUD_PACKET_SIZE(sizeof(packet->data.stat)),
+        [mud_keyx] = MUD_PACKET_SIZE(sizeof(packet->data.public)),
+        [mud_mtux] = MUD_PACKET_SIZE(sizeof(packet->data.mtu)),
+        [mud_bakx] = MUD_PACKET_SIZE(sizeof(packet->data.backup)),
+    };
+
+    return (packet->hdr.code >= sizeof(sizes)) ||
+           (sizes[packet->hdr.code] != size);
+}
+
+static void
+mud_packet_recv(struct mud *mud, struct mud_path *path,
+                uint64_t now, unsigned char *data, size_t size)
+{
+    struct mud_packet *packet = (struct mud_packet *)data;
 
     switch (packet->hdr.code) {
     case mud_kiss:
-        if (size < mud_packet_size(sizeof(packet->data.kiss)))
-            return;
         path->kiss.remote = !memcmp(mud->kiss, packet->data.kiss,
                                     sizeof(mud->kiss));
         if (path->state.active)
@@ -995,8 +1007,6 @@ mud_packet_recv(struct mud *mud, struct mud_path *path, uint64_t now,
         mud_packet_send(mud, mud_kiss, path, now);
         break;
     case mud_stat:
-        if (size < mud_packet_size(sizeof(packet->data.stat)))
-            return;
         path->r_sdt = mud_read48(packet->data.stat.sdt);
         path->r_rdt = mud_read48(packet->data.stat.rdt);
         path->r_rst = mud_read48(packet->data.stat.rst);
@@ -1004,20 +1014,14 @@ mud_packet_recv(struct mud *mud, struct mud_path *path, uint64_t now,
         path->rtt = now - path->r_rst;
         break;
     case mud_keyx:
-        if (size < mud_packet_size(sizeof(packet->data.public)))
-            return;
         mud_recv_keyx(mud, path, now, &packet->data.public);
         break;
     case mud_mtux:
-        if (size < mud_packet_size(sizeof(packet->data.mtu)))
-            return;
         mud->mtu.remote = mud_read48(packet->data.mtu);
         if (!path->state.active)
             mud_packet_send(mud, mud_mtux, path, now);
         break;
     case mud_bakx:
-        if (size < mud_packet_size(sizeof(packet->data.backup)))
-            return;
         path->bak.local = 1;
         path->bak.remote = packet->data.backup;
         if (!path->state.active)
@@ -1061,7 +1065,7 @@ mud_recv(struct mud *mud, void *data, size_t size)
     int mud_packet = !send_time;
 
     if (mud_packet) {
-        if (packet_size < (ssize_t)mud_packet_size(0))
+        if (mud_packet_check_size(packet, packet_size))
             return 0;
 
         send_time = mud_read48(&packet[MUD_U48_SIZE]);
