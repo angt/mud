@@ -4,19 +4,21 @@
 #define __APPLE_USE_RFC_3542
 #endif
 
-#include <arpa/inet.h>
 #include <errno.h>
 #include <ifaddrs.h>
 #include <inttypes.h>
-#include <netinet/in.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
+
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+
+#include <arpa/inet.h>
 #include <net/if.h>
-#include <time.h>
-#include <unistd.h>
+#include <netinet/in.h>
 
 #include <sodium.h>
 
@@ -975,13 +977,14 @@ mud_packet_check_size(unsigned char *data, size_t size)
     if (size <= MUD_PACKET_SIZE(0))
         return -1;
 
+    // clang-format off
     const size_t sizes[] = {
         [mud_kiss] = MUD_PACKET_SIZE(sizeof(packet->data.kiss)),
         [mud_stat] = MUD_PACKET_SIZE(sizeof(packet->data.stat)),
         [mud_keyx] = MUD_PACKET_SIZE(sizeof(packet->data.public)),
         [mud_mtux] = MUD_PACKET_SIZE(sizeof(packet->data.mtu)),
         [mud_bakx] = MUD_PACKET_SIZE(sizeof(packet->data.backup)),
-    };
+    }; // clang-format on
 
     return (packet->hdr.code >= sizeof(sizes)) ||
            (sizes[packet->hdr.code] != size);
@@ -999,8 +1002,7 @@ mud_packet_check(struct mud *mud, unsigned char *data, size_t size)
             .size = MUD_MAC_SIZE,
         },
         .ad = {
-            .data = data,
-            .size = size - MUD_MAC_SIZE,
+            .data = data, .size = size - MUD_MAC_SIZE,
         },
     };
 
