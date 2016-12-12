@@ -987,6 +987,26 @@ mud_packet_check_size(unsigned char *data, size_t size)
            (sizes[packet->hdr.code] != size);
 }
 
+static int
+mud_packet_check(struct mud *mud, unsigned char *data, size_t size)
+{
+    unsigned char tmp[MUD_PACKET_MAX_SIZE];
+
+    struct mud_crypto_opt opt = {
+        .dst = tmp,
+        .src = {
+            .data = data + size - MUD_MAC_SIZE,
+            .size = MUD_MAC_SIZE,
+        },
+        .ad = {
+            .data = data,
+            .size = size - MUD_MAC_SIZE,
+        },
+    };
+
+    return mud_decrypt_opt(&mud->crypto.private, &opt);
+}
+
 static void
 mud_packet_recv(struct mud *mud, struct mud_path *path,
                 uint64_t now, unsigned char *data, size_t size)
@@ -1063,34 +1083,21 @@ mud_recv(struct mud *mud, void *data, size_t size)
     uint64_t send_time = mud_read48(packet);
 
     int mud_packet = !send_time;
+    int new_path = 0;
 
     if (mud_packet) {
         if (mud_packet_check_size(packet, packet_size))
             return 0;
 
         send_time = mud_read48(&packet[MUD_U48_SIZE]);
+        new_path = ((struct mud_packet *)packet)->hdr.code == mud_kiss;
     }
 
     if (mud_abs_diff(now, send_time) >= mud->time_tolerance)
         return 0;
 
-    if (mud_packet) {
-        unsigned char tmp[sizeof(packet)];
-
-        struct mud_crypto_opt opt = {
-            .dst = tmp,
-            .src = {
-                .data = packet + packet_size - MUD_MAC_SIZE,
-                .size = MUD_MAC_SIZE,
-            },
-            .ad = {
-                .data = packet, .size = packet_size - MUD_MAC_SIZE,
-            },
-        };
-
-        if (mud_decrypt_opt(&mud->crypto.private, &opt))
-            return 0;
-    }
+    if (mud_packet && mud_packet_check(mud, packet, packet_size))
+        return 0;
 
     mud_unmapv4((struct sockaddr *)&addr);
 
@@ -1100,7 +1107,7 @@ mud_recv(struct mud *mud, void *data, size_t size)
         return 0;
 
     struct mud_path *path = mud_path(mud, &local_addr,
-                                     (struct sockaddr *)&addr, mud_packet);
+                                     (struct sockaddr *)&addr, new_path);
 
     if (!path)
         return 0;
