@@ -1162,6 +1162,9 @@ mud_update(struct mud *mud)
 
         uint64_t now = mud_now(mud);
 
+        if (mud_timeout(now, path->recv_time, mud->send_timeout))
+            path->kiss.remote = 0;
+
         if ((!path->kiss.remote) &&
             (mud_timeout(now, path->kiss.send_time, mud->send_timeout))) {
             mud_packet_send(mud, mud_kiss, path, now);
