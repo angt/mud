@@ -74,6 +74,7 @@ struct mud_ipaddr {
 struct mud_path {
     struct {
         unsigned active : 1;
+        unsigned backup : 1;
     } state;
     struct mud_ipaddr local_addr;
     struct sockaddr_storage addr;
@@ -84,12 +85,7 @@ struct mud_path {
     struct {
         uint64_t send_time;
         int remote;
-    } kiss;
-    struct {
-        uint64_t send_time;
-        int remote;
-        int local;
-    } bak;
+    } conf;
     unsigned char *tc;
     uint64_t rdt;
     uint64_t rtt;
@@ -129,11 +125,10 @@ struct mud_crypto_key {
 };
 
 enum mud_packet_code {
-    mud_kiss,
+    mud_conf,
     mud_stat,
     mud_keyx,
     mud_mtux,
-    mud_bakx,
 };
 
 struct mud_packet {
@@ -143,7 +138,10 @@ struct mud_packet {
         unsigned char code;
     } hdr;
     union {
-        unsigned char kiss[MUD_SID_SIZE];
+        struct {
+            unsigned char kiss[MUD_SID_SIZE];
+            unsigned char backup;
+        } conf;
         struct {
             unsigned char sdt[MUD_U48_SIZE];
             unsigned char rdt[MUD_U48_SIZE];
@@ -151,7 +149,6 @@ struct mud_packet {
         } stat;
         struct mud_crypto_pub public;
         unsigned char mtu[MUD_U48_SIZE];
-        unsigned char backup;
     } data;
     unsigned char _do_not_use_[MUD_MAC_SIZE];
 };
@@ -532,7 +529,7 @@ mud_peer(struct mud *mud, const char *name, const char *host, int port,
     }
 
     path->state.active = 1;
-    path->bak.local = !!backup;
+    path->state.backup = !!backup;
 
     return 0;
 }
@@ -858,9 +855,10 @@ mud_packet_send(struct mud *mud, enum mud_packet_code code,
     packet.hdr.code = (unsigned char)code;
 
     switch (code) {
-    case mud_kiss:
-        size = sizeof(packet.data.kiss);
-        memcpy(&packet.data.kiss, &mud->kiss, size);
+    case mud_conf:
+        size = sizeof(packet.data.conf);
+        memcpy(&packet.data.conf.kiss, &mud->kiss, size);
+        packet.data.conf.backup = (unsigned char)path->state.backup;
         break;
     case mud_stat:
         size = sizeof(packet.data.stat);
@@ -875,10 +873,6 @@ mud_packet_send(struct mud *mud, enum mud_packet_code code,
     case mud_mtux:
         size = sizeof(packet.data.mtu);
         mud_write48(packet.data.mtu, mud->mtu.local);
-        break;
-    case mud_bakx:
-        size = sizeof(packet.data.backup);
-        packet.data.backup = (unsigned char)path->bak.local;
         break;
     }
 
@@ -979,11 +973,10 @@ mud_packet_check_size(unsigned char *data, size_t size)
 
     // clang-format off
     const size_t sizes[] = {
-        [mud_kiss] = MUD_PACKET_SIZE(sizeof(packet->data.kiss)),
+        [mud_conf] = MUD_PACKET_SIZE(sizeof(packet->data.conf)),
         [mud_stat] = MUD_PACKET_SIZE(sizeof(packet->data.stat)),
         [mud_keyx] = MUD_PACKET_SIZE(sizeof(packet->data.public)),
         [mud_mtux] = MUD_PACKET_SIZE(sizeof(packet->data.mtu)),
-        [mud_bakx] = MUD_PACKET_SIZE(sizeof(packet->data.backup)),
     }; // clang-format on
 
     return (packet->hdr.code >= sizeof(sizes)) ||
@@ -1016,17 +1009,18 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
     struct mud_packet *packet = (struct mud_packet *)data;
 
     switch (packet->hdr.code) {
-    case mud_kiss:
-        path->kiss.remote = !memcmp(mud->kiss, packet->data.kiss,
+    case mud_conf:
+        path->conf.remote = !memcmp(mud->kiss, packet->data.conf.kiss,
                                     sizeof(mud->kiss));
         if (path->state.active)
             break;
-        if (!path->kiss.remote) {
-            memcpy(mud->kiss, packet->data.kiss, sizeof(mud->kiss));
+        if (!path->conf.remote) {
+            memcpy(mud->kiss, packet->data.conf.kiss, sizeof(mud->kiss));
             mud_kiss_path(mud, path);
-            path->kiss.remote = 1;
+            path->conf.remote = 1;
         }
-        mud_packet_send(mud, mud_kiss, path, now);
+        path->state.backup = !!packet->data.conf.backup;
+        mud_packet_send(mud, mud_conf, path, now);
         break;
     case mud_stat:
         path->r_sdt = mud_read48(packet->data.stat.sdt);
@@ -1042,12 +1036,6 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
         mud->mtu.remote = mud_read48(packet->data.mtu);
         if (!path->state.active)
             mud_packet_send(mud, mud_mtux, path, now);
-        break;
-    case mud_bakx:
-        path->bak.local = 1;
-        path->bak.remote = packet->data.backup;
-        if (!path->state.active)
-            mud_packet_send(mud, mud_bakx, path, now);
         break;
     default:
         break;
@@ -1092,7 +1080,7 @@ mud_recv(struct mud *mud, void *data, size_t size)
             return 0;
 
         send_time = mud_read48(&packet[MUD_U48_SIZE]);
-        new_path = ((struct mud_packet *)packet)->hdr.code == mud_kiss;
+        new_path = ((struct mud_packet *)packet)->hdr.code == mud_conf;
     }
 
     if (mud_abs_diff(now, send_time) >= mud->time_tolerance)
@@ -1124,7 +1112,7 @@ mud_recv(struct mud *mud, void *data, size_t size)
 
     path->rst = send_time;
 
-    if ((!path->bak.local) && (path->recv_time) &&
+    if ((!path->state.backup) && (path->recv_time) &&
         (mud_timeout(now, path->stat_time, MUD_STAT_TIMEOUT))) {
         mud_packet_send(mud, mud_stat, path, now);
         path->stat_time = now;
@@ -1163,12 +1151,12 @@ mud_update(struct mud *mud)
         uint64_t now = mud_now(mud);
 
         if (mud_timeout(now, path->recv_time, mud->send_timeout))
-            path->kiss.remote = 0;
+            path->conf.remote = 0;
 
-        if ((!path->kiss.remote) &&
-            (mud_timeout(now, path->kiss.send_time, mud->send_timeout))) {
-            mud_packet_send(mud, mud_kiss, path, now);
-            path->kiss.send_time = now;
+        if ((!path->conf.remote) &&
+            (mud_timeout(now, path->conf.send_time, mud->send_timeout))) {
+            mud_packet_send(mud, mud_conf, path, now);
+            path->conf.send_time = now;
             continue;
         }
 
@@ -1183,13 +1171,6 @@ mud_update(struct mud *mud)
             (mud_timeout(now, mud->mtu.send_time, mud->send_timeout))) {
             mud_packet_send(mud, mud_mtux, path, now);
             mud->mtu.send_time = now;
-            continue;
-        }
-
-        if ((path->bak.local && !path->bak.remote) &&
-            (mud_timeout(now, path->bak.send_time, mud->send_timeout))) {
-            mud_packet_send(mud, mud_bakx, path, now);
-            path->bak.send_time = now;
             continue;
         }
     }
@@ -1223,7 +1204,7 @@ mud_send(struct mud *mud, const void *data, size_t size, int tc)
     int64_t limit_min = INT64_MAX;
 
     for (path = mud->path; path; path = path->next) {
-        if (path->bak.local)
+        if (path->state.backup)
             continue;
 
         int64_t limit = path->limit;
@@ -1249,7 +1230,7 @@ mud_send(struct mud *mud, const void *data, size_t size, int tc)
 
     if (!path_min) {
         for (path = mud->path; path; path = path->next) {
-            if (path->bak.local) {
+            if (path->state.backup) {
                 path_min = path;
                 break;
             }
