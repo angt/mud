@@ -128,7 +128,6 @@ enum mud_packet_code {
     mud_conf,
     mud_stat,
     mud_keyx,
-    mud_mtux,
 };
 
 struct mud_packet {
@@ -140,6 +139,7 @@ struct mud_packet {
     union {
         struct {
             unsigned char kiss[MUD_SID_SIZE];
+            unsigned char mtu[MUD_U48_SIZE];
             unsigned char backup;
         } conf;
         struct {
@@ -148,7 +148,6 @@ struct mud_packet {
             unsigned char rst[MUD_U48_SIZE];
         } stat;
         struct mud_crypto_pub public;
-        unsigned char mtu[MUD_U48_SIZE];
     } data;
     unsigned char _do_not_use_[MUD_MAC_SIZE];
 };
@@ -168,7 +167,6 @@ struct mud {
         int aes;
     } crypto;
     struct {
-        uint64_t send_time;
         int remote;
         int local;
     } mtu;
@@ -534,6 +532,15 @@ mud_peer(struct mud *mud, const char *name, const char *host, int port,
     return 0;
 }
 
+static void
+mud_update_conf(struct mud *mud)
+{
+    struct mud_path *path;
+
+    for (path = mud->path; path; path = path->next)
+        path->conf.remote = 0;
+}
+
 int
 mud_get_key(struct mud *mud, unsigned char *key, size_t *size)
 {
@@ -605,15 +612,15 @@ mud_get_mtu(struct mud *mud)
 int
 mud_set_mtu(struct mud *mud, int mtu)
 {
-    if ((mtu < 500) ||
-        (mtu > MUD_PACKET_MAX_SIZE - 50)) {
+    if ((mtu < sizeof(struct mud_packet)) ||
+        (mtu > MUD_PACKET_MAX_SIZE - 50)) { // XXX
         errno = EINVAL;
         return -1;
     }
 
     if (mud->mtu.local != mtu) {
         mud->mtu.local = mtu;
-        mud->mtu.send_time = UINT64_C(0);
+        mud_update_conf(mud);
     }
 
     return 0;
@@ -858,6 +865,7 @@ mud_packet_send(struct mud *mud, enum mud_packet_code code,
     case mud_conf:
         size = sizeof(packet.data.conf);
         memcpy(&packet.data.conf.kiss, &mud->kiss, size);
+        mud_write48(packet.data.conf.mtu, mud->mtu.local);
         packet.data.conf.backup = (unsigned char)path->state.backup;
         break;
     case mud_stat:
@@ -869,10 +877,6 @@ mud_packet_send(struct mud *mud, enum mud_packet_code code,
     case mud_keyx:
         size = sizeof(packet.data.public);
         memcpy(&packet.data.public, &mud->crypto.public, size);
-        break;
-    case mud_mtux:
-        size = sizeof(packet.data.mtu);
-        mud_write48(packet.data.mtu, mud->mtu.local);
         break;
     }
 
@@ -976,7 +980,6 @@ mud_packet_check_size(unsigned char *data, size_t size)
         [mud_conf] = MUD_PACKET_SIZE(sizeof(packet->data.conf)),
         [mud_stat] = MUD_PACKET_SIZE(sizeof(packet->data.stat)),
         [mud_keyx] = MUD_PACKET_SIZE(sizeof(packet->data.public)),
-        [mud_mtux] = MUD_PACKET_SIZE(sizeof(packet->data.mtu)),
     }; // clang-format on
 
     return (packet->hdr.code >= sizeof(sizes)) ||
@@ -1020,6 +1023,7 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
             path->conf.remote = 1;
         }
         path->state.backup = !!packet->data.conf.backup;
+        mud->mtu.remote = mud_read48(packet->data.conf.mtu);
         mud_packet_send(mud, mud_conf, path, now);
         break;
     case mud_stat:
@@ -1031,11 +1035,6 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
         break;
     case mud_keyx:
         mud_recv_keyx(mud, path, now, &packet->data.public);
-        break;
-    case mud_mtux:
-        mud->mtu.remote = mud_read48(packet->data.mtu);
-        if (!path->state.active)
-            mud_packet_send(mud, mud_mtux, path, now);
         break;
     default:
         break;
@@ -1164,13 +1163,6 @@ mud_update(struct mud *mud)
             (mud_timeout(now, mud->crypto.recv_time, MUD_KEYX_TIMEOUT))) {
             mud_packet_send(mud, mud_keyx, path, now);
             mud->crypto.send_time = now;
-            continue;
-        }
-
-        if ((!mud->mtu.remote) &&
-            (mud_timeout(now, mud->mtu.send_time, mud->send_timeout))) {
-            mud_packet_send(mud, mud_mtux, path, now);
-            mud->mtu.send_time = now;
             continue;
         }
     }
