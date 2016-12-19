@@ -1013,6 +1013,7 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
 
     switch (packet->hdr.code) {
     case mud_conf:
+        mud->mtu.remote = mud_read48(packet->data.conf.mtu);
         path->conf.remote = !memcmp(mud->kiss, packet->data.conf.kiss,
                                     sizeof(mud->kiss));
         if (path->state.active)
@@ -1023,7 +1024,6 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
             path->conf.remote = 1;
         }
         path->state.backup = !!packet->data.conf.backup;
-        mud->mtu.remote = mud_read48(packet->data.conf.mtu);
         mud_packet_send(mud, mud_conf, path, now);
         break;
     case mud_stat:
