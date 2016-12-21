@@ -85,6 +85,10 @@ struct mud_path {
     struct {
         uint64_t send_time;
         int remote;
+        struct {
+            int remote;
+            int local;
+        } mtu;
     } conf;
     unsigned char *tc;
     uint64_t rdt;
@@ -166,10 +170,7 @@ struct mud {
         int use_next;
         int aes;
     } crypto;
-    struct {
-        int remote;
-        int local;
-    } mtu;
+    int mtu;
     unsigned char kiss[MUD_SID_SIZE];
 };
 
@@ -528,17 +529,9 @@ mud_peer(struct mud *mud, const char *name, const char *host, int port,
 
     path->state.active = 1;
     path->state.backup = !!backup;
+    path->conf.mtu.local = mud->mtu; // XXX
 
     return 0;
-}
-
-static void
-mud_update_conf(struct mud *mud)
-{
-    struct mud_path *path;
-
-    for (path = mud->path; path; path = path->next)
-        path->conf.remote = 0;
 }
 
 int
@@ -602,26 +595,45 @@ mud_set_time_tolerance_sec(struct mud *mud, unsigned sec)
 int
 mud_get_mtu(struct mud *mud)
 {
-    if ((!mud->mtu.remote) ||
-        (mud->mtu.local < mud->mtu.remote))
-        return mud->mtu.local;
+    int mtu = mud->mtu;
 
-    return mud->mtu.remote;
+    struct mud_path *path;
+
+    for (path = mud->path; path; path = path->next) {
+        if (path->conf.mtu.local && path->conf.mtu.local < mtu)
+            mtu = path->conf.mtu.local;
+        if (path->conf.mtu.remote && path->conf.mtu.remote < mtu)
+            mtu = path->conf.mtu.remote;
+    }
+
+    return mtu;
 }
 
 int
 mud_set_mtu(struct mud *mud, int mtu)
 {
-    if ((mtu < sizeof(struct mud_packet)) ||
-        (mtu > MUD_PACKET_MAX_SIZE - 50)) { // XXX
-        errno = EINVAL;
-        return -1;
+    if (mtu <= 0)
+        mtu = MUD_PACKET_MAX_SIZE;
+
+    if (mtu < sizeof(struct mud_packet))
+        mtu = sizeof(struct mud_packet);
+
+    if (mtu > MUD_PACKET_MAX_SIZE)
+        mtu = MUD_PACKET_MAX_SIZE;
+
+    mtu -= MUD_PACKET_MIN_SIZE;
+
+    struct mud_path *path;
+
+    for (path = mud->path; path; path = path->next) {
+        if (path->conf.mtu.local == mtu)
+            continue;
+        path->conf.mtu.local = mtu;
+        path->conf.remote = 0;
     }
 
-    if (mud->mtu.local != mtu) {
-        mud->mtu.local = mtu;
-        mud_update_conf(mud);
-    }
+    if (!mud->mtu)
+        mud->mtu = mtu;
 
     return 0;
 }
@@ -696,7 +708,6 @@ mud_create(int port, int v4, int v6, int aes, int mtu)
 
     mud->send_timeout = MUD_SEND_TIMEOUT;
     mud->time_tolerance = MUD_TIME_TOLERANCE;
-    mud->mtu.local = mtu;
 
     unsigned char key[MUD_KEY_SIZE];
 
@@ -707,6 +718,8 @@ mud_create(int port, int v4, int v6, int aes, int mtu)
     mud_keyx_init(mud);
 
     randombytes_buf(mud->kiss, sizeof(mud->kiss));
+
+    mud_set_mtu(mud, mtu);
 
     return mud;
 }
@@ -865,7 +878,7 @@ mud_packet_send(struct mud *mud, enum mud_packet_code code,
     case mud_conf:
         size = sizeof(packet.data.conf);
         memcpy(&packet.data.conf.kiss, &mud->kiss, size);
-        mud_write48(packet.data.conf.mtu, mud->mtu.local);
+        mud_write48(packet.data.conf.mtu, path->conf.mtu.local);
         packet.data.conf.backup = (unsigned char)path->state.backup;
         break;
     case mud_stat:
@@ -976,11 +989,14 @@ mud_packet_check_size(unsigned char *data, size_t size)
         return -1;
 
     // clang-format off
+
     const size_t sizes[] = {
         [mud_conf] = MUD_PACKET_SIZE(sizeof(packet->data.conf)),
         [mud_stat] = MUD_PACKET_SIZE(sizeof(packet->data.stat)),
         [mud_keyx] = MUD_PACKET_SIZE(sizeof(packet->data.public)),
-    }; // clang-format on
+    };
+
+    // clang-format on
 
     return (packet->hdr.code >= sizeof(sizes)) ||
            (sizes[packet->hdr.code] != size);
@@ -1013,7 +1029,7 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
 
     switch (packet->hdr.code) {
     case mud_conf:
-        mud->mtu.remote = mud_read48(packet->data.conf.mtu);
+        path->conf.mtu.remote = mud_read48(packet->data.conf.mtu);
         path->conf.remote = !memcmp(mud->kiss, packet->data.conf.kiss,
                                     sizeof(mud->kiss));
         if (path->state.active)
