@@ -612,14 +612,11 @@ mud_get_mtu(struct mud *mud)
 int
 mud_set_mtu(struct mud *mud, int mtu)
 {
-    if (mtu <= 0)
+    if (mtu <= 0 || mtu > MUD_PACKET_MAX_SIZE)
         mtu = MUD_PACKET_MAX_SIZE;
 
     if (mtu < sizeof(struct mud_packet))
         mtu = sizeof(struct mud_packet);
-
-    if (mtu > MUD_PACKET_MAX_SIZE)
-        mtu = MUD_PACKET_MAX_SIZE;
 
     mtu -= MUD_PACKET_MIN_SIZE;
 
