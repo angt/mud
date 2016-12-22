@@ -488,6 +488,8 @@ mud_path(struct mud *mud, struct mud_ipaddr *local_addr,
 
     mud_set_path(path, local_addr, addr);
 
+    path->conf.mtu.local = mud->mtu; // XXX
+
     path->next = mud->path;
     mud->path = path;
 
@@ -532,7 +534,6 @@ mud_peer(struct mud *mud, const char *name, const char *host, int port,
 
     path->state.active = 1;
     path->state.backup = !!backup;
-    path->conf.mtu.local = mud->mtu; // XXX
 
     return 0;
 }
