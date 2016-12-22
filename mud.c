@@ -936,9 +936,6 @@ mud_recv_keyx(struct mud *mud, struct mud_path *path, uint64_t now,
     int sync_send = memcmp(shared_recv.public.recv, mud->crypto.public.send,
                            sizeof(shared_recv.public.recv));
 
-    int sync_recv = memcmp(mud->crypto.public.recv, shared_recv.public.send,
-                           sizeof(mud->crypto.public.recv));
-
     memcpy(shared_recv.public.recv, mud->crypto.public.send,
            sizeof(shared_recv.public.recv));
 
