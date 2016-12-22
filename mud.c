@@ -55,6 +55,8 @@
 #define MUD_PACKET_MIN_SIZE (MUD_U48_SIZE + MUD_MAC_SIZE)
 #define MUD_PACKET_MAX_SIZE (1500U)
 
+#define MUD_PACKET_TC (192) // CS6
+
 #define MUD_PACKET_SIZE(X) \
     (sizeof(((struct mud_packet *)0)->hdr) + (X) + MUD_MAC_SIZE)
 
@@ -171,6 +173,7 @@ struct mud {
         int aes;
     } crypto;
     int mtu;
+    int tc;
     unsigned char kiss[MUD_SID_SIZE];
 };
 
@@ -567,6 +570,19 @@ mud_set_key(struct mud *mud, unsigned char *key, size_t size)
 }
 
 int
+mud_set_tc(struct mud *mud, int tc)
+{
+    if (tc != (tc & 255)) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    mud->tc = tc;
+
+    return 0;
+}
+
+int
 mud_set_send_timeout_msec(struct mud *mud, unsigned msec)
 {
     if (!msec) {
@@ -705,6 +721,7 @@ mud_create(int port, int v4, int v6, int aes, int mtu)
 
     mud->send_timeout = MUD_SEND_TIMEOUT;
     mud->time_tolerance = MUD_TIME_TOLERANCE;
+    mud->tc = MUD_PACKET_TC;
 
     unsigned char key[MUD_KEY_SIZE];
 
@@ -899,7 +916,7 @@ mud_packet_send(struct mud *mud, enum mud_packet_code code,
     };
 
     mud_encrypt_opt(&mud->crypto.private, &opt);
-    mud_send_path(mud, path, now, &packet, MUD_PACKET_SIZE(size), 0);
+    mud_send_path(mud, path, now, &packet, MUD_PACKET_SIZE(size), mud->tc);
 }
 
 static void
