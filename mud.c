@@ -990,6 +990,9 @@ mud_kiss_path(struct mud *mud, struct mud_path *path)
     }
 
     mud->path = path;
+
+    if (path)
+        path->next = NULL;
 }
 
 static int
