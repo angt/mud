@@ -1224,11 +1224,15 @@ mud_send(struct mud *mud, const void *data, size_t size, int tc)
 
     struct mud_path *path;
     struct mud_path *path_min = NULL;
+    struct mud_path *path_backup = NULL;
+
     int64_t limit_min = INT64_MAX;
 
     for (path = mud->path; path; path = path->next) {
-        if (path->state.backup)
+        if (path->state.backup) {
+            path_backup = path;
             continue;
+        }
 
         int64_t limit = path->limit;
         uint64_t elapsed = now - path->send_time;
@@ -1252,15 +1256,10 @@ mud_send(struct mud *mud, const void *data, size_t size, int tc)
     }
 
     if (!path_min) {
-        for (path = mud->path; path; path = path->next) {
-            if (path->state.backup) {
-                path_min = path;
-                break;
-            }
-        }
-
-        if (!path_min)
+        if (!path_backup)
             return 0;
+
+        path_min = path_backup;
     }
 
     ssize_t ret = mud_send_path(mud, path_min, now, packet, packet_size, tc);
