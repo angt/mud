@@ -91,6 +91,7 @@ struct mud_path {
             int remote;
             int local;
         } mtu;
+        unsigned char kiss[MUD_SID_SIZE];
     } conf;
     unsigned char *tc;
     uint64_t rdt;
@@ -982,17 +983,20 @@ mud_recv_keyx(struct mud *mud, struct mud_path *path, uint64_t now,
 static void
 mud_kiss_path(struct mud *mud, struct mud_path *path)
 {
-    while (mud->path) {
-        struct mud_path *p = mud->path;
-        mud->path = p->next;
-        if (p != path)
-            free(p);
+    struct mud_path **p = &mud->path;
+
+    while (*p) {
+        struct mud_path *t = *p;
+
+        if ((t == path) ||
+            !memcmp(t->conf.kiss, path->conf.kiss, sizeof(path->conf.kiss))) {
+            p = &t->next;
+            continue;
+        }
+
+        *p = t->next;
+        free(t);
     }
-
-    mud->path = path;
-
-    if (path)
-        path->next = NULL;
 }
 
 static int
@@ -1045,12 +1049,13 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
     switch (packet->hdr.code) {
     case mud_conf:
         path->conf.mtu.remote = mud_read48(packet->data.conf.mtu);
-        path->conf.remote = !memcmp(mud->kiss, packet->data.conf.kiss,
-                                    sizeof(mud->kiss));
+        path->conf.remote = !memcmp(path->conf.kiss, packet->data.conf.kiss,
+                                    sizeof(path->conf.kiss));
         if (path->state.active)
             break;
         if (!path->conf.remote) {
-            memcpy(mud->kiss, packet->data.conf.kiss, sizeof(mud->kiss));
+            memcpy(path->conf.kiss, packet->data.conf.kiss,
+                   sizeof(path->conf.kiss));
             mud_kiss_path(mud, path);
             path->conf.remote = 1;
         }
