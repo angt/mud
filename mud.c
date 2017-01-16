@@ -93,6 +93,9 @@ struct mud_path {
         } mtu;
         unsigned char kiss[MUD_SID_SIZE];
     } conf;
+    struct {
+        uint64_t send_time;
+    } public;
     unsigned char *tc;
     uint64_t rdt;
     uint64_t rtt;
@@ -166,7 +169,6 @@ struct mud {
     struct mud_path *path;
     struct {
         uint64_t recv_time;
-        uint64_t send_time;
         unsigned char secret[crypto_scalarmult_SCALARBYTES];
         struct mud_crypto_pub public;
         struct mud_crypto_key private, last, next, current;
@@ -1163,11 +1165,7 @@ mud_recv(struct mud *mud, void *data, size_t size)
     int ret = mud_decrypt(mud, data, size, packet, packet_size);
 
     if (ret == -1) {
-        if ((!path->state.active) &&
-            (mud_timeout(now, mud->crypto.send_time, mud->send_timeout))) {
-            mud_packet_send(mud, mud_keyx, path, now);
-            mud->crypto.send_time = now;
-        }
+        // XXX
         return 0;
     }
 
@@ -1195,10 +1193,10 @@ mud_update(struct mud *mud)
             continue;
         }
 
-        if ((mud_timeout(now, mud->crypto.send_time, mud->send_timeout)) &&
+        if ((mud_timeout(now, path->public.send_time, mud->send_timeout)) &&
             (mud_timeout(now, mud->crypto.recv_time, MUD_KEYX_TIMEOUT))) {
             mud_packet_send(mud, mud_keyx, path, now);
-            mud->crypto.send_time = now;
+            path->public.send_time = now;
             continue;
         }
     }
