@@ -234,7 +234,7 @@ mud_read48(const unsigned char *src)
 }
 
 static uint64_t
-mud_now(struct mud *mud)
+mud_now(void)
 {
     uint64_t now;
 #if defined CLOCK_REALTIME
@@ -1106,7 +1106,7 @@ mud_recv(struct mud *mud, void *data, size_t size)
     if (packet_size <= (ssize_t)MUD_PACKET_MIN_SIZE)
         return -(packet_size == (ssize_t)-1);
 
-    uint64_t now = mud_now(mud);
+    uint64_t now = mud_now();
     uint64_t send_time = mud_read48(packet);
 
     int mud_packet = !send_time;
@@ -1181,7 +1181,7 @@ mud_update(struct mud *mud)
         if (!path->state.active)
             continue;
 
-        uint64_t now = mud_now(mud);
+        uint64_t now = mud_now();
 
         if (mud_timeout(now, path->recv_time, mud->send_timeout))
             path->conf.remote = 0;
@@ -1215,7 +1215,7 @@ mud_send(struct mud *mud, const void *data, size_t size, int tc)
         return -1;
     }
 
-    uint64_t now = mud_now(mud);
+    uint64_t now = mud_now();
     unsigned char packet[2048];
 
     int packet_size = mud_encrypt(mud, now, packet, sizeof(packet), data, size);
