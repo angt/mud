@@ -1240,7 +1240,8 @@ mud_send(struct mud *mud, const void *data, size_t size, int tc)
             limit = path->rtt / 2;
         }
 
-        if (mud_timeout(now, path->recv_time, mud->send_timeout)) {
+        if (mud_timeout(now, path->recv_time, mud->send_timeout + MUD_ONE_SEC) &&
+            mud_timeout(now, path->send_time, mud->send_timeout)) {
             mud_send_path(mud, path, now, packet, packet_size, tc);
             path->limit = limit;
             continue;
