@@ -46,6 +46,10 @@
 #define MUD_ONE_SEC (1000 * MUD_ONE_MSEC)
 #define MUD_ONE_MIN (60 * MUD_ONE_SEC)
 
+#ifndef MUD_EPOCH
+#define MUD_EPOCH UINT64_C(1483228800)  // 1 Jan 2017
+#endif
+
 #define MUD_U48_SIZE (6U)
 #define MUD_KEY_SIZE (32U)
 #define MUD_MAC_SIZE (16U)
@@ -239,11 +243,11 @@ mud_now(void)
 #if defined CLOCK_REALTIME
     struct timespec tv;
     clock_gettime(CLOCK_REALTIME, &tv);
-    now = tv.tv_sec * MUD_ONE_SEC + tv.tv_nsec / MUD_ONE_MSEC;
+    now = (tv.tv_sec - MUD_EPOCH) * MUD_ONE_SEC + tv.tv_nsec / MUD_ONE_MSEC;
 #else
     struct timeval tv;
     gettimeofday(&tv, NULL);
-    now = tv.tv_sec * MUD_ONE_SEC + tv.tv_usec;
+    now = (tv.tv_sec - MUD_EPOCH) * MUD_ONE_SEC + tv.tv_usec;
 #endif
     return now & ((UINT64_C(1) << 48) - 1);
 }
