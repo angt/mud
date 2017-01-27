@@ -249,7 +249,7 @@ mud_now(void)
     gettimeofday(&tv, NULL);
     now = (tv.tv_sec - MUD_EPOCH) * MUD_ONE_SEC + tv.tv_usec;
 #endif
-    return now & ((UINT64_C(1) << 48) - 1);
+    return now;
 }
 
 static uint64_t
@@ -721,6 +721,11 @@ mud_keyx_init(struct mud *mud, uint64_t now)
 struct mud *
 mud_create(int port, int v4, int v6, int aes, int mtu)
 {
+    uint64_t now = mud_now();
+
+    if (now >> 48)
+        return NULL;
+
     if (sodium_init() == -1)
         return NULL;
 
