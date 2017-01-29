@@ -97,9 +97,6 @@ struct mud_path {
         } mtu;
         unsigned char kiss[MUD_SID_SIZE];
     } conf;
-    struct {
-        uint64_t send_time;
-    } public;
     unsigned char *tc;
     uint64_t rdt;
     uint64_t rtt;
@@ -138,6 +135,11 @@ enum mud_packet_code {
     mud_stat,
 };
 
+struct mud_public {
+    unsigned char remote[MUD_PUB_SIZE];
+    unsigned char local[MUD_PUB_SIZE];
+};
+
 struct mud_packet {
     struct {
         unsigned char zero[MUD_U48_SIZE];
@@ -149,7 +151,7 @@ struct mud_packet {
             unsigned char kiss[MUD_SID_SIZE];
             unsigned char mtu[MUD_U48_SIZE];
             unsigned char backup;
-            unsigned char public[MUD_PUB_SIZE];
+            struct mud_public public;
             unsigned char aes;
         } conf;
         struct {
@@ -169,10 +171,7 @@ struct mud {
     struct {
         uint64_t time;
         unsigned char secret[crypto_scalarmult_SCALARBYTES];
-        struct {
-            unsigned char local[MUD_PUB_SIZE];
-            unsigned char remote[MUD_PUB_SIZE];
-        } public;
+        struct mud_public public;
         struct mud_crypto_key private, last, next, current;
         int ready;
         int use_next;
@@ -699,13 +698,58 @@ mud_create_socket(int port, int v4, int v6)
     return fd;
 }
 
+static void
+mud_keyx_set(struct mud *mud, unsigned char *key, unsigned char *secret,
+             unsigned char *pub0, unsigned char *pub1)
+{
+    crypto_generichash_state state;
+
+    crypto_generichash_init(&state, mud->crypto.private.encrypt.key,
+                            MUD_KEY_SIZE, MUD_KEY_SIZE);
+
+    crypto_generichash_update(&state, secret, crypto_scalarmult_BYTES);
+    crypto_generichash_update(&state, pub0, MUD_PUB_SIZE);
+    crypto_generichash_update(&state, pub1, MUD_PUB_SIZE);
+
+    crypto_generichash_final(&state, key, MUD_KEY_SIZE);
+}
+
+static void
+mud_keyx(struct mud *mud, unsigned char *public, int aes)
+{
+    unsigned char secret[crypto_scalarmult_BYTES];
+
+    if (crypto_scalarmult(secret, mud->crypto.secret, public))
+        return;
+
+    mud_keyx_set(mud, mud->crypto.next.encrypt.key,
+                 secret, public, mud->crypto.public.local);
+
+    mud_keyx_set(mud, mud->crypto.next.decrypt.key,
+                 secret, mud->crypto.public.local, public);
+
+    memcpy(mud->crypto.public.remote, public, MUD_PUB_SIZE);
+
+    mud->crypto.next.aes = mud->crypto.aes && aes;
+
+    if (mud->crypto.next.aes) {
+        crypto_aead_aes256gcm_beforenm((crypto_aead_aes256gcm_state *)
+                                           mud->crypto.next.encrypt.state,
+                                       mud->crypto.next.encrypt.key);
+
+        crypto_aead_aes256gcm_beforenm((crypto_aead_aes256gcm_state *)
+                                           mud->crypto.next.decrypt.state,
+                                       mud->crypto.next.decrypt.key);
+    }
+}
+
 static int
 mud_keyx_init(struct mud *mud, uint64_t now)
 {
     if (!mud_timeout(now, mud->crypto.time, MUD_KEYX_TIMEOUT))
         return -1;
 
-    mud->crypto.time = now ?: mud_now();
+    mud->crypto.time = now;
 
     if (mud->crypto.ready)
         return 0;
@@ -751,7 +795,7 @@ mud_create(int port, int v4, int v6, int aes, int mtu)
     mud_set_key(mud, key, sizeof(key));
 
     mud->crypto.aes = aes && crypto_aead_aes256gcm_is_available();
-    mud_keyx_init(mud, 0);
+    mud_keyx_init(mud, now);
 
     randombytes_buf(mud->kiss, sizeof(mud->kiss));
 
@@ -850,6 +894,7 @@ mud_decrypt(struct mud *mud,
         if (!mud_decrypt_opt(&mud->crypto.next, &opt)) {
             mud->crypto.last = mud->crypto.current;
             mud->crypto.current = mud->crypto.next;
+            mud->crypto.ready = 0;
             mud->crypto.use_next = 0;
         } else {
             if (mud_decrypt_opt(&mud->crypto.last, &opt) &&
@@ -915,8 +960,10 @@ mud_packet_send(struct mud *mud, enum mud_packet_code code,
         memcpy(&packet.data.conf.kiss, &mud->kiss, size);
         mud_write48(packet.data.conf.mtu, path->conf.mtu.local);
         packet.data.conf.backup = (unsigned char)path->state.backup;
-        memcpy(&packet.data.conf.public, &mud->crypto.public.local,
+        memcpy(&packet.data.conf.public.local, &mud->crypto.public.local,
                sizeof(mud->crypto.public.local));
+        memcpy(&packet.data.conf.public.remote, &mud->crypto.public.remote,
+               sizeof(mud->crypto.public.remote));
         packet.data.conf.aes = (unsigned char)mud->crypto.aes;
         break;
     case mud_stat:
@@ -937,54 +984,6 @@ mud_packet_send(struct mud *mud, enum mud_packet_code code,
 
     mud_encrypt_opt(&mud->crypto.private, &opt);
     mud_send_path(mud, path, now, &packet, MUD_PACKET_SIZE(size), mud->tc);
-}
-
-static void
-mud_keyx_set(struct mud *mud, unsigned char *key, unsigned char *secret,
-             unsigned char *pub0, unsigned char *pub1)
-{
-    crypto_generichash_state state;
-
-    crypto_generichash_init(&state, mud->crypto.private.encrypt.key,
-                            MUD_KEY_SIZE, MUD_KEY_SIZE);
-
-    crypto_generichash_update(&state, secret, crypto_scalarmult_BYTES);
-    crypto_generichash_update(&state, pub0, MUD_PUB_SIZE);
-    crypto_generichash_update(&state, pub1, MUD_PUB_SIZE);
-
-    crypto_generichash_final(&state, key, MUD_KEY_SIZE);
-}
-
-static void
-mud_keyx(struct mud *mud, unsigned char *public, int aes)
-{
-    unsigned char secret[crypto_scalarmult_BYTES];
-
-    // XXX keyx init ?
-
-    if (crypto_scalarmult(secret, mud->crypto.secret, public))
-        return;
-
-    mud_keyx_set(mud, mud->crypto.next.encrypt.key,
-                 secret, public, mud->crypto.public.local);
-
-    mud_keyx_set(mud, mud->crypto.next.decrypt.key,
-                 secret, mud->crypto.public.local, public);
-
-    memcpy(mud->crypto.public.remote, public, MUD_PUB_SIZE);
-    mud->crypto.ready = 0;
-
-    mud->crypto.next.aes = mud->crypto.aes && aes;
-
-    if (mud->crypto.next.aes) {
-        crypto_aead_aes256gcm_beforenm((crypto_aead_aes256gcm_state *)
-                                           mud->crypto.next.encrypt.state,
-                                       mud->crypto.next.encrypt.key);
-
-        crypto_aead_aes256gcm_beforenm((crypto_aead_aes256gcm_state *)
-                                           mud->crypto.next.decrypt.state,
-                                       mud->crypto.next.decrypt.key);
-    }
 }
 
 static void
@@ -1056,26 +1055,24 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
 
     switch (packet->hdr.code) {
     case mud_conf:
+        path->conf.remote = 1;
+        memcpy(path->conf.kiss, packet->data.conf.kiss,
+               sizeof(path->conf.kiss));
         path->conf.mtu.remote = mud_read48(packet->data.conf.mtu);
-        path->conf.remote = !memcmp(path->conf.kiss, packet->data.conf.kiss,
-                                    sizeof(path->conf.kiss));
-        new_keyx = memcmp(mud->crypto.public.remote, packet->data.conf.public,
-                          sizeof(mud->crypto.public.remote));
-        if (new_keyx)
-            mud_keyx(mud, packet->data.conf.public, packet->data.conf.aes);
         if (path->state.active) {
-            if (new_keyx)
+            if (!memcmp(mud->crypto.public.local,
+                        packet->data.conf.public.remote, MUD_PUB_SIZE)) {
+                mud_keyx(mud, packet->data.conf.public.local,
+                         packet->data.conf.aes);
                 mud->crypto.use_next = 1;
-            break;
-        }
-        if (!path->conf.remote) {
-            memcpy(path->conf.kiss, packet->data.conf.kiss,
-                   sizeof(path->conf.kiss));
+            }
+        } else {
             mud_kiss_path(mud, path);
-            path->conf.remote = 1;
+            mud_keyx(mud, packet->data.conf.public.local,
+                     packet->data.conf.aes);
+            path->state.backup = !!packet->data.conf.backup;
+            mud_packet_send(mud, mud_conf, path, now);
         }
-        path->state.backup = !!packet->data.conf.backup;
-        mud_packet_send(mud, mud_conf, path, now);
         break;
     case mud_stat:
         path->r_sdt = mud_read48(packet->data.stat.sdt);
@@ -1149,6 +1146,16 @@ mud_recv(struct mud *mud, void *data, size_t size)
     if (!path)
         return 0;
 
+    int ret = 0;
+
+    if (!mud_packet) {
+        ret = mud_decrypt(mud, data, size, packet, packet_size);
+        if (ret == -1) {
+            // XXX
+            return 0;
+        }
+    }
+
     if (path->rdt) {
         path->rdt = ((now - path->recv_time) + UINT64_C(7) * path->rdt) / UINT64_C(8);
         path->sdt = ((send_time - path->rst) + UINT64_C(7) * path->sdt) / UINT64_C(8);
@@ -1167,17 +1174,8 @@ mud_recv(struct mud *mud, void *data, size_t size)
 
     path->recv_time = now;
 
-    if (mud_packet) {
+    if (mud_packet)
         mud_packet_recv(mud, path, now, packet, packet_size);
-        return 0;
-    }
-
-    int ret = mud_decrypt(mud, data, size, packet, packet_size);
-
-    if (ret == -1) {
-        // XXX
-        return 0;
-    }
 
     return ret;
 }
@@ -1194,7 +1192,7 @@ mud_update(struct mud *mud)
         if (!path->state.active)
             continue;
 
-        if (update_keyx || mud_timeout(now, path->recv_time, mud->send_timeout))
+        if (update_keyx || mud_timeout(now, path->recv_time, mud->send_timeout + MUD_ONE_SEC))
             path->conf.remote = 0;
 
         if ((!path->conf.remote) &&
