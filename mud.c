@@ -1,7 +1,11 @@
 #include "mud.h"
 
-#ifdef __APPLE__
+#if defined __APPLE__
 #define __APPLE_USE_RFC_3542
+#endif
+
+#if defined __linux__ && !defined _GNU_SOURCE
+#define _GNU_SOURCE
 #endif
 
 #include <errno.h>
@@ -46,9 +50,7 @@
 #define MUD_ONE_SEC (1000 * MUD_ONE_MSEC)
 #define MUD_ONE_MIN (60 * MUD_ONE_SEC)
 
-#ifndef MUD_EPOCH
-#define MUD_EPOCH UINT64_C(1483228800)  // 1 Jan 2017
-#endif
+#define MUD_EPOCH UINT64_C(1483228800) // 1 Jan 2017
 
 #define MUD_U48_SIZE (6U)
 #define MUD_KEY_SIZE (32U)
@@ -666,7 +668,7 @@ mud_setup_socket(int fd, int v4, int v6)
         (v6 && mud_sso_int(fd, IPPROTO_IPV6, IPV6_V6ONLY, !v4)))
         return -1;
 
-#ifdef __linux__
+#if defined __linux__
     if (v4)
         mud_sso_int(fd, IPPROTO_IP, MUD_DFRAG, MUD_DFRAG_OPT);
 #endif
