@@ -4,7 +4,7 @@
 
 struct mud;
 
-struct mud *mud_create (int, int, int, int, int);
+struct mud *mud_create (int, int, int, int);
 void        mud_delete (struct mud *);
 
 int mud_get_fd  (struct mud *);
@@ -19,6 +19,7 @@ int mud_get_mtu (struct mud *);
 int mud_set_send_timeout_msec  (struct mud *, unsigned);
 int mud_set_time_tolerance_sec (struct mud *, unsigned);
 int mud_set_tc                 (struct mud *, int);
+int mud_set_aes                (struct mud *);
 
 int mud_peer (struct mud *, const char *, const char *, int, int);
 

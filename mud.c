@@ -773,8 +773,19 @@ mud_keyx_init(struct mud *mud, uint64_t now)
     return 0;
 }
 
+int
+mud_set_aes(struct mud *mud)
+{
+    if (!crypto_aead_aes256gcm_is_available())
+        return 1;
+
+    mud->crypto.aes = 1;
+
+    return 0;
+}
+
 struct mud *
-mud_create(int port, int v4, int v6, int aes, int mtu)
+mud_create(int port, int v4, int v6, int mtu)
 {
     uint64_t now = mud_now();
 
@@ -799,7 +810,6 @@ mud_create(int port, int v4, int v6, int aes, int mtu)
     mud->send_timeout = MUD_SEND_TIMEOUT;
     mud->time_tolerance = MUD_TIME_TOLERANCE;
     mud->tc = MUD_PACKET_TC;
-    mud->crypto.aes = aes && crypto_aead_aes256gcm_is_available();
 
     randombytes_buf(mud->kiss, sizeof(mud->kiss));
     mud_set_mtu(mud, mtu);
