@@ -578,6 +578,15 @@ mud_set_key(struct mud *mud, unsigned char *key, size_t size)
 }
 
 int
+mud_new_key(struct mud *mud)
+{
+    unsigned char key[MUD_KEY_SIZE];
+
+    randombytes_buf(key, sizeof(key));
+    return mud_set_key(mud, key, sizeof(key));
+}
+
+int
 mud_set_tc(struct mud *mud, int tc)
 {
     if (tc != (tc & 255)) {
@@ -790,17 +799,9 @@ mud_create(int port, int v4, int v6, int aes, int mtu)
     mud->send_timeout = MUD_SEND_TIMEOUT;
     mud->time_tolerance = MUD_TIME_TOLERANCE;
     mud->tc = MUD_PACKET_TC;
-
-    unsigned char key[MUD_KEY_SIZE];
-
-    randombytes_buf(key, sizeof(key));
-    mud_set_key(mud, key, sizeof(key));
-
     mud->crypto.aes = aes && crypto_aead_aes256gcm_is_available();
-    mud_keyx_init(mud, now);
 
     randombytes_buf(mud->kiss, sizeof(mud->kiss));
-
     mud_set_mtu(mud, mtu);
 
     return mud;
