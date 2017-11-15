@@ -677,7 +677,7 @@ mud_setup_socket(int fd, int v4, int v6)
         (v6 && mud_sso_int(fd, IPPROTO_IPV6, IPV6_V6ONLY, !v4)))
         return -1;
 
-#if defined __linux__
+#if defined MUD_DFRAG
     if (v4)
         mud_sso_int(fd, IPPROTO_IP, MUD_DFRAG, MUD_DFRAG_OPT);
 #endif
