@@ -4,7 +4,7 @@
 
 struct mud;
 
-struct mud *mud_create (int, int, int, int);
+struct mud *mud_create (int, int, int);
 void        mud_delete (struct mud *);
 
 int mud_get_fd  (struct mud *);

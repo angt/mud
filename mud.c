@@ -785,7 +785,7 @@ mud_set_aes(struct mud *mud)
 }
 
 struct mud *
-mud_create(int port, int v4, int v6, int mtu)
+mud_create(int port, int v4, int v6)
 {
     uint64_t now = mud_now();
 
@@ -812,7 +812,6 @@ mud_create(int port, int v4, int v6, int mtu)
     mud->tc = MUD_PACKET_TC;
 
     randombytes_buf(mud->kiss, sizeof(mud->kiss));
-    mud_set_mtu(mud, mtu);
 
     return mud;
 }
