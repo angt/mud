@@ -26,6 +26,10 @@
 
 #include <sodium.h>
 
+#if !defined MSG_CONFIRM
+#define MSG_CONFIRM 0
+#endif
+
 #if defined IP_PKTINFO
 #define MUD_PKTINFO IP_PKTINFO
 #define MUD_PKTINFO_SRC(X) &((struct in_pktinfo *)(X))->ipi_addr
@@ -325,7 +329,7 @@ mud_addrinfo(struct sockaddr_storage *addr, const char *host, int port)
 
 static ssize_t
 mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
-              void *data, size_t size, int tc)
+              void *data, size_t size, int tc, int flags)
 {
     if (!size)
         return 0;
@@ -347,7 +351,7 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
     if (path->tc)
         memcpy(path->tc, &tc, sizeof(tc));
 
-    ssize_t ret = sendmsg(mud->fd, &msg, 0);
+    ssize_t ret = sendmsg(mud->fd, &msg, flags);
     path->send_time = now;
 
     return ret;
@@ -957,7 +961,7 @@ mud_localaddr(struct mud_ipaddr *local_addr, struct msghdr *msg, int family)
 
 static void
 mud_packet_send(struct mud *mud, enum mud_packet_code code,
-                struct mud_path *path, uint64_t now)
+                struct mud_path *path, uint64_t now, int flags)
 {
     struct mud_packet packet;
     size_t size = 0;
@@ -995,7 +999,7 @@ mud_packet_send(struct mud *mud, enum mud_packet_code code,
     };
 
     mud_encrypt_opt(&mud->crypto.private, &opt);
-    mud_send_path(mud, path, now, &packet, MUD_PACKET_SIZE(size), mud->tc);
+    mud_send_path(mud, path, now, &packet, MUD_PACKET_SIZE(size), mud->tc, flags);
 }
 
 static void
@@ -1083,7 +1087,7 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
             mud_keyx(mud, packet->data.conf.public.local,
                      packet->data.conf.aes);
             path->state.backup = !!packet->data.conf.backup;
-            mud_packet_send(mud, mud_conf, path, now);
+            mud_packet_send(mud, mud_conf, path, now, MSG_CONFIRM);
         }
         break;
     case mud_stat:
@@ -1180,7 +1184,7 @@ mud_recv(struct mud *mud, void *data, size_t size)
 
     if ((!path->state.backup) && (path->recv_time) &&
         (mud_timeout(now, path->stat_time, MUD_STAT_TIMEOUT))) {
-        mud_packet_send(mud, mud_stat, path, now);
+        mud_packet_send(mud, mud_stat, path, now, MSG_CONFIRM);
         path->stat_time = now;
     }
 
@@ -1209,7 +1213,7 @@ mud_update(struct mud *mud)
 
         if ((!path->conf.remote) &&
             (mud_timeout(now, path->conf.send_time, mud->send_timeout))) {
-            mud_packet_send(mud, mud_conf, path, now);
+            mud_packet_send(mud, mud_conf, path, now, 0);
             path->conf.send_time = now;
         }
     }
@@ -1261,7 +1265,7 @@ mud_send(struct mud *mud, const void *data, size_t size, int tc)
 
         if (mud_timeout(now, path->recv_time, mud->send_timeout + MUD_ONE_SEC)) {
             if (mud_timeout(now, path->send_time, mud->send_timeout)) {
-                mud_send_path(mud, path, now, packet, packet_size, tc);
+                mud_send_path(mud, path, now, packet, packet_size, tc, 0);
                 path->limit = limit;
             }
             continue;
@@ -1280,7 +1284,7 @@ mud_send(struct mud *mud, const void *data, size_t size, int tc)
         path_min = path_backup;
     }
 
-    ssize_t ret = mud_send_path(mud, path_min, now, packet, packet_size, tc);
+    ssize_t ret = mud_send_path(mud, path_min, now, packet, packet_size, tc, 0);
 
     if (ret == packet_size)
         path_min->limit = limit_min;
