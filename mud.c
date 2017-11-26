@@ -1067,8 +1067,6 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
 {
     struct mud_packet *packet = (struct mud_packet *)data;
 
-    int new_keyx = 0;
-
     switch (packet->hdr.code) {
     case mud_conf:
         path->conf.remote = 1;
