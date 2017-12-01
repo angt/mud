@@ -411,7 +411,7 @@ mud_cmp_addr(struct sockaddr *a, struct sockaddr *b)
     return 1;
 }
 
-static void
+static int
 mud_set_path(struct mud_path *path, struct mud_ipaddr *local_addr,
              struct sockaddr *addr)
 {
@@ -421,6 +421,9 @@ mud_set_path(struct mud_path *path, struct mud_ipaddr *local_addr,
     };
 
     struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+
+    if (!cmsg)
+        return -1;
 
     memset(path->ctrl.data, 0, sizeof(path->ctrl.data));
     memmove(&path->local_addr, local_addr, sizeof(struct mud_ipaddr));
@@ -437,6 +440,9 @@ mud_set_path(struct mud_path *path, struct mud_ipaddr *local_addr,
                sizeof(struct in_addr));
 
         cmsg = CMSG_NXTHDR(&msg, cmsg);
+
+        if (!cmsg)
+            return -1;
 
         cmsg->cmsg_level = IPPROTO_IP;
         cmsg->cmsg_type = IP_TOS;
@@ -460,6 +466,9 @@ mud_set_path(struct mud_path *path, struct mud_ipaddr *local_addr,
 
         cmsg = CMSG_NXTHDR(&msg, cmsg);
 
+        if (!cmsg)
+            return -1;
+
         cmsg->cmsg_level = IPPROTO_IPV6;
         cmsg->cmsg_type = IPV6_TCLASS;
         cmsg->cmsg_len = CMSG_LEN(sizeof(int));
@@ -468,14 +477,18 @@ mud_set_path(struct mud_path *path, struct mud_ipaddr *local_addr,
         path->ctrl.size = CMSG_SPACE(sizeof(struct in6_pktinfo)) +
                           CMSG_SPACE(sizeof(int));
     }
+
+    return 0;
 }
 
 static struct mud_path *
 mud_path(struct mud *mud, struct mud_ipaddr *local_addr,
          struct sockaddr *addr, int create)
 {
-    if (local_addr->family != addr->sa_family)
+    if (local_addr->family != addr->sa_family) {
+        errno = EINVAL;
         return NULL;
+    }
 
     struct mud_path *path;
 
@@ -497,7 +510,11 @@ mud_path(struct mud *mud, struct mud_ipaddr *local_addr,
     if (!path)
         return NULL;
 
-    mud_set_path(path, local_addr, addr);
+    if (mud_set_path(path, local_addr, addr)) {
+        free(path);
+        errno = EINVAL;
+        return NULL;
+    }
 
     path->conf.mtu.local = mud->mtu; // XXX
 
@@ -538,10 +555,8 @@ mud_peer(struct mud *mud, const char *name, const char *host, int port,
 
     struct mud_path *path = mud_path(mud, &local_addr, (struct sockaddr *)&addr, 1);
 
-    if (!path) {
-        errno = ENOMEM;
+    if (!path)
         return -1;
-    }
 
     path->state.active = 1;
     path->state.backup = !!backup;
