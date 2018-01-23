@@ -185,6 +185,7 @@ struct mud {
     } crypto;
     int mtu;
     int tc;
+    struct mud_path *peer;
     unsigned char kiss[MUD_SID_SIZE];
 };
 
@@ -425,57 +426,65 @@ mud_set_path(struct mud_path *path, struct mud_ipaddr *local_addr,
     if (!cmsg)
         return -1;
 
-    memset(path->ctrl.data, 0, sizeof(path->ctrl.data));
-    memmove(&path->local_addr, local_addr, sizeof(struct mud_ipaddr));
+    memset(&path->ctrl, 0, sizeof(path->ctrl));
+
+    if (local_addr)
+        memmove(&path->local_addr, local_addr, sizeof(struct mud_ipaddr));
 
     if (addr->sa_family == AF_INET) {
         memmove(&path->addr, addr, sizeof(struct sockaddr_in));
 
-        cmsg->cmsg_level = IPPROTO_IP;
-        cmsg->cmsg_type = MUD_PKTINFO;
-        cmsg->cmsg_len = CMSG_LEN(MUD_PKTINFO_SIZE);
+        if (local_addr) {
+            cmsg->cmsg_level = IPPROTO_IP;
+            cmsg->cmsg_type = MUD_PKTINFO;
+            cmsg->cmsg_len = CMSG_LEN(MUD_PKTINFO_SIZE);
 
-        memcpy(MUD_PKTINFO_DST(CMSG_DATA(cmsg)),
-               &local_addr->ip.v4,
-               sizeof(struct in_addr));
+            memcpy(MUD_PKTINFO_DST(CMSG_DATA(cmsg)),
+                   &local_addr->ip.v4,
+                   sizeof(struct in_addr));
 
-        cmsg = CMSG_NXTHDR(&msg, cmsg);
+            cmsg = CMSG_NXTHDR(&msg, cmsg);
 
-        if (!cmsg)
-            return -1;
+            if (!cmsg)
+                return -1;
+
+            path->ctrl.size += CMSG_SPACE(MUD_PKTINFO_SIZE);
+        }
 
         cmsg->cmsg_level = IPPROTO_IP;
         cmsg->cmsg_type = IP_TOS;
         cmsg->cmsg_len = CMSG_LEN(sizeof(int));
 
         path->tc = CMSG_DATA(cmsg);
-        path->ctrl.size = CMSG_SPACE(MUD_PKTINFO_SIZE) +
-                          CMSG_SPACE(sizeof(int));
+        path->ctrl.size += CMSG_SPACE(sizeof(int));
     }
 
     if (addr->sa_family == AF_INET6) {
         memmove(&path->addr, addr, sizeof(struct sockaddr_in6));
 
-        cmsg->cmsg_level = IPPROTO_IPV6;
-        cmsg->cmsg_type = IPV6_PKTINFO;
-        cmsg->cmsg_len = CMSG_LEN(sizeof(struct in6_pktinfo));
+        if (local_addr) {
+            cmsg->cmsg_level = IPPROTO_IPV6;
+            cmsg->cmsg_type = IPV6_PKTINFO;
+            cmsg->cmsg_len = CMSG_LEN(sizeof(struct in6_pktinfo));
 
-        memcpy(&((struct in6_pktinfo *)CMSG_DATA(cmsg))->ipi6_addr,
-               &local_addr->ip.v6,
-               sizeof(struct in6_addr));
+            memcpy(&((struct in6_pktinfo *)CMSG_DATA(cmsg))->ipi6_addr,
+                   &local_addr->ip.v6,
+                   sizeof(struct in6_addr));
 
-        cmsg = CMSG_NXTHDR(&msg, cmsg);
+            cmsg = CMSG_NXTHDR(&msg, cmsg);
 
-        if (!cmsg)
-            return -1;
+            if (!cmsg)
+                return -1;
+
+            path->ctrl.size += CMSG_SPACE(sizeof(struct in6_pktinfo));
+        }
 
         cmsg->cmsg_level = IPPROTO_IPV6;
         cmsg->cmsg_type = IPV6_TCLASS;
         cmsg->cmsg_len = CMSG_LEN(sizeof(int));
 
         path->tc = CMSG_DATA(cmsg);
-        path->ctrl.size = CMSG_SPACE(sizeof(struct in6_pktinfo)) +
-                          CMSG_SPACE(sizeof(int));
+        path->ctrl.size += CMSG_SPACE(sizeof(int));
     }
 
     return 0;
@@ -485,21 +494,25 @@ static struct mud_path *
 mud_path(struct mud *mud, struct mud_ipaddr *local_addr,
          struct sockaddr *addr, int create)
 {
-    if (local_addr->family != addr->sa_family) {
-        errno = EINVAL;
-        return NULL;
-    }
-
     struct mud_path *path;
 
-    for (path = mud->path; path; path = path->next) {
-        if (mud_cmp_ipaddr(local_addr, &path->local_addr))
-            continue;
+    if (local_addr) {
+        if (local_addr->family != addr->sa_family) {
+            errno = EINVAL;
+            return NULL;
+        }
 
-        if (mud_cmp_addr(addr, (struct sockaddr *)&path->addr))
-            continue;
+        for (path = mud->path; path; path = path->next) {
+            if (mud_cmp_ipaddr(local_addr, &path->local_addr))
+                continue;
 
-        break;
+            if (mud_cmp_addr(addr, (struct sockaddr *)&path->addr))
+                continue;
+
+            break;
+        }
+    } else {
+        path = mud->peer;
     }
 
     if (path || !create)
@@ -518,8 +531,12 @@ mud_path(struct mud *mud, struct mud_ipaddr *local_addr,
 
     path->conf.mtu.local = mud->mtu; // XXX
 
-    path->next = mud->path;
-    mud->path = path;
+    if (local_addr) {
+        path->next = mud->path;
+        mud->path = path;
+    } else {
+        mud->peer = path;
+    }
 
     return path;
 }
@@ -528,22 +545,25 @@ int
 mud_peer(struct mud *mud, const char *name, const char *host, int port,
          int backup)
 {
-    if (!name || !host || !port) {
+    if (!host || !port) {
         errno = EINVAL;
         return -1;
     }
 
-    struct mud_ipaddr local_addr;
+    struct mud_ipaddr ipaddr, *local_addr = NULL;
 
-    if (inet_pton(AF_INET, name, &local_addr.ip.v4) == 1) {
-        local_addr.family = AF_INET;
-    } else {
-        if (inet_pton(AF_INET6, name, &local_addr.ip.v6) == 1) {
-            local_addr.family = AF_INET6;
+    if (name) {
+        if (inet_pton(AF_INET, name, &ipaddr.ip.v4) == 1) {
+            ipaddr.family = AF_INET;
         } else {
-            errno = EINVAL;
-            return -1;
+            if (inet_pton(AF_INET6, name, &ipaddr.ip.v6) == 1) {
+                ipaddr.family = AF_INET6;
+            } else {
+                errno = EINVAL;
+                return -1;
+            }
         }
+        local_addr = &ipaddr;
     }
 
     struct sockaddr_storage addr;
@@ -553,13 +573,15 @@ mud_peer(struct mud *mud, const char *name, const char *host, int port,
 
     mud_unmapv4((struct sockaddr *)&addr);
 
-    struct mud_path *path = mud_path(mud, &local_addr, (struct sockaddr *)&addr, 1);
+    struct mud_path *path = mud_path(mud, local_addr, (struct sockaddr *)&addr, 1);
 
     if (!path)
         return -1;
 
     path->state.active = 1;
-    path->state.backup = !!backup;
+
+    if (name)
+        path->state.backup = !!backup;
 
     return 0;
 }
@@ -978,10 +1000,9 @@ static void
 mud_packet_send(struct mud *mud, enum mud_packet_code code,
                 struct mud_path *path, uint64_t now, int flags)
 {
-    struct mud_packet packet;
+    struct mud_packet packet = { 0 };
     size_t size = 0;
 
-    memset(packet.hdr.zero, 0, MUD_U48_SIZE);
     mud_write48(packet.hdr.time, now);
     packet.hdr.code = (unsigned char)code;
 
@@ -1088,7 +1109,7 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
         memcpy(path->conf.kiss, packet->data.conf.kiss,
                sizeof(path->conf.kiss));
         path->conf.mtu.remote = mud_read48(packet->data.conf.mtu);
-        if (path->state.active) {
+        if (path->state.active || mud->peer) {
             if (!memcmp(mud->crypto.public.local,
                         packet->data.conf.public.remote, MUD_PUB_SIZE)) {
                 mud_keyx(mud, packet->data.conf.public.local,
@@ -1215,20 +1236,24 @@ mud_update(struct mud *mud)
     uint64_t now = mud_now();
     int update_keyx = !mud_keyx_init(mud, now);
 
-    struct mud_path *path;
+    struct mud_path *path = mud->path;
 
-    for (path = mud->path; path; path = path->next) {
-        if (!path->state.active)
-            continue;
+    if (path) {
+        for (; path; path = path->next) {
+            if (!path->state.active)
+                continue;
 
-        if (update_keyx || mud_timeout(now, path->recv_time, mud->send_timeout + MUD_ONE_SEC))
-            path->conf.remote = 0;
+            if (update_keyx || mud_timeout(now, path->recv_time, mud->send_timeout + MUD_ONE_SEC))
+                path->conf.remote = 0;
 
-        if ((!path->conf.remote) &&
-            (mud_timeout(now, path->conf.send_time, mud->send_timeout))) {
-            mud_packet_send(mud, mud_conf, path, now, 0);
-            path->conf.send_time = now;
+            if ((!path->conf.remote) &&
+                (mud_timeout(now, path->conf.send_time, mud->send_timeout))) {
+                mud_packet_send(mud, mud_conf, path, now, 0);
+                path->conf.send_time = now;
+            }
         }
+    } else if (mud->peer) {
+        mud_packet_send(mud, mud_conf, mud->peer, now, 0);
     }
 }
 
