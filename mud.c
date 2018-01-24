@@ -85,7 +85,6 @@ struct mud_ipaddr {
 
 struct mud_path {
     struct {
-        unsigned active : 1;
         unsigned backup : 1;
     } state;
     struct mud_ipaddr local_addr;
@@ -542,28 +541,11 @@ mud_path(struct mud *mud, struct mud_ipaddr *local_addr,
 }
 
 int
-mud_peer(struct mud *mud, const char *name, const char *host, int port,
-         int backup)
+mud_peer(struct mud *mud, const char *host, int port)
 {
     if (!host || !port) {
         errno = EINVAL;
         return -1;
-    }
-
-    struct mud_ipaddr ipaddr, *local_addr = NULL;
-
-    if (name) {
-        if (inet_pton(AF_INET, name, &ipaddr.ip.v4) == 1) {
-            ipaddr.family = AF_INET;
-        } else {
-            if (inet_pton(AF_INET6, name, &ipaddr.ip.v6) == 1) {
-                ipaddr.family = AF_INET6;
-            } else {
-                errno = EINVAL;
-                return -1;
-            }
-        }
-        local_addr = &ipaddr;
     }
 
     struct sockaddr_storage addr;
@@ -573,15 +555,42 @@ mud_peer(struct mud *mud, const char *name, const char *host, int port,
 
     mud_unmapv4((struct sockaddr *)&addr);
 
-    struct mud_path *path = mud_path(mud, local_addr, (struct sockaddr *)&addr, 1);
+    if (mud->peer)
+        free(mud->peer);
+
+    mud->peer = mud_path(mud, NULL, (struct sockaddr *)&addr, 1);
+
+    return -!mud->peer;
+}
+
+int
+mud_add_path(struct mud *mud, const char *name, int backup)
+{
+    if (!name || !mud->peer) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    struct mud_ipaddr ipaddr;
+
+    if (inet_pton(AF_INET, name, &ipaddr.ip.v4) == 1) {
+        ipaddr.family = AF_INET;
+    } else {
+        if (inet_pton(AF_INET6, name, &ipaddr.ip.v6) == 1) {
+            ipaddr.family = AF_INET6;
+        } else {
+            errno = EINVAL;
+            return -1;
+        }
+    }
+
+    struct mud_path *path = mud_path(mud, &ipaddr,
+                                     (struct sockaddr *)&mud->peer->addr, 1);
 
     if (!path)
         return -1;
 
-    path->state.active = 1;
-
-    if (name)
-        path->state.backup = !!backup;
+    path->state.backup = !!backup;
 
     return 0;
 }
@@ -1112,7 +1121,7 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
         memcpy(path->conf.kiss, packet->data.conf.kiss,
                sizeof(path->conf.kiss));
         path->conf.mtu.remote = mud_read48(packet->data.conf.mtu);
-        if (path->state.active || mud->peer) {
+        if (mud->peer) {
             if (!memcmp(mud->crypto.public.local,
                         packet->data.conf.public.remote, MUD_PUB_SIZE)) {
                 mud_keyx(mud, packet->data.conf.public.local,
@@ -1243,9 +1252,6 @@ mud_update(struct mud *mud)
 
     if (path) {
         for (; path; path = path->next) {
-            if (!path->state.active)
-                continue;
-
             if (update_keyx || mud_timeout(now, path->recv_time, mud->send_timeout + MUD_ONE_SEC))
                 path->conf.remote = 0;
 

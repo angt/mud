@@ -21,7 +21,9 @@ int mud_set_time_tolerance_sec (struct mud *, unsigned);
 int mud_set_tc                 (struct mud *, int);
 int mud_set_aes                (struct mud *);
 
-int mud_peer (struct mud *, const char *, const char *, int, int);
+int mud_peer (struct mud *, const char *, int);
+
+int mud_add_path (struct mud *, const char *, int);
 
 int mud_recv (struct mud *, void *, size_t);
 int mud_send (struct mud *, const void *, size_t, int);
