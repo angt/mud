@@ -904,7 +904,8 @@ mud_encrypt(struct mud *mud, uint64_t nonce,
             .size = src_size,
         },
         .ad = {
-            .data = dst, .size = MUD_U48_SIZE,
+            .data = dst,
+            .size = MUD_U48_SIZE,
         },
     };
 
@@ -937,7 +938,8 @@ mud_decrypt(struct mud *mud,
             .size = src_size - MUD_U48_SIZE,
         },
         .ad = {
-            .data = src, .size = MUD_U48_SIZE,
+            .data = src,
+            .size = MUD_U48_SIZE,
         },
     };
 
@@ -1000,7 +1002,7 @@ static void
 mud_packet_send(struct mud *mud, enum mud_packet_code code,
                 struct mud_path *path, uint64_t now, int flags)
 {
-    struct mud_packet packet = { 0 };
+    struct mud_packet packet = {0};
     size_t size = 0;
 
     mud_write48(packet.hdr.time, now);
@@ -1090,7 +1092,8 @@ mud_packet_check(struct mud *mud, unsigned char *data, size_t size)
             .size = MUD_MAC_SIZE,
         },
         .ad = {
-            .data = data, .size = size - MUD_MAC_SIZE,
+            .data = data,
+            .size = size - MUD_MAC_SIZE,
         },
     };
 
