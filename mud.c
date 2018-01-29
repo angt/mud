@@ -77,6 +77,7 @@
 
 struct mud_path {
     struct {
+        unsigned skip : 1;
         unsigned backup : 1;
     } state;
     struct sockaddr_storage local_addr, addr;
@@ -518,6 +519,31 @@ mud_peer(struct mud *mud, const char *host, int port)
 
     mud_unmapv4(&mud->peer.addr);
     mud->peer.set = 1;
+
+    return 0;
+}
+
+int
+mud_del_path(struct mud *mud, const char *name)
+{
+    if (!name) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    struct sockaddr_storage addr;
+
+    if (mud_addrinfo(&addr, name, 0))
+        return -1;
+
+    struct mud_path *path;
+
+    for (path = mud->path; path; path = path->next) {
+        if (mud_cmp_addr(&addr, mud->peer.set ? &path->local_addr : &path->addr))
+            continue;
+
+        path->state.skip = 1;
+    }
 
     return 0;
 }
@@ -1197,6 +1223,9 @@ mud_update(struct mud *mud)
     struct mud_path *path = mud->path;
 
     for (; path; path = path->next) {
+        if (path->state.skip)
+            continue;
+
         if (update_keyx || mud_timeout(now, path->recv_time, mud->send_timeout + MUD_ONE_SEC))
             path->conf.remote = 0;
 
@@ -1238,6 +1267,9 @@ mud_send(struct mud *mud, const void *data, size_t size, int tc)
     int64_t limit_min = INT64_MAX;
 
     for (path = mud->path; path; path = path->next) {
+        if (path->state.skip)
+            continue;
+
         if (path->state.backup) {
             path_backup = path;
             continue;
