@@ -9,7 +9,6 @@ void        mud_delete (struct mud *);
 
 int mud_get_fd  (struct mud *);
 
-int mud_new_key (struct mud *);
 int mud_set_key (struct mud *, unsigned char *, size_t);
 int mud_get_key (struct mud *, unsigned char *, size_t *);
 
