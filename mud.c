@@ -619,27 +619,41 @@ mud_set_tc(struct mud *mud, int tc)
 }
 
 int
-mud_set_send_timeout_msec(struct mud *mud, unsigned msec)
+mud_set_send_timeout(struct mud *mud, unsigned long msec)
 {
     if (!msec) {
         errno = EINVAL;
         return -1;
     }
 
-    mud->send_timeout = msec * MUD_ONE_MSEC;
+    const uint64_t x = msec * MUD_ONE_MSEC;
+
+    if ((uint64_t)msec != x / MUD_ONE_MSEC) {
+        errno = ERANGE;
+        return -1;
+    }
+
+    mud->send_timeout = x;
 
     return 0;
 }
 
 int
-mud_set_time_tolerance_sec(struct mud *mud, unsigned sec)
+mud_set_time_tolerance(struct mud *mud, unsigned long msec)
 {
-    if (!sec) {
+    if (!msec) {
         errno = EINVAL;
         return -1;
     }
 
-    mud->time_tolerance = sec * MUD_ONE_SEC;
+    const uint64_t x = msec * MUD_ONE_MSEC;
+
+    if ((uint64_t)msec != x / MUD_ONE_MSEC) {
+        errno = ERANGE;
+        return -1;
+    }
+
+    mud->time_tolerance = x;
 
     return 0;
 }

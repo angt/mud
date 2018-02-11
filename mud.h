@@ -15,10 +15,10 @@ int mud_get_key (struct mud *, unsigned char *, size_t *);
 int mud_set_mtu (struct mud *, int mtu);
 int mud_get_mtu (struct mud *);
 
-int mud_set_send_timeout_msec  (struct mud *, unsigned);
-int mud_set_time_tolerance_sec (struct mud *, unsigned);
-int mud_set_tc                 (struct mud *, int);
-int mud_set_aes                (struct mud *);
+int mud_set_send_timeout   (struct mud *, unsigned long);
+int mud_set_time_tolerance (struct mud *, unsigned long);
+int mud_set_tc             (struct mud *, int);
+int mud_set_aes            (struct mud *);
 
 int mud_peer (struct mud *, const char *, int);
 
