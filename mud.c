@@ -9,7 +9,6 @@
 #endif
 
 #include <errno.h>
-#include <ifaddrs.h>
 #include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
@@ -287,47 +286,16 @@ mud_unmapv4(struct sockaddr_storage *addr)
     memcpy(addr, &sin, sizeof(sin));
 }
 
-static size_t
-mud_addrlen(struct sockaddr_storage *addr)
-{
-    return (addr->ss_family == AF_INET) ? sizeof(struct sockaddr_in)
-                                        : sizeof(struct sockaddr_in6);
-}
-
-static int
-mud_addrinfo(struct sockaddr_storage *addr, const char *host, int port)
-{
-    struct sockaddr_in sin = {
-        .sin_family = AF_INET,
-        .sin_port = htons(port),
-    };
-
-    if (inet_pton(AF_INET, host, &sin.sin_addr) == 1) {
-        memcpy(addr, &sin, sizeof(sin));
-        return 0;
-    }
-
-    struct sockaddr_in6 sin6 = {
-        .sin6_family = AF_INET6,
-        .sin6_port = htons(port),
-    };
-
-    if (inet_pton(AF_INET6, host, &sin6.sin6_addr) == 1) {
-        memcpy(addr, &sin6, sizeof(sin6));
-        return 0;
-    }
-
-    errno = EINVAL;
-
-    return -1;
-}
-
 static ssize_t
 mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
               void *data, size_t size, int tc, int flags)
 {
     if (!size)
         return 0;
+
+    const socklen_t addrlen = path->addr.ss_family == AF_INET
+                            ? sizeof(struct sockaddr_in)
+                            : sizeof(struct sockaddr_in6);
 
     struct iovec iov = {
         .iov_base = data,
@@ -336,7 +304,7 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
 
     struct msghdr msg = {
         .msg_name = &path->addr,
-        .msg_namelen = mud_addrlen(&path->addr),
+        .msg_namelen = addrlen,
         .msg_iov = &iov,
         .msg_iovlen = 1,
         .msg_control = path->ctrl.data,
@@ -405,9 +373,9 @@ mud_set_path(struct mud_path *path, struct sockaddr_storage *local_addr,
     memset(&path->ctrl, 0, sizeof(path->ctrl));
 
     if (local_addr)
-        memmove(&path->local_addr, local_addr, mud_addrlen(local_addr));
+        memmove(&path->local_addr, local_addr, sizeof(*local_addr));
 
-    memmove(&path->addr, addr, mud_addrlen(addr));
+    memmove(&path->addr, addr, sizeof(*addr));
 
     if (addr->ss_family == AF_INET) {
         if (local_addr) {
@@ -506,34 +474,48 @@ mud_path(struct mud *mud, struct sockaddr_storage *local_addr,
     return path;
 }
 
-int
-mud_peer(struct mud *mud, const char *host, int port)
+static int
+mud_ss_from_sa(struct sockaddr_storage *ss, struct sockaddr *sa)
 {
-    if (!host || !port) {
+    if (!ss || !sa) {
         errno = EINVAL;
         return -1;
     }
 
-    if (mud_addrinfo(&mud->peer.addr, host, port))
+    switch (sa->sa_family) {
+    case AF_INET:
+        memcpy(ss, sa, sizeof(struct sockaddr_in));
+        break;
+    case AF_INET6:
+        memcpy(ss, sa, sizeof(struct sockaddr_in6));
+        break;
+    default:
+        errno = EINVAL;
+        return -1;
+    }
+
+    mud_unmapv4(ss);
+
+    return 0;
+}
+
+int
+mud_peer(struct mud *mud, struct sockaddr *peer)
+{
+    if (mud_ss_from_sa(&mud->peer.addr, peer))
         return -1;
 
-    mud_unmapv4(&mud->peer.addr);
     mud->peer.set = 1;
 
     return 0;
 }
 
 int
-mud_del_path(struct mud *mud, const char *name)
+mud_del_path(struct mud *mud, struct sockaddr *peer)
 {
-    if (!name) {
-        errno = EINVAL;
-        return -1;
-    }
-
     struct sockaddr_storage addr;
 
-    if (mud_addrinfo(&addr, name, 0))
+    if (mud_ss_from_sa(&addr, peer))
         return -1;
 
     struct mud_path *path;
@@ -549,16 +531,16 @@ mud_del_path(struct mud *mud, const char *name)
 }
 
 int
-mud_add_path(struct mud *mud, const char *name)
+mud_add_path(struct mud *mud, struct sockaddr *peer)
 {
-    if (!name || !mud->peer.set) {
+    if (!mud->peer.set) {
         errno = EINVAL;
         return -1;
     }
 
     struct sockaddr_storage addr;
 
-    if (mud_addrinfo(&addr, name, 0))
+    if (mud_ss_from_sa(&addr, peer))
         return -1;
 
     return -!mud_path(mud, &addr, &mud->peer.addr, 1);
@@ -718,30 +700,6 @@ mud_setup_socket(int fd, int v4, int v6)
     return 0;
 }
 
-static int
-mud_create_socket(int port, int v4, int v6)
-{
-    struct sockaddr_storage addr;
-
-    if (mud_addrinfo(&addr, v6 ? "::" : "0.0.0.0", port))
-        return -1;
-
-    int fd = socket(addr.ss_family, SOCK_DGRAM, IPPROTO_UDP);
-
-    if (fd == -1)
-        return -1;
-
-    if (mud_setup_socket(fd, v4, v6) ||
-        bind(fd, (struct sockaddr *)&addr, mud_addrlen(&addr))) {
-        int err = errno;
-        close(fd);
-        errno = err;
-        return -1;
-    }
-
-    return fd;
-}
-
 static void
 mud_keyx_set(struct mud *mud, unsigned char *key, unsigned char *secret,
              unsigned char *pub0, unsigned char *pub1)
@@ -818,12 +776,28 @@ mud_set_aes(struct mud *mud)
 }
 
 struct mud *
-mud_create(int port, int v4, int v6)
+mud_create(struct sockaddr *addr, int v4, int v6)
 {
+    if (!addr)
+        return NULL;
+
     uint64_t now = mud_now();
 
     if (now >> 48)
         return NULL;
+
+    socklen_t addrlen = 0;
+
+    switch (addr->sa_family) {
+    case AF_INET:
+        addrlen = sizeof(struct sockaddr_in);
+        break;
+    case AF_INET6:
+        addrlen = sizeof(struct sockaddr_in6);
+        break;
+    default:
+        return NULL;
+    }
 
     if (sodium_init() == -1)
         return NULL;
@@ -835,9 +809,11 @@ mud_create(int port, int v4, int v6)
 
     memset(mud, 0, sizeof(struct mud));
 
-    mud->fd = mud_create_socket(port, v4, v6);
+    mud->fd = socket(addr->sa_family, SOCK_DGRAM, IPPROTO_UDP);
 
-    if (mud->fd == -1) {
+    if ((mud->fd == -1) ||
+        (mud_setup_socket(mud->fd, v4, v6)) ||
+        (bind(mud->fd, addr, addrlen))) {
         mud_delete(mud);
         return NULL;
     }
