@@ -5,7 +5,7 @@
 struct mud;
 struct sockaddr;
 
-struct mud *mud_create (struct sockaddr *, int, int);
+struct mud *mud_create (struct sockaddr *);
 void        mud_delete (struct mud *);
 
 int mud_get_fd  (struct mud *);

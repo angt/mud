@@ -29,6 +29,12 @@
 #define MSG_CONFIRM 0
 #endif
 
+#if defined __linux__
+#define MUD_V4V6 1
+#else
+#define MUD_V4V6 0
+#endif
+
 #if defined IP_PKTINFO
 #define MUD_PKTINFO IP_PKTINFO
 #define MUD_PKTINFO_SRC(X) &((struct in_pktinfo *)(X))->ipi_addr
@@ -776,7 +782,7 @@ mud_set_aes(struct mud *mud)
 }
 
 struct mud *
-mud_create(struct sockaddr *addr, int v4, int v6)
+mud_create(struct sockaddr *addr)
 {
     if (!addr)
         return NULL;
@@ -786,14 +792,19 @@ mud_create(struct sockaddr *addr, int v4, int v6)
     if (now >> 48)
         return NULL;
 
+    int v4, v6;
     socklen_t addrlen = 0;
 
     switch (addr->sa_family) {
     case AF_INET:
         addrlen = sizeof(struct sockaddr_in);
+        v4 = 1;
+        v6 = 0;
         break;
     case AF_INET6:
         addrlen = sizeof(struct sockaddr_in6);
+        v4 = MUD_V4V6;
+        v6 = 1;
         break;
     default:
         return NULL;
@@ -808,7 +819,6 @@ mud_create(struct sockaddr *addr, int v4, int v6)
         return NULL;
 
     memset(mud, 0, sizeof(struct mud));
-
     mud->fd = socket(addr->sa_family, SOCK_DGRAM, IPPROTO_UDP);
 
     if ((mud->fd == -1) ||
