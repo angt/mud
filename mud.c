@@ -1048,14 +1048,10 @@ mud_packet_check_size(unsigned char *data, size_t size)
     if (size <= MUD_PACKET_SIZE(0))
         return -1;
 
-    // clang-format off
-
     const size_t sizes[] = {
         [mud_conf] = MUD_PACKET_SIZE(sizeof(packet->data.conf)),
         [mud_stat] = MUD_PACKET_SIZE(sizeof(packet->data.stat)),
     };
-
-    // clang-format on
 
     return (packet->hdr.code >= sizeof(sizes)) ||
            (sizes[packet->hdr.code] != size);
