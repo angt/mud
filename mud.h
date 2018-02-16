@@ -13,8 +13,8 @@ int mud_get_fd  (struct mud *);
 int mud_set_key (struct mud *, unsigned char *, size_t);
 int mud_get_key (struct mud *, unsigned char *, size_t *);
 
-int mud_set_mtu (struct mud *, int mtu);
-int mud_get_mtu (struct mud *);
+size_t mud_set_mtu (struct mud *, size_t);
+size_t mud_get_mtu (struct mud *);
 
 int mud_set_send_timeout   (struct mud *, unsigned long);
 int mud_set_time_tolerance (struct mud *, unsigned long);

@@ -94,8 +94,8 @@ struct mud_path {
         uint64_t send_time;
         int remote;
         struct {
-            int remote;
-            int local;
+            size_t remote;
+            size_t local;
         } mtu;
         unsigned char kiss[MUD_SID_SIZE];
     } conf;
@@ -179,7 +179,7 @@ struct mud {
         int use_next;
         int aes;
     } crypto;
-    int mtu;
+    size_t mtu;
     int tc;
     struct {
         int set;
@@ -646,11 +646,10 @@ mud_set_time_tolerance(struct mud *mud, unsigned long msec)
     return 0;
 }
 
-int
+size_t
 mud_get_mtu(struct mud *mud)
 {
-    int mtu = mud->mtu;
-
+    size_t mtu = mud->mtu;
     struct mud_path *path;
 
     for (path = mud->path; path; path = path->next) {
@@ -663,10 +662,10 @@ mud_get_mtu(struct mud *mud)
     return mtu;
 }
 
-int
-mud_set_mtu(struct mud *mud, int mtu)
+size_t
+mud_set_mtu(struct mud *mud, size_t mtu)
 {
-    if (mtu <= 0 || mtu > MUD_PACKET_MAX_SIZE)
+    if (mtu > MUD_PACKET_MAX_SIZE)
         mtu = MUD_PACKET_MAX_SIZE;
 
     if (mtu < sizeof(struct mud_packet))
@@ -686,7 +685,7 @@ mud_set_mtu(struct mud *mud, int mtu)
     if (!mud->mtu)
         mud->mtu = mtu;
 
-    return 0;
+    return mtu;
 }
 
 static int
@@ -1243,7 +1242,7 @@ mud_send(struct mud *mud, const void *data, size_t size, int tc)
     if (!size)
         return 0;
 
-    if (size > (size_t)mud_get_mtu(mud)) {
+    if (size > mud_get_mtu(mud)) {
         errno = EMSGSIZE;
         return -1;
     }
