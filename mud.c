@@ -549,7 +549,14 @@ mud_add_path(struct mud *mud, struct sockaddr *peer)
     if (mud_ss_from_sa(&addr, peer))
         return -1;
 
-    return -!mud_path(mud, &addr, &mud->peer.addr, 1);
+    struct mud_path *path = mud_path(mud, &addr, &mud->peer.addr, 1);
+
+    if (!path)
+        return -1;
+
+    path->state.skip = 0;
+
+    return 0;
 }
 
 int
