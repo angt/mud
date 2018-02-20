@@ -1153,14 +1153,12 @@ mud_recv(struct mud *mud, void *data, size_t size)
     uint64_t send_time = mud_read48(packet);
 
     int mud_packet = !send_time;
-    int new_path = 0;
 
     if (mud_packet) {
         if (mud_packet_check_size(packet, packet_size))
             return 0;
 
         send_time = mud_read48(&packet[MUD_U48_SIZE]);
-        new_path = ((struct mud_packet *)packet)->hdr.code == mud_conf;
     }
 
     if (mud_abs_diff(now, send_time) >= mud->time_tolerance)
@@ -1176,11 +1174,6 @@ mud_recv(struct mud *mud, void *data, size_t size)
     if (mud_localaddr(&local_addr, &msg, addr.ss_family))
         return 0;
 
-    struct mud_path *path = mud_path(mud, &local_addr, &addr, new_path);
-
-    if (!path)
-        return 0;
-
     int ret = 0;
 
     if (!mud_packet) {
@@ -1190,6 +1183,11 @@ mud_recv(struct mud *mud, void *data, size_t size)
             return 0;
         }
     }
+
+    struct mud_path *path = mud_path(mud, &local_addr, &addr, 1);
+
+    if (!path)
+        return 0;
 
     if (path->rdt) {
         path->rdt = ((now - path->recv_time) + UINT64_C(7) * path->rdt) / UINT64_C(8);
