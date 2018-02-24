@@ -81,10 +81,7 @@
 #define MUD_TIME_TOLERANCE (10 * MUD_ONE_MIN)
 
 struct mud_path {
-    struct {
-        unsigned skip : 1;
-        unsigned backup : 1;
-    } state;
+    enum mud_state state;
     struct sockaddr_storage local_addr, addr;
     struct {
         uint64_t send_time;
@@ -147,7 +144,7 @@ struct mud_packet {
         struct {
             unsigned char kiss[MUD_SID_SIZE];
             unsigned char mtu[MUD_U48_SIZE];
-            unsigned char backup;
+            unsigned char state;
             struct mud_public public;
             unsigned char aes;
         } conf;
@@ -396,8 +393,8 @@ mud_cmp_addr(struct sockaddr_storage *a, struct sockaddr_storage *b)
 }
 
 static struct mud_path *
-mud_path(struct mud *mud, struct sockaddr_storage *local_addr,
-         struct sockaddr_storage *addr, int create)
+mud_get_path(struct mud *mud, struct sockaddr_storage *local_addr,
+             struct sockaddr_storage *addr, int create)
 {
     struct mud_path *path;
 
@@ -466,49 +463,6 @@ mud_peer(struct mud *mud, struct sockaddr *peer)
         return -1;
 
     mud->peer.set = 1;
-
-    return 0;
-}
-
-int
-mud_del_path(struct mud *mud, struct sockaddr *peer)
-{
-    struct sockaddr_storage addr;
-
-    if (mud_ss_from_sa(&addr, peer))
-        return -1;
-
-    struct mud_path *path;
-
-    for (path = mud->path; path; path = path->next) {
-        if (mud_cmp_addr(&addr, mud->peer.set ? &path->local_addr : &path->addr))
-            continue;
-
-        path->state.skip = 1;
-    }
-
-    return 0;
-}
-
-int
-mud_add_path(struct mud *mud, struct sockaddr *peer)
-{
-    if (!mud->peer.set) {
-        errno = EINVAL;
-        return -1;
-    }
-
-    struct sockaddr_storage addr;
-
-    if (mud_ss_from_sa(&addr, peer))
-        return -1;
-
-    struct mud_path *path = mud_path(mud, &addr, &mud->peer.addr, 1);
-
-    if (!path)
-        return -1;
-
-    path->state.skip = 0;
 
     return 0;
 }
@@ -603,6 +557,32 @@ mud_set_time_tolerance(struct mud *mud, unsigned long msec)
     }
 
     mud->time_tolerance = x;
+
+    return 0;
+}
+
+int
+mud_set_state(struct mud *mud, struct sockaddr *peer, enum mud_state state)
+{
+    if (!mud->peer.set || (state >= MUD_LAST)) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    struct sockaddr_storage addr;
+
+    if (mud_ss_from_sa(&addr, peer))
+        return -1;
+
+    struct mud_path *path = mud_get_path(mud, &addr, &mud->peer.addr, state != MUD_DOWN);
+
+    if (!path)
+        return -1;
+
+    if (path->state != state) {
+        path->state = state;
+        path->conf.remote = 0;
+    }
 
     return 0;
 }
@@ -954,7 +934,7 @@ mud_packet_send(struct mud *mud, enum mud_packet_code code,
         size = sizeof(packet.data.conf);
         memcpy(&packet.data.conf.kiss, &mud->kiss, size);
         mud_write48(packet.data.conf.mtu, path->conf.mtu.local);
-        packet.data.conf.backup = (unsigned char)path->state.backup;
+        packet.data.conf.state = (unsigned char)path->state;
         memcpy(&packet.data.conf.public.local, &mud->crypto.public.local,
                sizeof(mud->crypto.public.local));
         memcpy(&packet.data.conf.public.remote, &mud->crypto.public.remote,
@@ -1060,7 +1040,7 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
             mud_kiss_path(mud, path);
             mud_keyx(mud, packet->data.conf.public.local,
                      packet->data.conf.aes);
-            path->state.backup = !!packet->data.conf.backup;
+            path->state = (enum mud_state)packet->data.conf.state;
             mud_packet_send(mud, mud_conf, path, now, MSG_CONFIRM);
         }
         break;
@@ -1138,7 +1118,7 @@ mud_recv(struct mud *mud, void *data, size_t size)
         }
     }
 
-    struct mud_path *path = mud_path(mud, &local_addr, &addr, 1);
+    struct mud_path *path = mud_get_path(mud, &local_addr, &addr, 1);
 
     if (!path)
         return 0;
@@ -1153,7 +1133,7 @@ mud_recv(struct mud *mud, void *data, size_t size)
 
     path->rst = send_time;
 
-    if ((!path->state.backup) && (path->recv_time) &&
+    if ((path->state == MUD_UP) && (path->recv_time) &&
         (mud_timeout(now, path->stat_time, MUD_STAT_TIMEOUT))) {
         mud_packet_send(mud, mud_stat, path, now, MSG_CONFIRM);
         path->stat_time = now;
@@ -1179,7 +1159,7 @@ mud_update(struct mud *mud)
     struct mud_path *path = mud->path;
 
     for (; path; path = path->next) {
-        if (path->state.skip)
+        if (path->state == MUD_DOWN)
             continue;
 
         if (update_keyx || mud_timeout(now, path->recv_time, mud->send_timeout + MUD_ONE_SEC))
@@ -1223,12 +1203,10 @@ mud_send(struct mud *mud, const void *data, size_t size, int tc)
     int64_t limit_min = INT64_MAX;
 
     for (path = mud->path; path; path = path->next) {
-        if (path->state.skip)
-            continue;
-
-        if (path->state.backup) {
-            path_backup = path;
-            continue;
+        switch (path->state) {
+            case MUD_BACKUP: path_backup = path; /* FALLTHRU */
+            case MUD_DOWN: continue;
+            default: break;
         }
 
         int64_t limit = path->limit;
