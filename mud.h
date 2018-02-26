@@ -1,15 +1,44 @@
 #pragma once
 
 #include <stddef.h>
+#include <inttypes.h>
+#include <sys/socket.h>
+
+#define MUD_KISS_SIZE (8U)
 
 struct mud;
-struct sockaddr;
 
 enum mud_state {
-    MUD_UP = 0,
-    MUD_BACKUP,
+    MUD_EMPTY = 0,
     MUD_DOWN,
-    MUD_LAST,
+    MUD_BACKUP,
+    MUD_UP,
+};
+
+struct mud_path {
+    enum mud_state state;
+    struct sockaddr_storage local_addr, addr;
+    struct {
+        uint64_t send_time;
+        int remote;
+        struct {
+            size_t remote;
+            size_t local;
+        } mtu;
+        unsigned char kiss[MUD_KISS_SIZE];
+    } conf;
+    uint64_t rdt;
+    uint64_t rtt;
+    uint64_t sdt;
+    uint64_t rst;
+    uint64_t r_sdt;
+    uint64_t r_rdt;
+    uint64_t r_rst;
+    int64_t r_dt;
+    uint64_t limit;
+    uint64_t recv_time;
+    uint64_t send_time;
+    uint64_t stat_time;
 };
 
 struct mud *mud_create (struct sockaddr *);
@@ -34,3 +63,5 @@ int mud_peer (struct mud *, struct sockaddr *);
 
 int mud_recv (struct mud *, void *, size_t);
 int mud_send (struct mud *, const void *, size_t, int);
+
+struct mud_path *mud_get_paths(struct mud *, unsigned *);

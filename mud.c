@@ -1,5 +1,3 @@
-#include "mud.h"
-
 #if defined __APPLE__
 #define __APPLE_USE_RFC_3542
 #endif
@@ -8,15 +6,15 @@
 #define _GNU_SOURCE
 #endif
 
+#include "mud.h"
+
 #include <errno.h>
-#include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
 
 #include <sys/ioctl.h>
-#include <sys/socket.h>
 #include <sys/time.h>
 
 #include <arpa/inet.h>
@@ -65,7 +63,6 @@
 #define MUD_KEY_SIZE (32U)
 #define MUD_MAC_SIZE (16U)
 #define MUD_PUB_SIZE (crypto_scalarmult_BYTES)
-#define MUD_SID_SIZE (8U)
 
 #define MUD_PACKET_MIN_SIZE (MUD_U48_SIZE + MUD_MAC_SIZE)
 #define MUD_PACKET_MAX_SIZE (1500U)
@@ -79,33 +76,6 @@
 #define MUD_KEYX_TIMEOUT (60 * MUD_ONE_MIN)
 #define MUD_SEND_TIMEOUT (MUD_ONE_SEC)
 #define MUD_TIME_TOLERANCE (10 * MUD_ONE_MIN)
-
-struct mud_path {
-    enum mud_state state;
-    struct sockaddr_storage local_addr, addr;
-    struct {
-        uint64_t send_time;
-        int remote;
-        struct {
-            size_t remote;
-            size_t local;
-        } mtu;
-        unsigned char kiss[MUD_SID_SIZE];
-    } conf;
-    uint64_t rdt;
-    uint64_t rtt;
-    uint64_t sdt;
-    uint64_t rst;
-    uint64_t r_sdt;
-    uint64_t r_rdt;
-    uint64_t r_rst;
-    int64_t r_dt;
-    uint64_t limit;
-    uint64_t recv_time;
-    uint64_t send_time;
-    uint64_t stat_time;
-    struct mud_path *next;
-};
 
 struct mud_crypto_opt {
     unsigned char *dst;
@@ -142,7 +112,7 @@ struct mud_packet {
     } hdr;
     union {
         struct {
-            unsigned char kiss[MUD_SID_SIZE];
+            unsigned char kiss[MUD_KISS_SIZE];
             unsigned char mtu[MUD_U48_SIZE];
             unsigned char state;
             struct mud_public public;
@@ -161,7 +131,8 @@ struct mud {
     int fd;
     uint64_t send_timeout;
     uint64_t time_tolerance;
-    struct mud_path *path;
+    struct mud_path *paths;
+    unsigned count;
     struct {
         uint64_t time;
         unsigned char secret[crypto_scalarmult_SCALARBYTES];
@@ -177,7 +148,7 @@ struct mud {
         int set;
         struct sockaddr_storage addr;
     } peer;
-    unsigned char kiss[MUD_SID_SIZE];
+    unsigned char kiss[MUD_KISS_SIZE];
 };
 
 static int
@@ -392,41 +363,92 @@ mud_cmp_addr(struct sockaddr_storage *a, struct sockaddr_storage *b)
     return 1;
 }
 
+struct mud_path *
+mud_get_paths(struct mud *mud, unsigned *ret_count)
+{
+    unsigned count = 0;
+
+    if (!ret_count)
+        return NULL;
+
+    for (unsigned i = 0; i < mud->count; i++) {
+        struct mud_path *path = &mud->paths[i];
+
+        if (path->state != MUD_EMPTY)
+            count++;
+    }
+
+    size_t size = count * sizeof(struct mud_path);
+
+    if (!size)
+        return NULL;
+
+    struct mud_path *paths = malloc(size);
+
+    if (!paths)
+        return NULL;
+
+    count = 0;
+
+    for (unsigned i = 0; i < mud->count; i++) {
+        struct mud_path *path = &mud->paths[i];
+
+        if (path->state != MUD_EMPTY)
+            memcpy(&paths[count++], path, sizeof(struct mud_path));
+    }
+
+    *ret_count = count;
+
+    return paths;
+}
+
 static struct mud_path *
 mud_get_path(struct mud *mud, struct sockaddr_storage *local_addr,
              struct sockaddr_storage *addr, int create)
 {
-    struct mud_path *path;
-
     if (local_addr->ss_family != addr->ss_family) {
         errno = EINVAL;
         return NULL;
     }
 
-    for (path = mud->path; path; path = path->next) {
-        if (mud_cmp_addr(local_addr, &path->local_addr))
-            continue;
+    for (unsigned i = 0; i < mud->count; i++) {
+        struct mud_path *path = &mud->paths[i];
 
-        if (mud_cmp_addr(addr, &path->addr))
-            continue;
-
-        break;
+        if (path->state &&
+            !mud_cmp_addr(local_addr, &path->local_addr) &&
+            !mud_cmp_addr(addr, &path->addr))
+            return path;
     }
 
-    if (path || !create)
-        return path;
-
-    path = calloc(1, sizeof(struct mud_path));
-
-    if (!path)
+    if (!create)
         return NULL;
 
-    memmove(&path->local_addr, local_addr, sizeof(*local_addr));
-    memmove(&path->addr, addr, sizeof(*addr));
+    struct mud_path *path = NULL;
+
+    for (unsigned i = 0; i < mud->count; i++) {
+        if (mud->paths[i].state == MUD_EMPTY) {
+            path = &mud->paths[i];
+            break;
+        }
+    }
+
+    if (!path) {
+        struct mud_path *paths = realloc(mud->paths,
+                (mud->count + 1) * sizeof(struct mud_path));
+
+        if (!paths)
+            return NULL;
+
+        mud->count++;
+        mud->paths = paths;
+
+        path = &paths[mud->count - 1];
+    }
+
+    memcpy(&path->local_addr, local_addr, sizeof(*local_addr));
+    memcpy(&path->addr, addr, sizeof(*addr));
 
     path->conf.mtu.local = mud->mtu; // XXX
-    path->next = mud->path;
-    mud->path = path;
 
     return path;
 }
@@ -564,7 +586,8 @@ mud_set_time_tolerance(struct mud *mud, unsigned long msec)
 int
 mud_set_state(struct mud *mud, struct sockaddr *peer, enum mud_state state)
 {
-    if (!mud->peer.set || (state >= MUD_LAST)) {
+    if (!mud->peer.set ||
+        (state < MUD_DOWN) || (state > MUD_UP)) {
         errno = EINVAL;
         return -1;
     }
@@ -574,7 +597,7 @@ mud_set_state(struct mud *mud, struct sockaddr *peer, enum mud_state state)
     if (mud_ss_from_sa(&addr, peer))
         return -1;
 
-    struct mud_path *path = mud_get_path(mud, &addr, &mud->peer.addr, state != MUD_DOWN);
+    struct mud_path *path = mud_get_path(mud, &addr, &mud->peer.addr, state > MUD_DOWN);
 
     if (!path)
         return -1;
@@ -591,11 +614,13 @@ size_t
 mud_get_mtu(struct mud *mud)
 {
     size_t mtu = mud->mtu;
-    struct mud_path *path;
 
-    for (path = mud->path; path; path = path->next) {
+    for (unsigned i = 0; i < mud->count; i++) {
+        struct mud_path *path = &mud->paths[i];
+
         if (path->conf.mtu.local && path->conf.mtu.local < mtu)
             mtu = path->conf.mtu.local;
+
         if (path->conf.mtu.remote && path->conf.mtu.remote < mtu)
             mtu = path->conf.mtu.remote;
     }
@@ -614,11 +639,12 @@ mud_set_mtu(struct mud *mud, size_t mtu)
 
     mtu -= MUD_PACKET_MIN_SIZE;
 
-    struct mud_path *path;
+    for (unsigned i = 0; i < mud->count; i++) {
+        struct mud_path *path = &mud->paths[i];
 
-    for (path = mud->path; path; path = path->next) {
         if (path->conf.mtu.local == mtu)
             continue;
+
         path->conf.mtu.local = mtu;
         path->conf.remote = 0;
     }
@@ -789,17 +815,11 @@ mud_delete(struct mud *mud)
     if (!mud)
         return;
 
-    while (mud->path) {
-        struct mud_path *path = mud->path;
-        mud->path = path->next;
-        free(path);
-    }
+    if (mud->paths)
+        free(mud->paths);
 
-    if (mud->fd != -1) {
-        int err = errno;
+    if (mud->fd >= 0)
         close(mud->fd);
-        errno = err;
-    }
 
     sodium_free(mud);
 }
@@ -962,21 +982,13 @@ mud_packet_send(struct mud *mud, enum mud_packet_code code,
 }
 
 static void
-mud_kiss_path(struct mud *mud, struct mud_path *path)
+mud_kiss_path(struct mud *mud, unsigned char *kiss)
 {
-    struct mud_path **p = &mud->path;
+    for (unsigned i = 0; i < mud->count; i++) {
+        struct mud_path *path = &mud->paths[i];
 
-    while (*p) {
-        struct mud_path *t = *p;
-
-        if ((t == path) ||
-            !memcmp(t->conf.kiss, path->conf.kiss, sizeof(path->conf.kiss))) {
-            p = &t->next;
-            continue;
-        }
-
-        *p = t->next;
-        free(t);
+        if (memcmp(path->conf.kiss, kiss, sizeof(path->conf.kiss)))
+            memset(path, 0, sizeof(struct mud_path));
     }
 }
 
@@ -1037,7 +1049,7 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
                 mud->crypto.use_next = 1;
             }
         } else {
-            mud_kiss_path(mud, path);
+            mud_kiss_path(mud, path->conf.kiss);
             mud_keyx(mud, packet->data.conf.public.local,
                      packet->data.conf.aes);
             path->state = (enum mud_state)packet->data.conf.state;
@@ -1156,10 +1168,10 @@ mud_update(struct mud *mud)
     uint64_t now = mud_now();
     int update_keyx = !mud_keyx_init(mud, now);
 
-    struct mud_path *path = mud->path;
+    for (unsigned i = 0; i < mud->count; i++) {
+        struct mud_path *path = &mud->paths[i];
 
-    for (; path; path = path->next) {
-        if (path->state == MUD_DOWN)
+        if (path->state < MUD_DOWN)
             continue;
 
         if (update_keyx || mud_timeout(now, path->recv_time, mud->send_timeout + MUD_ONE_SEC))
@@ -1196,17 +1208,18 @@ mud_send(struct mud *mud, const void *data, size_t size, int tc)
         return -1;
     }
 
-    struct mud_path *path;
     struct mud_path *path_min = NULL;
     struct mud_path *path_backup = NULL;
 
     int64_t limit_min = INT64_MAX;
 
-    for (path = mud->path; path; path = path->next) {
-        switch (path->state) {
-            case MUD_BACKUP: path_backup = path; /* FALLTHRU */
-            case MUD_DOWN: continue;
-            default: break;
+    for (unsigned i = 0; i < mud->count; i++) {
+        struct mud_path *path = &mud->paths[i];
+
+        if (path->state <= MUD_DOWN) {
+            if (path->state == MUD_BACKUP)
+                path_backup = path;
+            continue;
         }
 
         int64_t limit = path->limit;
