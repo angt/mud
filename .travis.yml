@@ -13,4 +13,4 @@ compiler:
 script:
     - git clone --depth=1 https://github.com/jedisct1/libsodium.git --branch=stable
     - cd libsodium && ./configure --enable-minimal --disable-dependency-tracking && cd -
-    - make CPPFLAGS="-I./libsodium/src/libsodium/include" mud.o
+    - make CFLAGS="-std=gnu99" CPPFLAGS="-I./libsodium/src/libsodium/include" mud.o
