@@ -739,8 +739,10 @@ mud_keyx_init(struct mud *mud, uint64_t now)
 int
 mud_set_aes(struct mud *mud)
 {
-    if (!crypto_aead_aes256gcm_is_available())
-        return 1;
+    if (!crypto_aead_aes256gcm_is_available()) {
+        errno = ENOTSUP;
+        return -1;
+    }
 
     mud->crypto.aes = 1;
 
