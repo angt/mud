@@ -21,24 +21,25 @@ struct mud_path {
     struct {
         uint64_t send_time;
         int remote;
-        struct {
-            size_t remote;
-            size_t local;
-        } mtu;
         unsigned char kiss[MUD_KISS_SIZE];
     } conf;
-    uint64_t rdt;
+    uint64_t send_max;
+    uint64_t send_max_time;
+    uint64_t recv_max;
+    uint64_t recv_max_time;
     uint64_t rtt;
-    uint64_t sdt;
     uint64_t rst;
-    uint64_t r_sdt;
-    uint64_t r_rdt;
     uint64_t r_rst;
-    int64_t r_dt;
+    uint64_t r_rms;
+    uint64_t r_rmt;
     uint64_t limit;
     uint64_t recv_time;
     uint64_t send_time;
     uint64_t stat_time;
+    struct {
+        size_t ok;
+        size_t probe;
+    } mtu;
 };
 
 struct mud *mud_create (struct sockaddr *);
@@ -49,7 +50,7 @@ int mud_get_fd  (struct mud *);
 int mud_set_key (struct mud *, unsigned char *, size_t);
 int mud_get_key (struct mud *, unsigned char *, size_t *);
 
-size_t mud_set_mtu (struct mud *, size_t);
+void   mud_set_mtu (struct mud *, size_t);
 size_t mud_get_mtu (struct mud *);
 
 int mud_set_send_timeout   (struct mud *, unsigned long);
