@@ -83,7 +83,7 @@ struct mud_crypto_opt {
         const unsigned char *data;
         size_t size;
     } src, ad;
-    unsigned char npub[16];
+    unsigned char npub[MUD_U48_SIZE + MUD_KISS_SIZE];
 };
 
 struct mud_crypto_key {
@@ -109,11 +109,11 @@ struct mud_packet {
     struct {
         unsigned char zero[MUD_U48_SIZE];
         unsigned char time[MUD_U48_SIZE];
+        unsigned char kiss[MUD_KISS_SIZE];
         unsigned char code;
     } hdr;
     union {
         struct {
-            unsigned char kiss[MUD_KISS_SIZE];
             unsigned char state;
             struct mud_public public;
             unsigned char aes;
@@ -148,7 +148,9 @@ struct mud {
         int set;
         struct sockaddr_storage addr;
     } peer;
-    unsigned char kiss[MUD_KISS_SIZE];
+    struct {
+        unsigned char kiss[MUD_KISS_SIZE];
+    } remote, local;
 };
 
 static int
@@ -797,7 +799,7 @@ mud_create(struct sockaddr *addr)
     mud->time_tolerance = MUD_TIME_TOLERANCE;
     mud->tc = MUD_PACKET_TC;
 
-    randombytes_buf(mud->kiss, sizeof(mud->kiss));
+    randombytes_buf(mud->local.kiss, sizeof(mud->local.kiss));
 
     return mud;
 }
@@ -849,6 +851,7 @@ mud_encrypt(struct mud *mud, uint64_t nonce,
     };
 
     mud_write48(opt.npub, nonce);
+    memcpy(&opt.npub[MUD_U48_SIZE], mud->local.kiss, sizeof(mud->local.kiss));
     memcpy(dst, opt.npub, MUD_U48_SIZE);
 
     if (mud->crypto.use_next) {
@@ -883,6 +886,7 @@ mud_decrypt(struct mud *mud,
     };
 
     memcpy(opt.npub, src, MUD_U48_SIZE);
+    memcpy(&opt.npub[MUD_U48_SIZE], mud->remote.kiss, sizeof(mud->remote.kiss));
 
     if (mud_decrypt_opt(&mud->crypto.current, &opt)) {
         if (!mud_decrypt_opt(&mud->crypto.next, &opt)) {
@@ -949,12 +953,12 @@ mud_packet_send(struct mud *mud, enum mud_packet_code code,
     memset(data, 0, sizeof(data));
 
     mud_write48(packet->hdr.time, now);
+    memcpy(packet->hdr.kiss, mud->local.kiss, sizeof(mud->local.kiss));
     packet->hdr.code = (unsigned char)code;
 
     switch (code) {
     case mud_conf:
         size = sizeof(packet->data.conf);
-        memcpy(&packet->data.conf.kiss, &mud->kiss, size);
         packet->data.conf.state = (unsigned char)path->state;
         memcpy(&packet->data.conf.public.local, &mud->crypto.public.local,
                sizeof(mud->crypto.public.local));
@@ -1039,11 +1043,18 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
 {
     struct mud_packet *packet = (struct mud_packet *)data;
 
+    memcpy(path->conf.kiss, packet->hdr.kiss,
+           sizeof(path->conf.kiss));
+
+    memcpy(mud->remote.kiss, packet->hdr.kiss,
+           sizeof(path->conf.kiss));
+
+    if (!mud->peer.set)
+        mud_kiss_path(mud, mud->remote.kiss);
+
     switch (packet->hdr.code) {
     case mud_conf:
         path->conf.remote = 1;
-        memcpy(path->conf.kiss, packet->data.conf.kiss,
-               sizeof(path->conf.kiss));
         if (mud->peer.set) {
             if (!memcmp(mud->crypto.public.local,
                         packet->data.conf.public.remote, MUD_PUB_SIZE)) {
@@ -1052,7 +1063,6 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
                 mud->crypto.use_next = 1;
             }
         } else {
-            mud_kiss_path(mud, path->conf.kiss);
             mud_keyx(mud, packet->data.conf.public.local,
                      packet->data.conf.aes);
             path->state = (enum mud_state)packet->data.conf.state;
