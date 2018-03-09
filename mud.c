@@ -376,8 +376,10 @@ mud_get_paths(struct mud *mud, unsigned *ret_count)
 {
     unsigned count = 0;
 
-    if (!ret_count)
+    if (!ret_count) {
+        errno = EINVAL;
         return NULL;
+    }
 
     for (unsigned i = 0; i < mud->count; i++) {
         struct mud_path *path = &mud->paths[i];
@@ -388,8 +390,10 @@ mud_get_paths(struct mud *mud, unsigned *ret_count)
 
     size_t size = count * sizeof(struct mud_path);
 
-    if (!size)
+    if (!size) {
+        errno = 0;
         return NULL;
+    }
 
     struct mud_path *paths = malloc(size);
 
@@ -453,11 +457,13 @@ mud_get_path(struct mud *mud, struct sockaddr_storage *local_addr,
         path = &paths[mud->count - 1];
     }
 
+    memset(path, 0, sizeof(struct mud_path));
+
     memcpy(&path->local_addr, local_addr, sizeof(*local_addr));
     memcpy(&path->addr, addr, sizeof(*addr));
 
     path->mtu.ok = mud->mtu;
-    path->mtu.probe = MUD_PACKET_MAX_SIZE;
+    path->mtu.probe = mud->mtu;
 
     return path;
 }
@@ -637,19 +643,25 @@ mud_get_mtu(struct mud *mud)
         mtu = mud->mtu;
     }
 
+    if (mtu > MUD_PACKET_MAX_SIZE)
+        mtu = MUD_PACKET_MAX_SIZE;
+
+    if (mtu < sizeof(struct mud_packet))
+        mtu = sizeof(struct mud_packet);
+
     return mtu - MUD_PACKET_MIN_SIZE;
 }
 
 void
 mud_set_mtu(struct mud *mud, size_t mtu)
 {
-    mtu -= 28;
-
-    if (mtu > MUD_PACKET_MAX_SIZE)
+    if (mtu > MUD_PACKET_MAX_SIZE + 28U) {
         mtu = MUD_PACKET_MAX_SIZE;
-
-    if (mtu < sizeof(struct mud_packet))
+    } else if (mtu < sizeof(struct mud_packet) + 28U) {
         mtu = sizeof(struct mud_packet);
+    } else {
+        mtu -= 28U;
+    }
 
     mud->mtu = mtu;
 }
@@ -798,6 +810,7 @@ mud_create(struct sockaddr *addr)
     mud->send_timeout = MUD_SEND_TIMEOUT;
     mud->time_tolerance = MUD_TIME_TOLERANCE;
     mud->tc = MUD_PACKET_TC;
+    mud->mtu = sizeof(struct mud_packet);
 
     randombytes_buf(mud->local.kiss, sizeof(mud->local.kiss));
 
@@ -996,7 +1009,7 @@ mud_kiss_path(struct mud *mud, unsigned char *kiss)
         struct mud_path *path = &mud->paths[i];
 
         if (memcmp(path->conf.kiss, kiss, sizeof(path->conf.kiss)))
-            memset(path, 0, sizeof(struct mud_path));
+            path->state = MUD_EMPTY;
     }
 }
 
