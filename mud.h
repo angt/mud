@@ -17,7 +17,7 @@ enum mud_state {
 
 struct mud_path {
     enum mud_state state;
-    struct sockaddr_storage local_addr, addr;
+    struct sockaddr_storage local_addr, addr, r_addr;
     struct {
         uint64_t send_time;
         int remote;

@@ -105,11 +105,24 @@ struct mud_public {
     unsigned char local[MUD_PUB_SIZE];
 };
 
+struct mud_addr {
+    union {
+        unsigned char v6[16];
+        struct {
+            unsigned char zero[10];
+            unsigned char ff[2];
+            unsigned char v4[4];
+        };
+    };
+    unsigned char port[2];
+};
+
 struct mud_packet {
     struct {
         unsigned char zero[MUD_U48_SIZE];
         unsigned char time[MUD_U48_SIZE];
         unsigned char kiss[MUD_KISS_SIZE];
+        struct mud_addr addr;
         unsigned char code;
     } hdr;
     union {
@@ -967,6 +980,21 @@ mud_packet_send(struct mud *mud, enum mud_packet_code code,
 
     mud_write48(packet->hdr.time, now);
     memcpy(packet->hdr.kiss, mud->local.kiss, sizeof(mud->local.kiss));
+
+    if (path->addr.ss_family == AF_INET) {
+        packet->hdr.addr.ff[0] = 0xFF;
+        packet->hdr.addr.ff[1] = 0xFF;
+        memcpy(packet->hdr.addr.v4,
+               &((struct sockaddr_in *)&path->addr)->sin_addr, 4);
+        memcpy(packet->hdr.addr.port,
+               &((struct sockaddr_in *)&path->addr)->sin_port, 2);
+    } else if (path->addr.ss_family == AF_INET6) {
+        memcpy(packet->hdr.addr.v6,
+               &((struct sockaddr_in6 *)&path->addr)->sin6_addr, 16);
+        memcpy(packet->hdr.addr.port,
+               &((struct sockaddr_in6 *)&path->addr)->sin6_port, 2);
+    } else return;
+
     packet->hdr.code = (unsigned char)code;
 
     switch (code) {
@@ -1061,6 +1089,20 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
 
     memcpy(mud->remote.kiss, packet->hdr.kiss,
            sizeof(path->conf.kiss));
+
+    if (memcmp(packet->hdr.addr.v6, "\0\0\0\0\0\0\0\0\0\0\xff\xff", 12)) {
+        path->r_addr.ss_family = AF_INET6;
+        memcpy(&((struct sockaddr_in6 *)&path->r_addr)->sin6_addr,
+               packet->hdr.addr.v6, 16);
+        memcpy(&((struct sockaddr_in6 *)&path->r_addr)->sin6_port,
+               packet->hdr.addr.port, 2);
+    } else {
+        path->r_addr.ss_family = AF_INET;
+        memcpy(&((struct sockaddr_in *)&path->r_addr)->sin_addr,
+               packet->hdr.addr.v4, 4);
+        memcpy(&((struct sockaddr_in *)&path->r_addr)->sin_port,
+               packet->hdr.addr.port, 2);
+    }
 
     if (!mud->peer.set)
         mud_kiss_path(mud, mud->remote.kiss);
