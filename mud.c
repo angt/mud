@@ -162,6 +162,12 @@ struct mud {
         struct sockaddr_storage addr;
     } peer;
     struct {
+        struct {
+            size_t count;
+            uint64_t time;
+        } decrypt;
+    } bad;
+    struct {
         unsigned char kiss[MUD_KISS_SIZE];
     } remote, local;
 };
@@ -1194,7 +1200,8 @@ mud_recv(struct mud *mud, void *data, size_t size)
     if (!mud_packet) {
         ret = mud_decrypt(mud, data, size, packet, packet_size);
         if (ret == -1) {
-            // XXX
+            mud->bad.decrypt.count++;
+            mud->bad.decrypt.time = now;
             return 0;
         }
     }
