@@ -451,8 +451,10 @@ mud_get_path(struct mud *mud, struct sockaddr_storage *local_addr,
             return path;
     }
 
-    if (!create)
+    if (!create) {
+        errno = 0;
         return NULL;
+    }
 
     struct mud_path *path = NULL;
 
