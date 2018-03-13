@@ -283,7 +283,7 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
     if (!size)
         return 0;
 
-    unsigned char ctrl[256];
+    unsigned char ctrl[64] = {0};
 
     struct iovec iov = {
         .iov_base = data,
@@ -295,12 +295,14 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
         .msg_iov = &iov,
         .msg_iovlen = 1,
         .msg_control = ctrl,
-        .msg_controllen = sizeof(ctrl),
     };
 
-    struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
-
     if (path->addr.ss_family == AF_INET) {
+        msg.msg_namelen = sizeof(struct sockaddr_in);
+        msg.msg_controllen = CMSG_SPACE(MUD_PKTINFO_SIZE) +
+                             CMSG_SPACE(sizeof(int));
+
+        struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
         cmsg->cmsg_level = IPPROTO_IP;
         cmsg->cmsg_type = MUD_PKTINFO;
         cmsg->cmsg_len = CMSG_LEN(MUD_PKTINFO_SIZE);
@@ -309,19 +311,22 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
                &((struct sockaddr_in *)&path->local_addr)->sin_addr,
                sizeof(struct in_addr));
 
-        cmsg = CMSG_NXTHDR(&msg, cmsg);
+        cmsg = (struct cmsghdr *)((unsigned char *)cmsg +
+                                  CMSG_SPACE(MUD_PKTINFO_SIZE));
+
         cmsg->cmsg_level = IPPROTO_IP;
         cmsg->cmsg_type = IP_TOS;
         cmsg->cmsg_len = CMSG_LEN(sizeof(int));
 
         memcpy(CMSG_DATA(cmsg), &tc, sizeof(int));
-
-        msg.msg_namelen = sizeof(struct sockaddr_in);
-        msg.msg_controllen = CMSG_SPACE(MUD_PKTINFO_SIZE)
-                           + CMSG_SPACE(sizeof(int));
     }
 
     if (path->addr.ss_family == AF_INET6) {
+        msg.msg_namelen = sizeof(struct sockaddr_in6);
+        msg.msg_controllen = CMSG_SPACE(sizeof(struct in6_pktinfo)) +
+                             CMSG_SPACE(sizeof(int));
+
+        struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
         cmsg->cmsg_level = IPPROTO_IPV6;
         cmsg->cmsg_type = IPV6_PKTINFO;
         cmsg->cmsg_len = CMSG_LEN(sizeof(struct in6_pktinfo));
@@ -330,16 +335,14 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
                &((struct sockaddr_in6 *)&path->local_addr)->sin6_addr,
                sizeof(struct in6_addr));
 
-        cmsg = CMSG_NXTHDR(&msg, cmsg);
+        cmsg = (struct cmsghdr *)((unsigned char *)cmsg +
+                                  CMSG_SPACE(sizeof(struct in6_pktinfo)));
+
         cmsg->cmsg_level = IPPROTO_IPV6;
         cmsg->cmsg_type = IPV6_TCLASS;
         cmsg->cmsg_len = CMSG_LEN(sizeof(int));
 
         memcpy(CMSG_DATA(cmsg), &tc, sizeof(int));
-
-        msg.msg_namelen = sizeof(struct sockaddr_in6);
-        msg.msg_controllen = CMSG_SPACE(sizeof(struct in6_pktinfo))
-                           + CMSG_SPACE(sizeof(int));
     }
 
     ssize_t ret = sendmsg(mud->fd, &msg, flags);
@@ -467,7 +470,7 @@ mud_get_path(struct mud *mud, struct sockaddr_storage *local_addr,
 
     if (!path) {
         struct mud_path *paths = realloc(mud->paths,
-                (mud->count + 1) * sizeof(struct mud_path));
+                                         (mud->count + 1) * sizeof(struct mud_path));
 
         if (!paths)
             return NULL;
@@ -718,6 +721,8 @@ mud_keyx_set(struct mud *mud, unsigned char *key, unsigned char *secret,
     crypto_generichash_update(&state, pub1, MUD_PUB_SIZE);
 
     crypto_generichash_final(&state, key, MUD_KEY_SIZE);
+
+    sodium_memzero(&state, sizeof(state));
 }
 
 static void
@@ -734,6 +739,8 @@ mud_keyx(struct mud *mud, unsigned char *public, int aes)
     mud_keyx_set(mud, mud->crypto.next.decrypt.key,
                  secret, mud->crypto.public.local, public);
 
+    sodium_memzero(secret, sizeof(secret));
+
     memcpy(mud->crypto.public.remote, public, MUD_PUB_SIZE);
 
     mud->crypto.next.aes = mud->crypto.aes && aes;
@@ -749,23 +756,16 @@ mud_keyx(struct mud *mud, unsigned char *public, int aes)
     }
 }
 
-static int
-mud_keyx_init(struct mud *mud, uint64_t now)
+static void
+mud_keyx_init(struct mud *mud)
 {
-    if (!mud_timeout(now, mud->crypto.time, MUD_KEYX_TIMEOUT))
-        return 1;
-
-    mud->crypto.time = now;
-
     if (mud->crypto.ready)
-        return 0;
+        return;
 
     randombytes_buf(mud->crypto.secret, sizeof(mud->crypto.secret));
     crypto_scalarmult_base(mud->crypto.public.local, mud->crypto.secret);
 
     mud->crypto.ready = 1;
-
-    return 0;
 }
 
 int
@@ -1001,7 +1001,9 @@ mud_packet_send(struct mud *mud, enum mud_packet_code code,
                &((struct sockaddr_in6 *)&path->addr)->sin6_addr, 16);
         memcpy(packet->hdr.addr.port,
                &((struct sockaddr_in6 *)&path->addr)->sin6_port, 2);
-    } else return;
+    } else {
+        return;
+    }
 
     packet->hdr.code = (unsigned char)code;
 
@@ -1119,15 +1121,24 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
     case mud_conf:
         path->conf.remote = 1;
         if (mud->peer.set) {
-            if (!memcmp(mud->crypto.public.local,
-                        packet->data.conf.public.remote, MUD_PUB_SIZE)) {
+            if ((!memcmp(mud->crypto.public.local,
+                         packet->data.conf.public.remote,
+                         MUD_PUB_SIZE)) &&
+                (memcmp(mud->crypto.public.remote,
+                        packet->data.conf.public.local,
+                        MUD_PUB_SIZE))) {
                 mud_keyx(mud, packet->data.conf.public.local,
                          packet->data.conf.aes);
                 mud->crypto.use_next = 1;
             }
         } else {
-            mud_keyx(mud, packet->data.conf.public.local,
-                     packet->data.conf.aes);
+            if (memcmp(mud->crypto.public.remote,
+                       packet->data.conf.public.local,
+                       MUD_PUB_SIZE)) {
+                mud_keyx_init(mud);
+                mud_keyx(mud, packet->data.conf.public.local,
+                         packet->data.conf.aes);
+            }
             path->state = (enum mud_state)packet->data.conf.state;
             mud_packet_send(mud, mud_conf, path, now, MSG_CONFIRM);
         }
@@ -1156,7 +1167,7 @@ mud_recv(struct mud *mud, void *data, size_t size)
     };
 
     struct sockaddr_storage addr;
-    unsigned char ctrl[256];
+    unsigned char ctrl[64];
 
     struct msghdr msg = {
         .msg_name = &addr,
@@ -1242,7 +1253,13 @@ mud_update(struct mud *mud, uint64_t now)
     if (!mud->peer.set)
         return;
 
-    int update_keyx = !mud_keyx_init(mud, now);
+    int update_keyx = 0;
+
+    if (mud_timeout(now, mud->crypto.time, MUD_KEYX_TIMEOUT)) {
+        mud_keyx_init(mud);
+        update_keyx = 1;
+        mud->crypto.time = now;
+    }
 
     for (unsigned i = 0; i < mud->count; i++) {
         struct mud_path *path = &mud->paths[i];
