@@ -55,6 +55,7 @@ size_t mud_get_mtu (struct mud *);
 
 int mud_set_send_timeout   (struct mud *, unsigned long);
 int mud_set_time_tolerance (struct mud *, unsigned long);
+int mud_set_keyx_timeout   (struct mud *, unsigned long);
 int mud_set_tc             (struct mud *, int);
 int mud_set_aes            (struct mud *);
 

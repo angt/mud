@@ -144,6 +144,7 @@ struct mud {
     int fd;
     uint64_t send_timeout;
     uint64_t time_tolerance;
+    uint64_t keyx_timeout;
     struct mud_path *paths;
     unsigned count;
     struct {
@@ -623,6 +624,26 @@ mud_set_time_tolerance(struct mud *mud, unsigned long msec)
 }
 
 int
+mud_set_keyx_timeout(struct mud *mud, unsigned long msec)
+{
+    if (!msec) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    const uint64_t x = msec * MUD_ONE_MSEC;
+
+    if ((uint64_t)msec != x / MUD_ONE_MSEC) {
+        errno = ERANGE;
+        return -1;
+    }
+
+    mud->keyx_timeout = x;
+
+    return 0;
+}
+
+int
 mud_set_state(struct mud *mud, struct sockaddr *peer, enum mud_state state)
 {
     if (!mud->peer.set ||
@@ -830,6 +851,7 @@ mud_create(struct sockaddr *addr)
 
     mud->send_timeout = MUD_SEND_TIMEOUT;
     mud->time_tolerance = MUD_TIME_TOLERANCE;
+    mud->keyx_timeout = MUD_KEYX_TIMEOUT;
     mud->tc = MUD_PACKET_TC;
     mud->mtu = sizeof(struct mud_packet);
 
@@ -1259,7 +1281,7 @@ mud_update(struct mud *mud, uint64_t now)
 
     int update_keyx = 0;
 
-    if (mud_timeout(now, mud->crypto.time, MUD_KEYX_TIMEOUT)) {
+    if (mud_timeout(now, mud->crypto.time, mud->keyx_timeout)) {
         mud_keyx_init(mud);
         update_keyx = 1;
         mud->crypto.time = now;
