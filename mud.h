@@ -18,10 +18,10 @@ enum mud_state {
 struct mud_path {
     enum mud_state state;
     struct sockaddr_storage local_addr, addr, r_addr;
+    unsigned char kiss[MUD_KISS_SIZE];
     struct {
         uint64_t send_time;
         int remote;
-        unsigned char kiss[MUD_KISS_SIZE];
     } conf;
     uint64_t send_max;
     uint64_t send_max_time;

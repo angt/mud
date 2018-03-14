@@ -123,11 +123,11 @@ struct mud_packet {
         unsigned char time[MUD_U48_SIZE];
         unsigned char kiss[MUD_KISS_SIZE];
         struct mud_addr addr;
+        unsigned char state;
         unsigned char code;
     } hdr;
     union {
         struct {
-            unsigned char state;
             struct mud_public public;
             unsigned char aes;
         } conf;
@@ -662,10 +662,7 @@ mud_set_state(struct mud *mud, struct sockaddr *peer, enum mud_state state)
     if (!path)
         return -1;
 
-    if (path->state != state) {
-        path->state = state;
-        path->conf.remote = 0;
-    }
+    path->state = state;
 
     return 0;
 }
@@ -1031,12 +1028,12 @@ mud_packet_send(struct mud *mud, enum mud_packet_code code,
         return;
     }
 
+    packet->hdr.state = (unsigned char)path->state;
     packet->hdr.code = (unsigned char)code;
 
     switch (code) {
     case mud_conf:
         size = sizeof(packet->data.conf);
-        packet->data.conf.state = (unsigned char)path->state;
         memcpy(&packet->data.conf.public.local, &mud->crypto.public.local,
                sizeof(mud->crypto.public.local));
         memcpy(&packet->data.conf.public.remote, &mud->crypto.public.remote,
@@ -1072,7 +1069,7 @@ mud_kiss_path(struct mud *mud, unsigned char *kiss)
     for (unsigned i = 0; i < mud->count; i++) {
         struct mud_path *path = &mud->paths[i];
 
-        if (memcmp(path->conf.kiss, kiss, sizeof(path->conf.kiss)))
+        if (memcmp(path->kiss, kiss, sizeof(path->kiss)))
             path->state = MUD_EMPTY;
     }
 }
@@ -1120,11 +1117,8 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
 {
     struct mud_packet *packet = (struct mud_packet *)data;
 
-    memcpy(path->conf.kiss, packet->hdr.kiss,
-           sizeof(path->conf.kiss));
-
-    memcpy(mud->remote.kiss, packet->hdr.kiss,
-           sizeof(path->conf.kiss));
+    memcpy(path->kiss, packet->hdr.kiss, sizeof(path->kiss));
+    memcpy(mud->remote.kiss, packet->hdr.kiss, sizeof(mud->remote.kiss));
 
     if (memcmp(packet->hdr.addr.v6, "\0\0\0\0\0\0\0\0\0\0\xff\xff", 12)) {
         path->r_addr.ss_family = AF_INET6;
@@ -1142,6 +1136,8 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
 
     if (!mud->peer.set)
         mud_kiss_path(mud, mud->remote.kiss);
+
+    path->state = (enum mud_state)packet->hdr.state;
 
     switch (packet->hdr.code) {
     case mud_conf:
@@ -1165,7 +1161,6 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
                 mud_keyx(mud, packet->data.conf.public.local,
                          packet->data.conf.aes);
             }
-            path->state = (enum mud_state)packet->data.conf.state;
             mud_packet_send(mud, mud_conf, path, now, MSG_CONFIRM);
         }
         break;
