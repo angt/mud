@@ -163,9 +163,9 @@ struct mud {
     } peer;
     struct {
         struct {
-            size_t count;
+            struct sockaddr_storage addr;
             uint64_t time;
-        } decrypt;
+        } decrypt, difftime;
     } bad;
     struct {
         unsigned char kiss[MUD_KISS_SIZE];
@@ -1195,13 +1195,16 @@ mud_recv(struct mud *mud, void *data, size_t size)
         send_time = mud_read48(&packet[MUD_U48_SIZE]);
     }
 
-    if (mud_abs_diff(now, send_time) >= mud->time_tolerance)
+    mud_unmapv4(&addr);
+
+    if (mud_abs_diff(now, send_time) >= mud->time_tolerance) {
+        mud->bad.difftime.addr = addr;
+        mud->bad.difftime.time = now;
         return 0;
+    }
 
     if (mud_packet && mud_packet_check(mud, packet, packet_size))
         return 0;
-
-    mud_unmapv4(&addr);
 
     struct sockaddr_storage local_addr;
 
@@ -1213,7 +1216,7 @@ mud_recv(struct mud *mud, void *data, size_t size)
     if (!mud_packet) {
         ret = mud_decrypt(mud, data, size, packet, packet_size);
         if (ret == -1) {
-            mud->bad.decrypt.count++;
+            mud->bad.decrypt.addr = addr;
             mud->bad.decrypt.time = now;
             return 0;
         }
