@@ -39,6 +39,7 @@ struct mud_path {
     struct {
         size_t ok;
         size_t probe;
+        uint64_t time;
     } mtu;
 };
 

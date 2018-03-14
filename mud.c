@@ -1274,6 +1274,25 @@ mud_recv(struct mud *mud, void *data, size_t size)
 }
 
 static void
+mud_probe_mtu(struct mud *mud, struct mud_path *path, uint64_t now)
+{
+    if ((!path->rtt) ||
+        (!mud_timeout(now, path->mtu.time, path->rtt)) ||
+        (path->mtu.probe == path->r_rms + 1) ||
+        (path->r_rms == MUD_PACKET_MAX_SIZE))
+        return;
+
+    if (path->mtu.probe > path->mtu.ok) {
+        path->mtu.probe = (path->mtu.probe + path->mtu.ok) >> 1;
+    } else {
+        path->mtu.probe = (MUD_PACKET_MAX_SIZE + path->mtu.ok + 1) >> 1;
+    }
+
+    mud_packet_send(mud, mud_fake, path, now, 0);
+    path->mtu.time = now;
+}
+
+static void
 mud_update(struct mud *mud, uint64_t now)
 {
     if (!mud->peer.set)
@@ -1302,21 +1321,7 @@ mud_update(struct mud *mud, uint64_t now)
             path->conf.send_time = now;
         }
 
-        if ((!path->rtt) ||
-            (!mud_timeout(now, path->send_max_time, path->rtt)))
-            continue;
-
-        if ((path->mtu.probe == path->r_rms + 1) ||
-            (path->r_rms == MUD_PACKET_MAX_SIZE))
-            continue;
-
-        if (path->mtu.probe > path->mtu.ok) {
-            path->mtu.probe = (path->mtu.probe + path->mtu.ok) >> 1;
-        } else {
-            path->mtu.probe = (MUD_PACKET_MAX_SIZE + path->mtu.ok + 1) >> 1;
-        }
-
-        mud_packet_send(mud, mud_fake, path, now, 0);
+        mud_probe_mtu(mud, path, now);
     }
 }
 
