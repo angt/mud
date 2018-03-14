@@ -449,9 +449,9 @@ mud_get_path(struct mud *mud, struct sockaddr_storage *local_addr,
     for (unsigned i = 0; i < mud->count; i++) {
         struct mud_path *path = &mud->paths[i];
 
-        if (path->state &&
-            !mud_cmp_addr(local_addr, &path->local_addr) &&
-            !mud_cmp_addr(addr, &path->addr))
+        if ((path->state != MUD_EMPTY) &&
+            (!mud_cmp_addr(local_addr, &path->local_addr)) &&
+            (!mud_cmp_addr(addr, &path->addr)))
             return path;
     }
 
@@ -673,20 +673,23 @@ mud_set_state(struct mud *mud, struct sockaddr *peer, enum mud_state state)
 size_t
 mud_get_mtu(struct mud *mud)
 {
-    size_t mtu;
+    size_t mtu = MUD_PACKET_MAX_SIZE;
+    unsigned count = 0;
 
-    if (mud->count) {
-        mtu = MUD_PACKET_MAX_SIZE;
+    for (unsigned i = 0; i < mud->count; i++) {
+        struct mud_path *path = &mud->paths[i];
 
-        for (unsigned i = 0; i < mud->count; i++) {
-            struct mud_path *path = &mud->paths[i];
+        if (path->state <= MUD_DOWN)
+            continue;
 
-            if (mtu > path->mtu.ok)
-                mtu = path->mtu.ok;
-        }
-    } else {
-        mtu = mud->mtu;
+        count++;
+
+        if (mtu > path->mtu.ok)
+            mtu = path->mtu.ok;
     }
+
+    if (!count)
+        mtu = mud->mtu;
 
     if (mtu > MUD_PACKET_MAX_SIZE)
         mtu = MUD_PACKET_MAX_SIZE;
