@@ -833,6 +833,7 @@ mud_create(struct sockaddr *addr)
     mud->tc = MUD_PACKET_TC;
     mud->mtu = sizeof(struct mud_packet);
 
+    mud_keyx_init(mud);
     randombytes_buf(mud->local.kiss, sizeof(mud->local.kiss));
 
     return mud;
