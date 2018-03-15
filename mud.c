@@ -1249,13 +1249,6 @@ mud_recv(struct mud *mud, void *data, size_t size)
         return 0;
 
     path->rst = send_time;
-
-    if ((path->state == MUD_UP) && (path->recv_time) &&
-        (mud_timeout(now, path->stat_time, MUD_STAT_TIMEOUT))) {
-        mud_packet_send(mud, mud_stat, path, now, MSG_CONFIRM);
-        path->stat_time = now;
-    }
-
     path->recv_time = now;
 
     if (path->recv_max <= packet_size) {
@@ -1265,8 +1258,12 @@ mud_recv(struct mud *mud, void *data, size_t size)
             path->mtu.ok = path->recv_max;
     }
 
-    if (mud_packet)
+    if (mud_packet) {
         mud_packet_recv(mud, path, now, packet, packet_size);
+    } else if (mud_timeout(now, path->stat_time, MUD_STAT_TIMEOUT)) {
+        mud_packet_send(mud, mud_stat, path, now, MSG_CONFIRM);
+        path->stat_time = now;
+    }
 
     return ret;
 }
