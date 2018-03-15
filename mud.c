@@ -766,15 +766,16 @@ mud_keyx(struct mud *mud, unsigned char *public, int aes)
 
     mud->crypto.next.aes = mud->crypto.aes && aes;
 
-    if (mud->crypto.next.aes) {
-        crypto_aead_aes256gcm_beforenm((crypto_aead_aes256gcm_state *)
-                                           mud->crypto.next.encrypt.state,
-                                       mud->crypto.next.encrypt.key);
+    if (!mud->crypto.next.aes)
+        return;
 
-        crypto_aead_aes256gcm_beforenm((crypto_aead_aes256gcm_state *)
-                                           mud->crypto.next.decrypt.state,
-                                       mud->crypto.next.decrypt.key);
-    }
+    crypto_aead_aes256gcm_beforenm((crypto_aead_aes256gcm_state *)
+                                       mud->crypto.next.encrypt.state,
+                                   mud->crypto.next.encrypt.key);
+
+    crypto_aead_aes256gcm_beforenm((crypto_aead_aes256gcm_state *)
+                                       mud->crypto.next.decrypt.state,
+                                   mud->crypto.next.decrypt.key);
 }
 
 static void
@@ -1003,11 +1004,9 @@ static void
 mud_packet_send(struct mud *mud, enum mud_packet_code code,
                 struct mud_path *path, uint64_t now, int flags)
 {
-    unsigned char data[MUD_PACKET_MAX_SIZE];
+    unsigned char data[MUD_PACKET_MAX_SIZE] = {0};
     struct mud_packet *packet = (struct mud_packet *)data;
     size_t size = 0;
-
-    memset(data, 0, sizeof(data));
 
     mud_write48(packet->hdr.time, now);
     memcpy(packet->hdr.kiss, mud->local.kiss, sizeof(mud->local.kiss));
@@ -1054,7 +1053,7 @@ mud_packet_send(struct mud *mud, enum mud_packet_code code,
     struct mud_crypto_opt opt = {
         .dst = data + sizeof(packet->hdr) + size,
         .ad = {
-            .data = packet->hdr.zero,
+            .data = data,
             .size = sizeof(packet->hdr) + size,
         },
     };
