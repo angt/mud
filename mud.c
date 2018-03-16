@@ -80,6 +80,10 @@
 #define MUD_SEND_TIMEOUT (MUD_ONE_SEC)
 #define MUD_TIME_TOLERANCE (10 * MUD_ONE_MIN)
 
+#define MUD_CTRL_SIZE (CMSG_SPACE(MUD_PKTINFO_SIZE) + \
+                       CMSG_SPACE(sizeof(struct in6_pktinfo)) + \
+                       CMSG_SPACE(sizeof(int)))
+
 struct mud_crypto_opt {
     unsigned char *dst;
     struct {
@@ -286,7 +290,7 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
     if (!size)
         return 0;
 
-    unsigned char ctrl[64] = {0};
+    unsigned char ctrl[MUD_CTRL_SIZE] = {0};
 
     struct iovec iov = {
         .iov_base = data,
@@ -1189,7 +1193,7 @@ mud_recv(struct mud *mud, void *data, size_t size)
     };
 
     struct sockaddr_storage addr;
-    unsigned char ctrl[64];
+    unsigned char ctrl[MUD_CTRL_SIZE];
 
     struct msghdr msg = {
         .msg_name = &addr,
