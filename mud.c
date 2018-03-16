@@ -886,14 +886,11 @@ mud_delete(struct mud *mud)
 }
 
 static int
-mud_encrypt(struct mud *mud, uint64_t nonce,
+mud_encrypt(struct mud *mud, uint64_t now,
             unsigned char *dst, size_t dst_size,
             const unsigned char *src, size_t src_size)
 {
-    if (!nonce)
-        return 0;
-
-    size_t size = src_size + MUD_PACKET_MIN_SIZE;
+    const size_t size = src_size + MUD_PACKET_MIN_SIZE;
 
     if (size > dst_size)
         return 0;
@@ -910,7 +907,7 @@ mud_encrypt(struct mud *mud, uint64_t nonce,
         },
     };
 
-    mud_write48(opt.npub, nonce);
+    mud_write48(opt.npub, now);
     memcpy(&opt.npub[MUD_U48_SIZE], mud->local.kiss, sizeof(mud->local.kiss));
     memcpy(dst, opt.npub, MUD_U48_SIZE);
 
@@ -928,7 +925,7 @@ mud_decrypt(struct mud *mud,
             unsigned char *dst, size_t dst_size,
             const unsigned char *src, size_t src_size)
 {
-    size_t size = src_size - MUD_PACKET_MIN_SIZE;
+    const size_t size = src_size - MUD_PACKET_MIN_SIZE;
 
     if (size > dst_size)
         return 0;
