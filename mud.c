@@ -742,6 +742,16 @@ mud_set_mtu(struct mud *mud, size_t mtu)
         mtu -= 28U;
     }
 
+    for (unsigned i = 0; i < mud->count; i++) {
+        struct mud_path *path = &mud->paths[i];
+
+        if (path->state == MUD_EMPTY)
+            continue;
+
+        path->mtu.ok = mtu;
+        path->mtu.probe = mtu;
+    }
+
     mud->mtu = mtu;
 }
 
