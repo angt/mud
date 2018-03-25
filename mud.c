@@ -1088,9 +1088,11 @@ mud_packet_send(struct mud *mud, enum mud_packet_code code,
     switch (code) {
     case mud_conf:
         size = sizeof(packet->data.conf);
-        memcpy(&packet->data.conf.public.local, &mud->crypto.public.local,
+        memcpy(&packet->data.conf.public.local,
+               &mud->crypto.public.local,
                sizeof(mud->crypto.public.local));
-        memcpy(&packet->data.conf.public.remote, &mud->crypto.public.remote,
+        memcpy(&packet->data.conf.public.remote,
+               &mud->crypto.public.remote,
                sizeof(mud->crypto.public.remote));
         packet->data.conf.aes = (unsigned char)mud->crypto.aes;
         break;
