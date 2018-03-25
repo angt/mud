@@ -1266,8 +1266,12 @@ mud_recv(struct mud *mud, void *data, size_t size)
 
     const ssize_t packet_size = recvmsg(mud->fd, &msg, 0);
 
-    if (packet_size <= (ssize_t)MUD_PACKET_MIN_SIZE)
-        return -(packet_size == (ssize_t)-1);
+    if (packet_size == (ssize_t)-1)
+        return -1;
+
+    if ((msg.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) ||
+        (packet_size <= (ssize_t)MUD_PACKET_MIN_SIZE))
+        return 0;
 
     const uint64_t now = mud_now();
     const uint64_t send_time = mud_read48(packet);
