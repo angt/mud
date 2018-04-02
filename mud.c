@@ -359,7 +359,8 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
 
     ssize_t ret = sendmsg(mud->fd, &msg, flags);
 
-    path->send_time = now;
+    path->send.total++;
+    path->send.time = now;
 
     if (path->send_max <= size) {
         path->send_max = size;
@@ -1307,7 +1308,9 @@ mud_recv(struct mud *mud, void *data, size_t size)
         return 0;
 
     path->rst = send_time;
-    path->recv_time = now;
+
+    path->recv.total++;
+    path->recv.time = now;
 
     if (path->recv_max <= packet_size) {
         path->recv_max = packet_size;
@@ -1373,7 +1376,7 @@ mud_update(struct mud *mud, uint64_t now)
         if (path->state < MUD_DOWN)
             continue;
 
-        if (update_keyx || mud_timeout(now, path->recv_time, mud->send_timeout + MUD_ONE_SEC))
+        if (update_keyx || mud_timeout(now, path->recv.time, mud->send_timeout + MUD_ONE_SEC))
             path->conf.remote = 0;
 
         if ((!path->conf.remote) &&
@@ -1424,7 +1427,7 @@ mud_send(struct mud *mud, const void *data, size_t size, int tc)
         }
 
         int64_t limit = path->limit;
-        uint64_t elapsed = now - path->send_time;
+        uint64_t elapsed = now - path->send.time;
 
         if (limit > elapsed) {
             limit += path->rtt / 2 - elapsed;
@@ -1432,8 +1435,8 @@ mud_send(struct mud *mud, const void *data, size_t size, int tc)
             limit = path->rtt / 2;
         }
 
-        if (mud_timeout(now, path->recv_time, mud->send_timeout + MUD_ONE_SEC)) {
-            if (mud_timeout(now, path->send_time, mud->send_timeout)) {
+        if (mud_timeout(now, path->recv.time, mud->send_timeout + MUD_ONE_SEC)) {
+            if (mud_timeout(now, path->send.time, mud->send_timeout)) {
                 mud_send_path(mud, path, now, packet, packet_size, tc, 0);
                 path->limit = limit;
             }

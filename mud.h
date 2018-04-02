@@ -33,14 +33,16 @@ struct mud_path {
     uint64_t r_rms;
     uint64_t r_rmt;
     uint64_t limit;
-    uint64_t recv_time;
-    uint64_t send_time;
     uint64_t stat_time;
     struct {
         size_t ok;
         size_t probe;
         uint64_t time;
     } mtu;
+    struct {
+        uint64_t total;
+        uint64_t time;
+    } send, recv;
 };
 
 struct mud *mud_create (struct sockaddr *);
