@@ -86,6 +86,8 @@
                        CMSG_SPACE(sizeof(struct in6_pktinfo)) + \
                        CMSG_SPACE(sizeof(int)))
 
+#define MUD_PATH_MAX (32U)
+
 struct mud_crypto_opt {
     unsigned char *dst;
     struct {
@@ -505,6 +507,11 @@ mud_get_path(struct mud *mud, struct sockaddr_storage *local_addr,
     }
 
     if (!path) {
+        if (mud->count == MUD_PATH_MAX) {
+            errno = ENOMEM;
+            return NULL;
+        }
+
         struct mud_path *paths = realloc(mud->paths,
                 (mud->count + 1) * sizeof(struct mud_path));
 
