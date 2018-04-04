@@ -1172,6 +1172,20 @@ mud_compute_rtt(const uint64_t rtt, const uint64_t new_rtt)
 }
 
 static void
+mud_ss_from_packet(struct sockaddr_storage *ss, struct mud_packet *pkt)
+{
+    if (memcmp(pkt->hdr.addr.v6, "\0\0\0\0\0\0\0\0\0\0\xff\xff", 12)) {
+        ss->ss_family = AF_INET6;
+        memcpy(&((struct sockaddr_in6 *)ss)->sin6_addr, pkt->hdr.addr.v6, 16);
+        memcpy(&((struct sockaddr_in6 *)ss)->sin6_port, pkt->hdr.addr.port, 2);
+    } else {
+        ss->ss_family = AF_INET;
+        memcpy(&((struct sockaddr_in *)ss)->sin_addr, pkt->hdr.addr.v4, 4);
+        memcpy(&((struct sockaddr_in *)ss)->sin_port, pkt->hdr.addr.port, 2);
+    }
+}
+
+static void
 mud_packet_recv(struct mud *mud, struct mud_path *path,
                 uint64_t now, uint64_t sent,
                 unsigned char *data, size_t size)
@@ -1181,19 +1195,7 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
     memcpy(path->kiss, packet->hdr.kiss, sizeof(path->kiss));
     memcpy(mud->remote.kiss, packet->hdr.kiss, sizeof(mud->remote.kiss));
 
-    if (memcmp(packet->hdr.addr.v6, "\0\0\0\0\0\0\0\0\0\0\xff\xff", 12)) {
-        path->r_addr.ss_family = AF_INET6;
-        memcpy(&((struct sockaddr_in6 *)&path->r_addr)->sin6_addr,
-               packet->hdr.addr.v6, 16);
-        memcpy(&((struct sockaddr_in6 *)&path->r_addr)->sin6_port,
-               packet->hdr.addr.port, 2);
-    } else {
-        path->r_addr.ss_family = AF_INET;
-        memcpy(&((struct sockaddr_in *)&path->r_addr)->sin_addr,
-               packet->hdr.addr.v4, 4);
-        memcpy(&((struct sockaddr_in *)&path->r_addr)->sin_port,
-               packet->hdr.addr.port, 2);
-    }
+    mud_ss_from_packet(&path->r_addr, packet);
 
     if (!mud->peer.set)
         mud_kiss_path(mud, mud->remote.kiss);
