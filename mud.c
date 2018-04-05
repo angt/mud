@@ -1165,7 +1165,7 @@ mud_packet_check(struct mud *mud, unsigned char *data, size_t size)
     return mud_decrypt_opt(&mud->crypto.private, &opt);
 }
 
-static inline uint64_t
+static uint64_t
 mud_compute_rtt(const uint64_t rtt, const uint64_t new_rtt)
 {
     return rtt ? (new_rtt + UINT64_C(7) * rtt) >> 3 : new_rtt;
