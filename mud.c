@@ -530,6 +530,7 @@ mud_get_path(struct mud *mud, struct sockaddr_storage *local_addr,
     memcpy(&path->local_addr, local_addr, sizeof(*local_addr));
     memcpy(&path->addr, addr, sizeof(*addr));
 
+    path->state = MUD_UP;
     path->mtu.ok = MUD_MTU;
     path->mtu.probe = mud->mtu;
 
