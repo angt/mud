@@ -185,6 +185,17 @@ struct mud {
 };
 
 static int
+mud_addr_is_v6(struct mud_addr *addr)
+{
+    static const unsigned char v4mapped[] = {
+        [10] = 255,
+        [11] = 255,
+    };
+
+    return memcmp(addr->v6, v4mapped, sizeof(v4mapped));
+}
+
+static int
 mud_encrypt_opt(const struct mud_crypto_key *k, const struct mud_crypto_opt *c)
 {
     if (k->aes) {
@@ -1175,7 +1186,7 @@ mud_compute_rtt(const uint64_t rtt, const uint64_t new_rtt)
 static void
 mud_ss_from_packet(struct sockaddr_storage *ss, struct mud_packet *pkt)
 {
-    if (memcmp(pkt->hdr.addr.v6, "\0\0\0\0\0\0\0\0\0\0\xff\xff", 12)) {
+    if (mud_addr_is_v6(&pkt->hdr.addr)) {
         ss->ss_family = AF_INET6;
         memcpy(&((struct sockaddr_in6 *)ss)->sin6_addr, pkt->hdr.addr.v6, 16);
         memcpy(&((struct sockaddr_in6 *)ss)->sin6_port, pkt->hdr.addr.port, 2);
