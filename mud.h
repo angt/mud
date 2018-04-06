@@ -28,6 +28,7 @@ struct mud_path {
     uint64_t recv_max;
     uint64_t recv_max_time;
     uint64_t rtt;
+    uint64_t rttvar;
     uint64_t rst;
     uint64_t r_rst;
     uint64_t r_rms;

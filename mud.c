@@ -1177,10 +1177,17 @@ mud_packet_check(struct mud *mud, unsigned char *data, size_t size)
     return mud_decrypt_opt(&mud->crypto.private, &opt);
 }
 
-static uint64_t
-mud_compute_rtt(const uint64_t rtt, const uint64_t new_rtt)
+static void
+mud_compute_rtt(struct mud_path *path, const uint64_t rtt)
 {
-    return rtt ? (new_rtt + UINT64_C(7) * rtt) >> 3 : new_rtt;
+    if (path->rtt) {
+        path->rttvar = ((path->rttvar << 1) + path->rttvar
+                        + mud_abs_diff(path->rtt, rtt)) >> 2;
+        path->rtt = ((path->rtt << 3) - path->rtt + rtt) >> 3;
+    } else {
+        path->rttvar = rtt >> 1;
+        path->rtt = rtt;
+    }
 }
 
 static void
@@ -1216,8 +1223,8 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
 
     const uint64_t peer_sent = mud_read48(packet->hdr.sent);
 
-    if (peer_sent)
-        path->rtt = mud_compute_rtt(path->rtt, now - peer_sent);
+    if (peer_sent && now > peer_sent)
+        mud_compute_rtt(path, now - peer_sent);
 
     switch (packet->hdr.code) {
     case mud_conf:
