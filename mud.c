@@ -77,10 +77,11 @@
 
 #define MUD_MTU (1280U + MUD_PACKET_MIN_SIZE)
 
-#define MUD_STAT_TIMEOUT (100 * MUD_ONE_MSEC)
-#define MUD_KEYX_TIMEOUT (60 * MUD_ONE_MIN)
-#define MUD_SEND_TIMEOUT (MUD_ONE_SEC)
-#define MUD_TIME_TOLERANCE (10 * MUD_ONE_MIN)
+#define MUD_STAT_TIMEOUT       (100 * MUD_ONE_MSEC)
+#define MUD_KEYX_TIMEOUT       (60 * MUD_ONE_MIN)
+#define MUD_KEYX_RESET_TIMEOUT (120 * MUD_ONE_MSEC)
+#define MUD_SEND_TIMEOUT       (MUD_ONE_SEC)
+#define MUD_TIME_TOLERANCE     (10 * MUD_ONE_MIN)
 
 #define MUD_CTRL_SIZE (CMSG_SPACE(MUD_PKTINFO_SIZE) + \
                        CMSG_SPACE(sizeof(struct in6_pktinfo)) + \
@@ -167,6 +168,7 @@ struct mud {
         int use_next;
         int aes;
     } crypto;
+    uint64_t last_recv_time;
     size_t mtu;
     int tc;
     struct {
@@ -792,6 +794,19 @@ mud_keyx_set(struct mud *mud, unsigned char *key, unsigned char *secret,
     sodium_memzero(&state, sizeof(state));
 }
 
+static void
+mud_keyx_reset(struct mud *mud)
+{
+    if (memcmp(&mud->crypto.current, &mud->crypto.private,
+               sizeof(struct mud_crypto_key))) {
+        mud->crypto.last = mud->crypto.current;
+        mud->crypto.current = mud->crypto.private;
+    }
+
+    mud->crypto.ready = 1;
+    mud->crypto.use_next = 0;
+}
+
 static int
 mud_keyx(struct mud *mud, unsigned char *public, int aes)
 {
@@ -846,6 +861,8 @@ mud_keyx_init(struct mud *mud)
     } while (crypto_scalarmult(tmp, test, mud->crypto.public.local));
 
     sodium_memzero(tmp, sizeof(tmp));
+    sodium_memzero(mud->crypto.public.remote,
+                   sizeof(mud->crypto.public.remote));
 
     mud->crypto.ready = 1;
 }
@@ -1216,10 +1233,10 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
 
     mud_ss_from_packet(&path->r_addr, packet);
 
-    if (!mud->peer.set)
+    if (!mud->peer.set) {
         mud_kiss_path(mud, mud->remote.kiss);
-
-    path->state = (enum mud_state)packet->hdr.state;
+        path->state = (enum mud_state)packet->hdr.state;
+    }
 
     const uint64_t peer_sent = mud_read48(packet->hdr.sent);
 
@@ -1228,22 +1245,22 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
 
     switch (packet->hdr.code) {
     case mud_conf:
-        path->conf.remote = 1;
         if (mud->peer.set) {
-            if ((!memcmp(mud->crypto.public.local,
-                         packet->data.conf.public.remote,
-                         MUD_PUB_SIZE)) &&
-                (memcmp(mud->crypto.public.remote,
-                        packet->data.conf.public.local,
-                        MUD_PUB_SIZE))) {
+            if (memcmp(mud->crypto.public.local,
+                       packet->data.conf.public.remote,
+                       MUD_PUB_SIZE))
+                return;
+            if (memcmp(mud->crypto.public.remote,
+                       packet->data.conf.public.local,
+                       MUD_PUB_SIZE)) {
                 if (mud_keyx(mud, packet->data.conf.public.local,
                              packet->data.conf.aes)) {
                     mud->bad.keyx.addr = path->addr;
                     mud->bad.keyx.time = now;
                     return;
                 }
-                mud->crypto.use_next = 1;
             }
+            mud->crypto.use_next = 1;
         } else {
             if (memcmp(mud->crypto.public.remote,
                        packet->data.conf.public.local,
@@ -1341,6 +1358,7 @@ mud_recv(struct mud *mud, void *data, size_t size)
 
     path->recv.total++;
     path->recv.time = now;
+    mud->last_recv_time = now;
 
     if (path->recv_max <= packet_size) {
         path->recv_max = packet_size;
@@ -1392,13 +1410,13 @@ mud_update(struct mud *mud, uint64_t now)
     if (!mud->peer.set)
         return;
 
-    int update_keyx = 0;
-
     if (mud_timeout(now, mud->crypto.time, mud->keyx_timeout)) {
         mud_keyx_init(mud);
-        update_keyx = 1;
         mud->crypto.time = now;
     }
+
+    if (mud_timeout(now, mud->last_recv_time, MUD_KEYX_RESET_TIMEOUT))
+        mud_keyx_reset(mud);
 
     for (unsigned i = 0; i < mud->count; i++) {
         struct mud_path *path = &mud->paths[i];
@@ -1406,14 +1424,8 @@ mud_update(struct mud *mud, uint64_t now)
         if (path->state < MUD_DOWN)
             continue;
 
-        if (update_keyx || mud_timeout(now, path->recv.time, mud->send_timeout + MUD_ONE_SEC))
-            path->conf.remote = 0;
-
-        if ((!path->conf.remote) &&
-            (mud_timeout(now, path->conf.send_time, mud->send_timeout))) {
+        if (mud->crypto.ready)
             mud_packet_send(mud, path, now, 0, mud_conf);
-            path->conf.send_time = now;
-        }
 
         mud_probe_mtu(mud, path, now);
     }
