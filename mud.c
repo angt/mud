@@ -57,8 +57,6 @@
 #define MUD_ONE_SEC (1000 * MUD_ONE_MSEC)
 #define MUD_ONE_MIN (60 * MUD_ONE_SEC)
 
-#define MUD_EPOCH UINT64_C(1483228800) // 1 Jan 2017
-
 #define MUD_U48_SIZE (6U)
 #define MUD_KEY_SIZE (32U)
 #define MUD_MAC_SIZE (16U)
@@ -76,6 +74,9 @@
     (sizeof(((struct mud_packet *)0)->hdr) + (X) + MUD_MAC_SIZE)
 
 #define MUD_MTU (1280U + MUD_PACKET_MIN_SIZE)
+
+#define MUD_TIME_BITS    (48)
+#define MUD_TIME_MASK(X) ((X) & ((UINT64_C(1) << MUD_TIME_BITS) - 2))
 
 #define MUD_STAT_TIMEOUT       (100 * MUD_ONE_MSEC)
 #define MUD_KEYX_TIMEOUT       (60 * MUD_ONE_MIN)
@@ -257,13 +258,13 @@ mud_now(void)
 #if defined CLOCK_REALTIME
     struct timespec tv;
     clock_gettime(CLOCK_REALTIME, &tv);
-    now = (tv.tv_sec - MUD_EPOCH) * MUD_ONE_SEC + tv.tv_nsec / MUD_ONE_MSEC;
+    now = tv.tv_sec * MUD_ONE_SEC + tv.tv_nsec / MUD_ONE_MSEC;
 #else
     struct timeval tv;
     gettimeofday(&tv, NULL);
-    now = (tv.tv_sec - MUD_EPOCH) * MUD_ONE_SEC + tv.tv_usec;
+    now = tv.tv_sec * MUD_ONE_SEC + tv.tv_usec;
 #endif
-    return now & ~UINT64_C(1);
+    return MUD_TIME_MASK(now);
 }
 
 static uint64_t
@@ -275,7 +276,7 @@ mud_abs_diff(uint64_t a, uint64_t b)
 static int
 mud_timeout(uint64_t now, uint64_t last, uint64_t timeout)
 {
-    return ((!last) || ((now > last) && (now - last >= timeout)));
+    return (!last) || (MUD_TIME_MASK(now - last) >= timeout);
 }
 
 static void
@@ -661,8 +662,8 @@ mud_set_tc(struct mud *mud, int tc)
     return 0;
 }
 
-int
-mud_set_send_timeout(struct mud *mud, unsigned long msec)
+static int
+mud_set_msec(uint64_t *dst, unsigned long msec)
 {
     if (!msec) {
         errno = EINVAL;
@@ -671,54 +672,33 @@ mud_set_send_timeout(struct mud *mud, unsigned long msec)
 
     const uint64_t x = msec * MUD_ONE_MSEC;
 
-    if ((uint64_t)msec != x / MUD_ONE_MSEC) {
+    if ((x >> MUD_TIME_BITS) ||
+        ((uint64_t)msec != x / MUD_ONE_MSEC)) {
         errno = ERANGE;
         return -1;
     }
 
-    mud->send_timeout = x;
+    *dst = x;
 
     return 0;
+}
+
+int
+mud_set_send_timeout(struct mud *mud, unsigned long msec)
+{
+    return mud_set_msec(&mud->send_timeout, msec);
 }
 
 int
 mud_set_time_tolerance(struct mud *mud, unsigned long msec)
 {
-    if (!msec) {
-        errno = EINVAL;
-        return -1;
-    }
-
-    const uint64_t x = msec * MUD_ONE_MSEC;
-
-    if ((uint64_t)msec != x / MUD_ONE_MSEC) {
-        errno = ERANGE;
-        return -1;
-    }
-
-    mud->time_tolerance = x;
-
-    return 0;
+    return mud_set_msec(&mud->time_tolerance, msec);
 }
 
 int
 mud_set_keyx_timeout(struct mud *mud, unsigned long msec)
 {
-    if (!msec) {
-        errno = EINVAL;
-        return -1;
-    }
-
-    const uint64_t x = msec * MUD_ONE_MSEC;
-
-    if ((uint64_t)msec != x / MUD_ONE_MSEC) {
-        errno = ERANGE;
-        return -1;
-    }
-
-    mud->keyx_timeout = x;
-
-    return 0;
+    return mud_set_msec(&mud->keyx_timeout, msec);
 }
 
 int
@@ -884,11 +864,6 @@ struct mud *
 mud_create(struct sockaddr *addr)
 {
     if (!addr)
-        return NULL;
-
-    const uint64_t now = mud_now();
-
-    if (now >> 48)
         return NULL;
 
     int v4, v6;
@@ -1240,8 +1215,8 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
 
     const uint64_t peer_sent = mud_read48(packet->hdr.sent);
 
-    if (peer_sent && now > peer_sent)
-        mud_compute_rtt(path, now - peer_sent);
+    if (peer_sent)
+        mud_compute_rtt(path, MUD_TIME_MASK(now - peer_sent));
 
     switch (packet->hdr.code) {
     case mud_conf:
@@ -1325,7 +1300,8 @@ mud_recv(struct mud *mud, void *data, size_t size)
 
     mud_unmapv4(&addr);
 
-    if (mud_abs_diff(now, send_time) >= mud->time_tolerance) {
+    if ((MUD_TIME_MASK(now - send_time) > mud->time_tolerance) &&
+        (MUD_TIME_MASK(send_time - now) > mud->time_tolerance)) {
         mud->bad.difftime.addr = addr;
         mud->bad.difftime.time = now;
         return 0;
@@ -1469,7 +1445,7 @@ mud_send(struct mud *mud, const void *data, size_t size, int tc)
         }
 
         int64_t limit = path->limit;
-        uint64_t elapsed = now - path->send.time;
+        uint64_t elapsed = MUD_TIME_MASK(now - path->send.time);
 
         if (limit > elapsed) {
             limit += path->rtt / 2 - elapsed;
