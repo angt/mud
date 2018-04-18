@@ -145,6 +145,7 @@ struct mud_packet {
             unsigned char aes;
         } conf;
         struct {
+            unsigned char rate[MUD_U48_SIZE];
             unsigned char rms[MUD_U48_SIZE];
             unsigned char rmt[MUD_U48_SIZE];
         } stat;
@@ -374,6 +375,7 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
     ssize_t ret = sendmsg(mud->fd, &msg, flags);
 
     path->send.total++;
+    path->send.bytes += size;
     path->send.time = now;
 
     if (path->send_max <= size) {
@@ -1097,6 +1099,7 @@ mud_packet_send(struct mud *mud, struct mud_path *path,
         size = sizeof(packet->data.stat);
         mud_write48(packet->data.stat.rms, path->recv_max);
         mud_write48(packet->data.stat.rmt, path->recv_max_time);
+        mud_write48(packet->data.stat.rate, path->recv.rate);
         break;
     case mud_fake:
         size = path->mtu.probe - MUD_PACKET_SIZE(0);
@@ -1254,6 +1257,7 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
     case mud_stat:
         path->r_rms = mud_read48(packet->data.stat.rms);
         path->r_rmt = mud_read48(packet->data.stat.rmt);
+        path->r_rate = mud_read48(packet->data.stat.rate);
         if (path->mtu.ok < path->r_rms)
             path->mtu.ok = path->r_rms;
         break;
@@ -1333,6 +1337,7 @@ mud_recv(struct mud *mud, void *data, size_t size)
         return 0;
 
     path->recv.total++;
+    path->recv.bytes += packet_size;
     path->recv.time = now;
     mud->last_recv_time = now;
 
@@ -1348,7 +1353,9 @@ mud_recv(struct mud *mud, void *data, size_t size)
     if (MUD_PACKET(send_time)) {
         mud_packet_recv(mud, path, now, send_time, packet, packet_size);
     } else if (mud_timeout(now, path->stat_time, MUD_STAT_TIMEOUT)) {
+        path->recv.rate = MUD_ONE_SEC * path->recv.bytes / MUD_TIME_MASK(now - path->stat_time);
         mud_packet_send(mud, path, now, send_time, mud_stat);
+        path->recv.bytes = 0;
         path->stat_time = now;
     }
 
