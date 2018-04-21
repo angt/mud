@@ -29,8 +29,11 @@ struct mud_path {
     uint64_t recv_max_time;
     uint64_t rtt;
     uint64_t rttvar;
+    uint64_t latmin;
+    uint64_t latmax;
     uint64_t rst;
     uint64_t r_rate;
+    uint64_t r_ratemax;
     uint64_t r_rst;
     uint64_t r_rms;
     uint64_t r_rmt;
@@ -44,6 +47,7 @@ struct mud_path {
     struct {
         uint64_t total;
         uint64_t rate;
+        uint64_t ratemax;
         uint64_t bytes;
         uint64_t time;
     } send, recv;

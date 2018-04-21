@@ -146,6 +146,7 @@ struct mud_packet {
         } conf;
         struct {
             unsigned char rate[MUD_U48_SIZE];
+            unsigned char ratemax[MUD_U48_SIZE];
             unsigned char rms[MUD_U48_SIZE];
             unsigned char rmt[MUD_U48_SIZE];
         } stat;
@@ -1100,6 +1101,7 @@ mud_packet_send(struct mud *mud, struct mud_path *path,
         mud_write48(packet->data.stat.rms, path->recv_max);
         mud_write48(packet->data.stat.rmt, path->recv_max_time);
         mud_write48(packet->data.stat.rate, path->recv.rate);
+        mud_write48(packet->data.stat.ratemax, path->recv.ratemax);
         break;
     case mud_fake:
         size = path->mtu.probe - MUD_PACKET_SIZE(0);
@@ -1258,6 +1260,7 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
         path->r_rms = mud_read48(packet->data.stat.rms);
         path->r_rmt = mud_read48(packet->data.stat.rmt);
         path->r_rate = mud_read48(packet->data.stat.rate);
+        path->r_ratemax = mud_read48(packet->data.stat.ratemax);
         if (path->mtu.ok < path->r_rms)
             path->mtu.ok = path->r_rms;
         break;
@@ -1353,9 +1356,29 @@ mud_recv(struct mud *mud, void *data, size_t size)
     if (MUD_PACKET(send_time)) {
         mud_packet_recv(mud, path, now, send_time, packet, packet_size);
     } else if (mud_timeout(now, path->stat_time, MUD_STAT_TIMEOUT)) {
-        path->recv.rate = MUD_ONE_SEC * path->recv.bytes / MUD_TIME_MASK(now - path->stat_time);
-        mud_packet_send(mud, path, now, send_time, mud_stat);
+        const uint64_t rate = MUD_ONE_SEC * path->recv.bytes / MUD_TIME_MASK(now - path->stat_time);
+        const uint64_t lat = MUD_TIME_MASK(now - send_time + mud->time_tolerance);
+
+        if (path->recv.ratemax < rate)
+            path->recv.ratemax = rate;
+
+        if (path->latmin > lat || !path->latmin)
+            path->latmin = lat;
+
+        if (path->latmax < lat)
+            path->latmax = lat;
+
+        if (path->recv.ratemax > rate) {
+            const uint64_t range = path->latmax - path->latmin;
+            if (range && lat > path->latmin + (range >> 1))
+                path->recv.ratemax = ((lat - path->latmin) * rate +
+                                      (path->latmax - lat) * path->recv.ratemax) / range;
+        }
+
+        path->recv.rate = rate;
         path->recv.bytes = 0;
+
+        mud_packet_send(mud, path, now, send_time, mud_stat);
         path->stat_time = now;
     }
 
