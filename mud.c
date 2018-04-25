@@ -306,6 +306,60 @@ mud_unmapv4(struct sockaddr_storage *addr)
     memcpy(addr, &sin, sizeof(sin));
 }
 
+static void
+mud_update_mtu(struct mud *mud)
+{
+    size_t mtu = MUD_PACKET_MAX_SIZE;
+    size_t count = 0;
+
+    for (unsigned i = 0; i < mud->count; i++) {
+        struct mud_path *path = &mud->paths[i];
+
+        if (path->state <= MUD_DOWN)
+            continue;
+
+        count++;
+
+        if (mtu > path->mtu.ok)
+            mtu = path->mtu.ok;
+    }
+
+    mud->mtu = count ? mtu : MUD_MTU;
+}
+
+static int
+mud_update_map(struct mud *mud)
+{
+    unsigned long long n = 0;
+
+    for (unsigned i = 0; i < mud->count; i++) {
+        struct mud_path *path = &mud->paths[i];
+
+        if (path->state <= MUD_DOWN)
+            continue;
+
+        n += mud->paths[i].r_ratemax + mud->paths[i].ratevar;
+    }
+
+    mud->ratemax = n;
+
+    if (!n) {
+        fprintf(stderr, "update map failed\n");
+        return 0;
+    }
+
+    unsigned w = 0;
+
+    for (unsigned i = 0; i < mud->count; i++) {
+        if (w < sizeof(mud->map))
+            memset(&mud->map[w], i, sizeof(mud->map) - w);
+
+        w += (((mud->paths[i].r_ratemax + mud->paths[i].ratevar) << 10) + (n >> 1)) / n;
+    }
+
+    return 0;
+}
+
 static ssize_t
 mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
               void *data, size_t size, int tc, int flags)
@@ -538,10 +592,10 @@ mud_get_path(struct mud *mud, struct sockaddr_storage *local_addr,
         if (!paths)
             return NULL;
 
+        path = &paths[mud->count];
+
         mud->count++;
         mud->paths = paths;
-
-        path = &paths[mud->count - 1];
     }
 
     memset(path, 0, sizeof(struct mud_path));
@@ -552,7 +606,6 @@ mud_get_path(struct mud *mud, struct sockaddr_storage *local_addr,
     path->state = MUD_UP;
     path->mtu.ok = MUD_MTU;
     path->mtu.probe = mud->mtu;
-
     path->ratevar = 10000000;
 
     return path;
@@ -590,58 +643,6 @@ mud_peer(struct mud *mud, struct sockaddr *peer)
         return -1;
 
     mud->peer.set = 1;
-
-    return 0;
-}
-
-static void
-mud_update_mtu(struct mud *mud)
-{
-    size_t mtu = MUD_PACKET_MAX_SIZE;
-    size_t count = 0;
-
-    for (unsigned i = 0; i < mud->count; i++) {
-        struct mud_path *path = &mud->paths[i];
-
-        if (path->state <= MUD_DOWN)
-            continue;
-
-        count++;
-
-        if (mtu > path->mtu.ok)
-            mtu = path->mtu.ok;
-    }
-
-    mud->mtu = count ? mtu : MUD_MTU;
-}
-
-static int
-mud_update_map(struct mud *mud)
-{
-    unsigned long long n = 0;
-
-    for (unsigned i = 0; i < mud->count; i++) {
-        struct mud_path *path = &mud->paths[i];
-
-        if (path->state <= MUD_DOWN)
-            continue;
-
-        n += mud->paths[i].r_ratemax + mud->paths[i].ratevar;
-    }
-
-    mud->ratemax = n;
-
-    if (!n)
-        return 0;
-
-    unsigned w = 0;
-
-    for (unsigned i = 0; i < mud->count; i++) {
-        if (w < sizeof(mud->map))
-            memset(&mud->map[w], i, sizeof(mud->map) - w);
-
-        w += (((mud->paths[i].r_ratemax + mud->paths[i].ratevar) << 10) + (n >> 1)) / n;
-    }
 
     return 0;
 }
@@ -760,6 +761,7 @@ mud_set_state(struct mud *mud, struct sockaddr *addr, enum mud_state state)
         return -1;
 
     path->state = state;
+
     mud_update_mtu(mud);
     mud_update_map(mud);
 
