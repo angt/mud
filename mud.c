@@ -553,6 +553,8 @@ mud_get_path(struct mud *mud, struct sockaddr_storage *local_addr,
     path->mtu.ok = MUD_MTU;
     path->mtu.probe = mud->mtu;
 
+    path->ratevar = 10000000;
+
     return path;
 }
 
@@ -624,7 +626,7 @@ mud_update_map(struct mud *mud)
         if (path->state <= MUD_DOWN)
             continue;
 
-        n += mud->paths[i].r_ratemax;
+        n += mud->paths[i].r_ratemax + mud->paths[i].ratevar;
     }
 
     mud->ratemax = n;
@@ -638,7 +640,7 @@ mud_update_map(struct mud *mud)
         if (w < sizeof(mud->map))
             memset(&mud->map[w], i, sizeof(mud->map) - w);
 
-        w += ((mud->paths[i].r_ratemax << 10) + (n >> 1)) / n;
+        w += (((mud->paths[i].r_ratemax + mud->paths[i].ratevar) << 10) + (n >> 1)) / n;
     }
 
     return 0;
@@ -1291,12 +1293,21 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
         }
         break;
     case mud_stat:
-        path->r_rms = mud_read48(packet->data.stat.rms);
-        path->r_rmt = mud_read48(packet->data.stat.rmt);
-        path->r_rate = mud_read48(packet->data.stat.rate);
-        path->r_ratemax = mud_read48(packet->data.stat.ratemax);
-        if (path->mtu.ok < path->r_rms)
-            path->mtu.ok = path->r_rms;
+        {
+            path->r_rms = mud_read48(packet->data.stat.rms);
+            path->r_rmt = mud_read48(packet->data.stat.rmt);
+            path->r_rate = mud_read48(packet->data.stat.rate);
+
+            const uint64_t ratemax = mud_read48(packet->data.stat.ratemax);
+
+            path->ratevar = ((path->ratevar << 1) + path->ratevar +
+                             mud_abs_diff(path->r_ratemax, ratemax)) >> 2;
+
+            path->r_ratemax = ratemax;
+
+            if (path->mtu.ok < path->r_rms)
+                path->mtu.ok = path->r_rms;
+        }
         break;
     default:
         break;

@@ -32,6 +32,7 @@ struct mud_path {
     uint64_t latmin;
     uint64_t latmax;
     uint64_t rst;
+    uint64_t ratevar;
     uint64_t r_rate;
     uint64_t r_ratemax;
     uint64_t r_rst;
