@@ -760,6 +760,9 @@ mud_set_state(struct mud *mud, struct sockaddr *addr, enum mud_state state)
     if (!path)
         return -1;
 
+    if (path->state == state)
+        return 0;
+
     path->state = state;
 
     mud_update_mtu(mud);
