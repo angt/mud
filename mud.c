@@ -608,6 +608,9 @@ mud_get_path(struct mud *mud, struct sockaddr_storage *local_addr,
     path->mtu.probe = mud->mtu;
     path->ratevar = 10000000;
 
+    mud_update_mtu(mud);
+    mud_update_map(mud);
+
     return path;
 }
 
