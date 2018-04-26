@@ -1423,10 +1423,14 @@ mud_recv(struct mud *mud, void *data, size_t size)
             path->latmax = lat;
 
         if (path->recv.ratemax > rate) {
-            const uint64_t range = path->latmax - path->latmin;
-            if (range && lat > path->latmin + (range >> 1))
-                path->recv.ratemax = ((lat - path->latmin) * rate +
-                                      (path->latmax - lat) * path->recv.ratemax) / range;
+            const uint64_t latmin = path->latmin + (path->latmin >> 3);
+            const uint64_t latmax = path->latmax;
+            if (latmin < lat) {
+                const uint64_t a = lat - latmin;
+                const uint64_t b = latmax - lat;
+                const uint64_t r = latmax - latmin;
+                path->recv.ratemax = (a * rate + (b + r) * path->recv.ratemax) / (r << 1);
+            }
         }
 
         path->recv.rate = rate;
