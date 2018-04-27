@@ -343,10 +343,8 @@ mud_update_map(struct mud *mud)
 
     mud->ratemax = n;
 
-    if (!n) {
-        fprintf(stderr, "update map failed\n");
+    if (!n)
         return 0;
-    }
 
     unsigned w = 0;
 
