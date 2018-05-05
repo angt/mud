@@ -1524,7 +1524,7 @@ mud_send(struct mud *mud, const void *data, size_t size, unsigned tc)
     for (unsigned i = 0; i < mud->count; i++) {
         struct mud_path *path = &mud->paths[i];
 
-        if (path->state < MUD_DOWN)
+        if (path->state <= MUD_DOWN)
             continue;
 
         if (!path->r_ratemax)
