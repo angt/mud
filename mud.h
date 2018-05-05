@@ -4,7 +4,7 @@
 #include <inttypes.h>
 #include <sys/socket.h>
 
-#define MUD_KISS_SIZE (8U)
+#define MUD_PUB_SIZE (32U)
 
 struct mud;
 
@@ -15,10 +15,14 @@ enum mud_state {
     MUD_UP,
 };
 
+struct mud_public {
+    unsigned char remote[MUD_PUB_SIZE];
+    unsigned char local[MUD_PUB_SIZE];
+};
+
 struct mud_path {
     enum mud_state state;
     struct sockaddr_storage local_addr, addr, r_addr;
-    unsigned char kiss[MUD_KISS_SIZE];
     struct {
         uint64_t send_time;
         int remote;
@@ -52,6 +56,7 @@ struct mud_path {
         uint64_t bytes;
         uint64_t time;
     } send, recv;
+    struct mud_public pub;
 };
 
 struct mud *mud_create (struct sockaddr *);
