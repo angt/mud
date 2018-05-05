@@ -349,10 +349,15 @@ mud_update_map(struct mud *mud)
     unsigned w = 0;
 
     for (unsigned i = 0; i < mud->count; i++) {
+        struct mud_path *path = &mud->paths[i];
+
+        if (path->state <= MUD_DOWN)
+            continue;
+
         if (w < sizeof(mud->map))
             memset(&mud->map[w], i, sizeof(mud->map) - w);
 
-        w += (((mud->paths[i].r_ratemax + mud->paths[i].ratevar) << 10) + (n >> 1)) / n;
+        w += (((path->r_ratemax + path->ratevar) << 10) + (n >> 1)) / n;
     }
 
     return 0;
