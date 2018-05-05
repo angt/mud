@@ -1230,11 +1230,11 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
 
     const int rem = memcmp(packet->pub,
                            mud->crypto.pub.remote,
-                           sizeof(mud->crypto.pub.remote));
+                           MUD_PUB_SIZE);
 
     const int loc = memcmp(path->pub.local,
                            mud->crypto.pub.local,
-                           sizeof(mud->crypto.pub.local));
+                           MUD_PUB_SIZE);
 
     if (rem || loc) {
         if (mud_keyx(mud, packet->pub, packet->aes)) {
@@ -1243,24 +1243,26 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
             return;
         }
 
-        path->pub = mud->crypto.pub;
-
-        if (peer_sent) {
-            mud->crypto.use_next = 1;
-        } else {
+        if (!mud->peer.set) {
             for (unsigned i = 0; i < mud->count; i++) {
                 if (mud->paths[i].state == MUD_EMPTY)
                     continue;
 
                 if (memcmp(mud->paths[i].pub.remote,
-                            mud->crypto.pub.remote,
-                            MUD_PUB_SIZE)) {
+                           path->pub.remote,
+                           MUD_PUB_SIZE) &&
+                    memcmp(mud->paths[i].pub.remote,
+                           packet->pub,
+                           MUD_PUB_SIZE))
                     mud->paths[i].state = MUD_EMPTY;
-                }
             }
 
             mud_packet_send(mud, path, now, sent, 0);
         }
+
+        path->pub = mud->crypto.pub;
+    } else {
+        mud->crypto.use_next = 1;
     }
 
     path->r_rms = mud_read48(packet->rms);
