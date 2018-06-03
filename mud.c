@@ -501,6 +501,13 @@ mud_cmp_addr(struct sockaddr_storage *a, struct sockaddr_storage *b)
     return 1;
 }
 
+unsigned long
+mud_get_sync_elapsed_msec(struct mud *mud)
+{
+    const uint64_t last = mud->last_recv_time;
+    return last ? MUD_TIME_MASK(mud_now() - last) / MUD_ONE_MSEC : ~0UL;
+}
+
 struct mud_path *
 mud_get_paths(struct mud *mud, unsigned *ret_count)
 {
@@ -1360,10 +1367,8 @@ mud_recv(struct mud *mud, void *data, size_t size)
         }
     }
 
-    if (MUD_PACKET(send_time)) {
+    if (MUD_PACKET(send_time))
         mud_packet_recv(mud, path, now, send_time, data, ret);
-        return 0;
-    }
 
     if (mud_timeout(now, path->stat_time, MUD_STAT_TIMEOUT)) {
         const uint64_t rate = MUD_ONE_SEC * path->recv.bytes / MUD_TIME_MASK(now - path->stat_time);
@@ -1396,7 +1401,7 @@ mud_recv(struct mud *mud, void *data, size_t size)
         path->stat_time = now;
     }
 
-    return ret;
+    return MUD_PACKET(send_time) ? 0 : ret;
 }
 
 static void
