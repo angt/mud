@@ -502,9 +502,12 @@ mud_cmp_addr(struct sockaddr_storage *a, struct sockaddr_storage *b)
 }
 
 unsigned long
-mud_get_sync_elapsed_msec(struct mud *mud)
+mud_sync(struct mud *mud)
 {
     const uint64_t last = mud->last_recv_time;
+
+    mud_send(mud, NULL, 0, 0);
+
     return last ? MUD_TIME_MASK(mud_now() - last) / MUD_ONE_MSEC : ~0UL;
 }
 
