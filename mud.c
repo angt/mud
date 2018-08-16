@@ -1467,15 +1467,10 @@ mud_send(struct mud *mud, const void *data, size_t size, unsigned tc)
     if (!size || !mud->count)
         return 0;
 
-    if (size > sizeof(packet) - MUD_PACKET_MIN_SIZE) {
-        errno = EMSGSIZE;
-        return -1;
-    }
-
     const int packet_size = mud_encrypt(mud, now, packet, sizeof(packet), data, size);
 
     if (!packet_size) {
-        errno = EINVAL;
+        errno = EMSGSIZE;
         return -1;
     }
 
