@@ -173,11 +173,9 @@ static int
 mud_encrypt_opt(const struct mud_crypto_key *k, const struct mud_crypto_opt *c)
 {
     if (k->aes) {
-        const unsigned char npub[crypto_aead_aes256gcm_NPUBBYTES] = {
-            [0] = c->dst[0], [1] = c->dst[1],
-            [2] = c->dst[2], [3] = c->dst[3],
-            [4] = c->dst[4], [5] = c->dst[5],
-        };
+        unsigned char npub[crypto_aead_aes256gcm_NPUBBYTES] = {0};
+
+        memcpy(npub, c->dst, MUD_U48_SIZE);
 
         return crypto_aead_aes256gcm_encrypt_afternm(
             c->dst + MUD_U48_SIZE,
@@ -191,11 +189,9 @@ mud_encrypt_opt(const struct mud_crypto_key *k, const struct mud_crypto_opt *c)
             (const crypto_aead_aes256gcm_state *)&k->encrypt.state
         );
     } else {
-        const unsigned char npub[crypto_aead_chacha20poly1305_NPUBBYTES] = {
-            [0] = c->dst[0], [1] = c->dst[1],
-            [2] = c->dst[2], [3] = c->dst[3],
-            [4] = c->dst[4], [5] = c->dst[5],
-        };
+        unsigned char npub[crypto_aead_chacha20poly1305_NPUBBYTES] = {0};
+
+        memcpy(npub, c->dst, MUD_U48_SIZE);
 
         return crypto_aead_chacha20poly1305_encrypt(
             c->dst + MUD_U48_SIZE,
@@ -215,11 +211,9 @@ static int
 mud_decrypt_opt(const struct mud_crypto_key *k, const struct mud_crypto_opt *c)
 {
     if (k->aes) {
-        const unsigned char npub[crypto_aead_aes256gcm_NPUBBYTES] = {
-            [0] = c->src[0], [1] = c->src[1],
-            [2] = c->src[2], [3] = c->src[3],
-            [4] = c->src[4], [5] = c->src[5],
-        };
+        unsigned char npub[crypto_aead_aes256gcm_NPUBBYTES] = {0};
+
+        memcpy(npub, c->src, MUD_U48_SIZE);
 
         return crypto_aead_aes256gcm_decrypt_afternm(
             c->dst,
@@ -232,11 +226,9 @@ mud_decrypt_opt(const struct mud_crypto_key *k, const struct mud_crypto_opt *c)
             (const crypto_aead_aes256gcm_state *)&k->decrypt.state
         );
     } else {
-        const unsigned char npub[crypto_aead_chacha20poly1305_NPUBBYTES] = {
-            [0] = c->src[0], [1] = c->src[1],
-            [2] = c->src[2], [3] = c->src[3],
-            [4] = c->src[4], [5] = c->src[5],
-        };
+        unsigned char npub[crypto_aead_chacha20poly1305_NPUBBYTES] = {0};
+
+        memcpy(npub, c->src, MUD_U48_SIZE);
 
         return crypto_aead_chacha20poly1305_decrypt(
             c->dst,
@@ -1497,7 +1489,6 @@ mud_send(struct mud *mud, const void *data, size_t size, unsigned tc)
         k--;
     }
 
-    struct mud_path *path = &mud->paths[mud->map[k % sizeof(mud->map)]];
-
-    return mud_send_path(mud, path, now, packet, packet_size, tc & 255, 0);
+    return mud_send_path(mud, &mud->paths[mud->map[k % sizeof(mud->map)]],
+                         now, packet, packet_size, tc & 255, 0);
 }
