@@ -154,8 +154,6 @@ struct mud {
             uint64_t time;
         } decrypt, difftime, keyx;
     } bad;
-    unsigned char map[1024];
-    unsigned long long ratemax;
 };
 
 static int
@@ -338,8 +336,8 @@ mud_update_mtu(struct mud *mud)
     mud->mtu = count ? mtu : MUD_MTU;
 }
 
-static int
-mud_update_map(struct mud *mud)
+static struct mud_path *
+mud_select_path(struct mud *mud, unsigned k)
 {
     unsigned long long n = 0;
 
@@ -349,15 +347,14 @@ mud_update_map(struct mud *mud)
         if (path->state <= MUD_DOWN)
             continue;
 
-        n += mud->paths[i].r_ratemax + mud->paths[i].ratevar;
+        n += path->r_ratemax + path->ratevar;
     }
 
-    mud->ratemax = n;
-
     if (!n)
-        return 0;
+        return NULL;
 
     unsigned w = 0;
+    struct mud_path *last = NULL;
 
     for (unsigned i = 0; i < mud->count; i++) {
         struct mud_path *path = &mud->paths[i];
@@ -365,20 +362,21 @@ mud_update_map(struct mud *mud)
         if (path->state <= MUD_DOWN)
             continue;
 
-        if (w < sizeof(mud->map))
-            memset(&mud->map[w], i, sizeof(mud->map) - w);
+        w += (((path->r_ratemax + path->ratevar) << 16) + (n >> 1)) / n;
+        last = path;
 
-        w += (((path->r_ratemax + path->ratevar) << 10) + (n >> 1)) / n;
+        if (k <= w)
+            break;
     }
 
-    return 0;
+    return last;
 }
 
 static ssize_t
 mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
               void *data, size_t size, int tc, int flags)
 {
-    if (!size)
+    if (!size || !path)
         return 0;
 
     unsigned char ctrl[MUD_CTRL_SIZE] = {0};
@@ -633,7 +631,6 @@ mud_get_path(struct mud *mud, struct sockaddr_storage *local_addr,
     path->ratevar = 10000000;
 
     mud_update_mtu(mud);
-    mud_update_map(mud);
 
     return path;
 }
@@ -793,7 +790,6 @@ mud_set_state(struct mud *mud, struct sockaddr *addr, enum mud_state state)
     path->state = state;
 
     mud_update_mtu(mud);
-    mud_update_map(mud);
 
     return 0;
 }
@@ -1282,7 +1278,6 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
         path->mtu.ok = path->r_rms;
 
     mud_update_mtu(mud);
-    mud_update_map(mud);
 }
 
 int
@@ -1476,9 +1471,6 @@ mud_send(struct mud *mud, const void *data, size_t size, unsigned tc)
             mud_send_path(mud, path, now, packet, packet_size, tc & 255, 0);
     }
 
-    if (!mud->ratemax)
-        return 0;
-
     unsigned k = tc >> 8;
 
     if (!k) {
@@ -1489,6 +1481,6 @@ mud_send(struct mud *mud, const void *data, size_t size, unsigned tc)
         k--;
     }
 
-    return mud_send_path(mud, &mud->paths[mud->map[k % sizeof(mud->map)]],
+    return mud_send_path(mud, mud_select_path(mud, k),
                          now, packet, packet_size, tc & 255, 0);
 }
