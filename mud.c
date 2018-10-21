@@ -985,6 +985,9 @@ mud_create(struct sockaddr *addr)
 int
 mud_get_fd(struct mud *mud)
 {
+    if (!mud)
+        return -1;
+
     return mud->fd;
 }
 
