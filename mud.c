@@ -1347,7 +1347,6 @@ mud_recv(struct mud *mud, void *data, size_t size)
         return 0;
 
     path->recv.total++;
-    path->recv.bytes += packet_size;
     path->recv.time = now;
     mud->last_recv_time = now;
 
@@ -1364,7 +1363,7 @@ mud_recv(struct mud *mud, void *data, size_t size)
         mud_packet_recv(mud, path, now, send_time, data, ret);
 
     if (mud_timeout(now, path->stat_time, MUD_STAT_TIMEOUT)) {
-        const uint64_t rate = MUD_ONE_SEC * path->recv.bytes / MUD_TIME_MASK(now - path->stat_time);
+        const uint64_t rate = path->recv.bytes;
         const uint64_t lat = MUD_TIME_MASK(now - send_time + mud->time_tolerance);
 
         if (path->recv.ratemax < rate)
@@ -1388,10 +1387,12 @@ mud_recv(struct mud *mud, void *data, size_t size)
         }
 
         path->recv.rate = rate;
-        path->recv.bytes = 0;
+        path->recv.bytes = packet_size;
 
         mud_packet_send(mud, path, now, send_time, 0);
         path->stat_time = now;
+    } else {
+        path->recv.bytes += packet_size;
     }
 
     return MUD_PACKET(send_time) ? 0 : ret;
