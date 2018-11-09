@@ -1405,6 +1405,8 @@ mud_recv(struct mud *mud, void *data, size_t size)
         }
 
         if (path->recv.ratemax > rate) {
+            if (rate < (7 * path->recv.ratemax) / 8)
+                path->latmin = (7 * path->latmin + path->lat) / 8;
             if (path->latmin < path->lat) {
                 const uint64_t a = path->lat - path->latmin;
                 const uint64_t b = path->latmax - path->lat;
