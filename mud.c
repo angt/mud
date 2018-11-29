@@ -65,19 +65,19 @@
 #define MUD_PACKET_MARK(X) ((X) | UINT64_C(1))
 
 #define MUD_PACKET_MIN_SIZE (MUD_U48_SIZE + MUD_MAC_SIZE)
-#define MUD_PACKET_MAX_SIZE (9000U)
+#define MUD_PACKET_MAX_SIZE (1500U)
 
 #define MUD_PACKET_TC (192) // CS6
 
-#define MUD_MTU (1280U + MUD_PACKET_MIN_SIZE)
+#define MUD_MTU_MIN (1280U + MUD_PACKET_MIN_SIZE)
+#define MUD_MTU_MAX (1450U + MUD_PACKET_MIN_SIZE)
 
 #define MUD_TIME_BITS    (48)
 #define MUD_TIME_MASK(X) ((X) & ((UINT64_C(1) << MUD_TIME_BITS) - 2))
 
-#define MUD_STAT_TIMEOUT       (100 * MUD_ONE_MSEC)
+#define MUD_SEND_TIMEOUT       (100 * MUD_ONE_MSEC)
 #define MUD_KEYX_TIMEOUT       (60 * MUD_ONE_MIN)
-#define MUD_KEYX_RESET_TIMEOUT (2 * MUD_STAT_TIMEOUT)
-#define MUD_SEND_TIMEOUT       (MUD_ONE_SEC)
+#define MUD_KEYX_RESET_TIMEOUT (200 * MUD_ONE_MSEC)
 #define MUD_TIME_TOLERANCE     (10 * MUD_ONE_MIN)
 
 #define MUD_CTRL_SIZE (CMSG_SPACE(MUD_PKTINFO_SIZE) + \
@@ -122,8 +122,6 @@ struct mud_packet {
     unsigned char latmin[MUD_U48_SIZE];
     unsigned char rate[MUD_U48_SIZE];
     unsigned char ratemax[MUD_U48_SIZE];
-    unsigned char max[MUD_U48_SIZE];
-    unsigned char max_time[MUD_U48_SIZE];
 };
 
 struct mud {
@@ -156,6 +154,7 @@ struct mud {
             uint64_t time;
         } decrypt, difftime, keyx;
     } bad;
+    unsigned long long window;
 };
 
 static int
@@ -170,7 +169,8 @@ mud_addr_is_v6(struct mud_addr *addr)
 }
 
 static int
-mud_encrypt_opt(const struct mud_crypto_key *k, const struct mud_crypto_opt *c)
+mud_encrypt_opt(const struct mud_crypto_key *k,
+                const struct mud_crypto_opt *c)
 {
     if (k->aes) {
         unsigned char npub[crypto_aead_aes256gcm_NPUBBYTES] = {0};
@@ -208,7 +208,8 @@ mud_encrypt_opt(const struct mud_crypto_key *k, const struct mud_crypto_opt *c)
 }
 
 static int
-mud_decrypt_opt(const struct mud_crypto_key *k, const struct mud_crypto_opt *c)
+mud_decrypt_opt(const struct mud_crypto_key *k,
+                const struct mud_crypto_opt *c)
 {
     if (k->aes) {
         unsigned char npub[crypto_aead_aes256gcm_NPUBBYTES] = {0};
@@ -317,74 +318,19 @@ mud_unmapv4(struct sockaddr_storage *addr)
     memcpy(addr, &sin, sizeof(sin));
 }
 
-static void
-mud_update_mtu(struct mud *mud)
-{
-    size_t mtu = MUD_PACKET_MAX_SIZE;
-    size_t count = 0;
-
-    for (unsigned i = 0; i < mud->count; i++) {
-        struct mud_path *path = &mud->paths[i];
-
-        if (path->state <= MUD_DOWN)
-            continue;
-
-        count++;
-
-        if (mtu > path->mtu.ok)
-            mtu = path->mtu.ok;
-    }
-
-    mud->mtu = count ? mtu : MUD_MTU;
-}
-
 static struct mud_path *
 mud_select_path(struct mud *mud, unsigned k)
 {
-    unsigned long long n = 0;
-
-    for (unsigned i = 0; i < mud->count; i++) {
-        struct mud_path *path = &mud->paths[i];
-
-        path->prob = 0;
-
-        if (!path->ok || path->state <= MUD_DOWN)
-            continue;
-
-        unsigned long long coef = 18;
-        uint64_t dt = (path->r_lat - path->r_latmin) / MUD_ONE_MSEC;
-
-        if (dt >= 300) {
-            coef = 0;
-        } else if (dt >= 50) {
-            coef = (16 - ((dt - 50) * 16)/(300 - 50)) + 1;
-        }
-
-        unsigned long long r = (path->r_ratemax * coef) / 16;
-
-        if (r == 0)
-            r = 10000;
-
-        if (path->send.bytes >= r)
-            continue;
-
-        path->prob = r - path->send.bytes;
-        n += path->prob;
-    }
-
-    if (!n)
-        return NULL;
-
     unsigned w = 0;
     struct mud_path *last = NULL;
 
     for (unsigned i = 0; i < mud->count; i++) {
         struct mud_path *path = &mud->paths[i];
 
-        if (!path->prob)
+        if (!path->window)
             continue;
 
-        w += ((path->prob << 16) + (n >> 1)) / n;
+        w += ((path->window << 16) + (mud->window >> 1)) / mud->window;
         last = path;
 
         if (k <= w)
@@ -469,11 +415,6 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
     path->send.bytes += size;
     path->send.time = now;
 
-    if (path->send.max <= size) {
-        path->send.max = size;
-        path->send.max_time = now;
-    }
-
     return ret;
 }
 
@@ -511,16 +452,6 @@ mud_cmp_addr(struct sockaddr_storage *a, struct sockaddr_storage *b)
     }
 
     return 1;
-}
-
-unsigned long
-mud_sync(struct mud *mud)
-{
-    const uint64_t last = mud->last_recv_time;
-
-    mud_send(mud, NULL, 0, 0);
-
-    return last ? MUD_TIME_MASK(mud_now() - last) / MUD_ONE_MSEC : ~0UL;
 }
 
 struct mud_path *
@@ -593,10 +524,14 @@ mud_copy_port(struct sockaddr_storage *d, struct sockaddr_storage *s)
 static void
 mud_reset_path(struct mud *mud, struct mud_path *path)
 {
-    path->state = MUD_UP;
-    path->mtu.ok = MUD_MTU;
-    path->mtu.probe = mud->mtu;
+    path->mtu.ok = MUD_MTU_MIN;
+    path->mtu.min = MUD_MTU_MIN;
+    path->mtu.max = MUD_MTU_MAX;
+    path->mtu.count = 0;
+    path->send.ratemax = 0;
+    path->window = 0;
     path->ok = 0;
+    path->stat_count = 0;
 }
 
 static struct mud_path *
@@ -656,8 +591,8 @@ mud_get_path(struct mud *mud, struct sockaddr_storage *local_addr,
     memcpy(&path->local_addr, local_addr, sizeof(*local_addr));
     memcpy(&path->addr, addr, sizeof(*addr));
 
+    path->state = MUD_UP;
     mud_reset_path(mud, path);
-    mud_update_mtu(mud);
 
     return path;
 }
@@ -815,8 +750,7 @@ mud_set_state(struct mud *mud, struct sockaddr *addr, enum mud_state state)
         return 0;
 
     path->state = state;
-
-    mud_update_mtu(mud);
+    mud_reset_path(mud, path);
 
     return 0;
 }
@@ -1002,7 +936,7 @@ mud_create(struct sockaddr *addr)
     mud->time_tolerance = MUD_TIME_TOLERANCE;
     mud->keyx_timeout = MUD_KEYX_TIMEOUT;
     mud->tc = MUD_PACKET_TC;
-    mud->mtu = MUD_MTU;
+    mud->mtu = MUD_MTU_MIN;
 
     memcpy(&mud->addr, addr, addrlen);
 
@@ -1130,13 +1064,14 @@ mud_localaddr(struct sockaddr_storage *addr, struct msghdr *msg)
 
 static int
 mud_packet_send(struct mud *mud, struct mud_path *path,
-                uint64_t now, uint64_t sent, int probe)
+                uint64_t now, uint64_t sent, size_t size)
 {
     unsigned char dst[MUD_PACKET_MAX_SIZE];
     unsigned char src[MUD_PACKET_MAX_SIZE] = {0};
-
     struct mud_packet *packet = (struct mud_packet *)src;
-    size_t size = sizeof(struct mud_packet);
+
+    if (size < MUD_PACKET_MIN_SIZE + sizeof(struct mud_packet))
+        size = MUD_PACKET_MIN_SIZE + sizeof(struct mud_packet);
 
     mud_write48(dst, MUD_PACKET_MARK(now));
     mud_write48(packet->sent, sent);
@@ -1166,26 +1101,20 @@ mud_packet_send(struct mud *mud, struct mud_path *path,
 
     packet->aes = (unsigned char)mud->crypto.aes;
 
-    mud_write48(packet->lat, path->lat);
+    mud_write48(packet->lat, path->lat.val);
     mud_write48(packet->latmin, path->latmin);
-    mud_write48(packet->max, path->recv.max);
-    mud_write48(packet->max_time, path->recv.max_time);
-    mud_write48(packet->rate, path->recv.rate);
+    mud_write48(packet->rate, path->rate.val);
     mud_write48(packet->ratemax, path->recv.ratemax);
-
-    if (probe)
-        size = path->mtu.probe - MUD_PACKET_MIN_SIZE;
 
     const struct mud_crypto_opt opt = {
         .dst = dst,
         .src = src,
-        .size = size,
+        .size = size - MUD_PACKET_MIN_SIZE,
     };
 
     mud_encrypt_opt(&mud->crypto.private, &opt);
 
-    return mud_send_path(mud, path, now,
-                         dst, size + MUD_PACKET_MIN_SIZE,
+    return mud_send_path(mud, path, now, dst, size,
                          mud->tc, sent ? MSG_CONFIRM : 0);
 }
 
@@ -1212,15 +1141,16 @@ mud_packet_decrypt(struct mud *mud,
 }
 
 static void
-mud_compute_rtt(struct mud_path *path, const uint64_t rtt)
+mud_value_update(struct mud_value *value, const uint64_t val)
 {
-    if (path->rtt) {
-        path->rttvar = ((path->rttvar << 1) + path->rttvar
-                        + mud_abs_diff(path->rtt, rtt)) >> 2;
-        path->rtt = ((path->rtt << 3) - path->rtt + rtt) >> 3;
+    if (value->setup) {
+        const uint64_t var = mud_abs_diff(value->val, val);
+        value->var = ((value->var << 1) + value->var + var) >> 2;
+        value->val = ((value->val << 3) - value->val + val) >> 3;
     } else {
-        path->rttvar = rtt >> 1;
-        path->rtt = rtt;
+        value->setup = 1;
+        value->var = val >> 1;
+        value->val = val;
     }
 }
 
@@ -1238,7 +1168,7 @@ mud_ss_from_packet(struct sockaddr_storage *ss, struct mud_packet *pkt)
     }
 }
 
-static void
+static int
 mud_packet_recv(struct mud *mud, struct mud_path *path,
                 uint64_t now, uint64_t sent,
                 unsigned char *data, size_t size)
@@ -1253,7 +1183,12 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
     const uint64_t peer_sent = mud_read48(packet->sent);
 
     if (peer_sent) {
-        mud_compute_rtt(path, MUD_TIME_MASK(now - peer_sent));
+        mud_value_update(&path->rtt, MUD_TIME_MASK(now - peer_sent));
+        if (path->mtu.ok < size) {
+            path->mtu.ok = size;
+            path->mtu.min = size + 1;
+            path->mtu.count = 0;
+        }
     } else {
         mud_keyx_init(mud, now);
     }
@@ -1270,7 +1205,7 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
         if (mud_keyx(mud, packet->pub, packet->aes)) {
             mud->bad.keyx.addr = path->addr;
             mud->bad.keyx.time = now;
-            return;
+            return -1;
         }
 
         if (!mud->peer.set) {
@@ -1286,8 +1221,6 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
                            MUD_PUB_SIZE))
                     mud->paths[i].state = MUD_EMPTY;
             }
-
-            mud_packet_send(mud, path, now, sent, 0);
         }
 
         path->pub = mud->crypto.pub;
@@ -1297,16 +1230,31 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
 
     path->r_lat = mud_read48(packet->lat);
     path->r_latmin = mud_read48(packet->latmin);
-    path->r_max = mud_read48(packet->max);
-    path->r_max_time = mud_read48(packet->max_time);
     path->r_rate = mud_read48(packet->rate);
     path->r_ratemax = mud_read48(packet->ratemax);
 
-    if (path->mtu.ok < path->r_max)
-        path->mtu.ok = path->r_max;
+    // TODO
 
-    mud_update_mtu(mud);
-    path->ok = 1;
+    const uint64_t dt = MUD_TIME_MASK(path->r_lat - path->r_latmin);
+    const uint64_t target = 15 * MUD_ONE_MSEC;
+    const uint64_t a = (path->r_ratemax * 1500) >> 1;
+    const uint64_t b = (path->send.ratemax ?: 5000) * target;
+
+    if (dt < target) {
+        uint64_t delta = ((target - dt) * a) / b;
+        path->send.ratemax += delta;
+    } else if (dt > target) {
+        uint64_t delta = ((dt - target) * a) / b;
+        if (path->send.ratemax > delta) {
+            path->send.ratemax -= delta;
+        } else {
+            path->send.ratemax = 5000;
+        }
+        if (path->send.ratemax < 5000)
+            path->send.ratemax = 5000;
+    }
+
+    return !!peer_sent;
 }
 
 int
@@ -1372,59 +1320,59 @@ mud_recv(struct mud *mud, void *data, size_t size)
     if (!path)
         return 0;
 
+    path->ok = 1;
+    path->stat_count = 0;
     path->recv.total++;
     path->recv.time = now;
     mud->last_recv_time = now;
 
-    if (path->recv.max <= packet_size) {
-        path->recv.max = packet_size;
-        path->recv.max_time = send_time;
-        if (path->mtu.ok < path->recv.max) {
-            path->mtu.ok = path->recv.max;
-            mud_update_mtu(mud);
-        }
-    }
+    const uint64_t lat = MUD_TIME_MASK(now - send_time + mud->time_tolerance);
+    mud_value_update(&path->lat, lat);
+
+    if (!path->latmin)
+        path->latmin = path->lat.val;
+
+    size_t reply_size = 0;
 
     if (MUD_PACKET(send_time))
-        mud_packet_recv(mud, path, now, send_time, data, ret);
+        if (!mud_packet_recv(mud, path, now, send_time, data, packet_size))
+            reply_size = packet_size;
 
-    if (mud_timeout(now, path->recv.stat_time, MUD_STAT_TIMEOUT)) {
+    if (mud_timeout(now, path->recv.stat_time, mud->send_timeout)) {
         const uint64_t rate = path->recv.bytes;
+        mud_value_update(&path->rate, rate);
 
-        path->lat = MUD_TIME_MASK(now - send_time + mud->time_tolerance);
-
-        if (path->latmin) {
-            if (path->latmin > path->lat)
-                path->latmin = path->lat;
-
-            if (path->latmax < path->lat)
-                path->latmax = path->lat;
+        if (path->recv.ratemax < path->rate.val) {
+            path->recv.ratemax = path->rate.val;
         } else {
-            path->latmin = path->lat;
-            path->latmax = path->lat;
-        }
-
-        if (path->recv.ratemax > rate) {
-            if (rate < (7 * path->recv.ratemax) / 8)
-                path->latmin = (7 * path->latmin + path->lat) / 8;
-            if (path->latmin < path->lat) {
-                const uint64_t a = path->lat - path->latmin;
-                const uint64_t b = path->latmax - path->lat;
-                const uint64_t r = path->latmax - path->latmin;
-                path->recv.ratemax = (a * rate + (b + r) * path->recv.ratemax) / (r << 1);
+            if (path->lat.val > path->latmin + 4 * path->lat.var) {
+                path->recv.ratemax = (rate + 7 * path->recv.ratemax) / 8;
+            } else {
+                // TODO
             }
-        } else {
-            path->recv.ratemax = rate;
         }
 
-        path->recv.rate = rate;
-        path->recv.bytes = packet_size;
+        if (path->latmin > path->lat.val) {
+            path->latmin = path->lat.val;
+        } else {
+            if (path->rate.val + 4 * path->rate.var < path->recv.ratemax) {
+                path->latmin = (lat + 7 * path->latmin) / 8;
+            } else {
+                // TODO
+            }
+        }
 
-        mud_packet_send(mud, path, now, send_time, 0);
+        if (!reply_size)
+            reply_size = path->mtu.ok;
+
+        path->recv.bytes = packet_size;
         path->recv.stat_time = now;
     } else {
         path->recv.bytes += packet_size;
     }
+
+    if (reply_size)
+        mud_packet_send(mud, path, now, send_time, reply_size);
 
     return MUD_PACKET(send_time) ? 0 : ret;
 }
@@ -1432,23 +1380,27 @@ mud_recv(struct mud *mud, void *data, size_t size)
 static void
 mud_probe_mtu(struct mud *mud, struct mud_path *path, uint64_t now)
 {
-    if ((!path->rtt) ||
-        (!mud_timeout(now, path->mtu.time, path->rtt)))
+    if (path->mtu.min > path->mtu.max)
         return;
 
-    while ((path->mtu.probe != path->r_max + 1) &&
-           (path->r_max != MUD_PACKET_MAX_SIZE)) {
+    if (path->mtu.count && path->rtt.setup &&
+        !mud_timeout(now, path->mtu.time, path->rtt.val + 4 * path->rtt.var))
+        return;
 
-        if (path->mtu.probe > path->mtu.ok) {
-            path->mtu.probe = (path->mtu.probe + path->mtu.ok) >> 1;
-        } else {
-            path->mtu.probe = (MUD_PACKET_MAX_SIZE + path->mtu.ok + 1) >> 1;
+    path->mtu.time = now;
+
+    while (1) {
+        const size_t probe = (path->mtu.min + path->mtu.max) >> 1;
+
+        if (path->mtu.count == 2) {
+            path->mtu.max = probe - 1;
+            path->mtu.count = 0;
+            continue;
         }
 
-        path->mtu.time = now;
+        path->mtu.count++;
 
-        if ((path->mtu.probe == MUD_MTU) ||
-            (mud_packet_send(mud, path, now, 0, 1) != -1) ||
+        if ((mud_packet_send(mud, path, now, 0, probe) != -1) ||
             (errno != EMSGSIZE))
             break;
     }
@@ -1464,41 +1416,121 @@ mud_update(struct mud *mud, uint64_t now)
             mud_keyx_reset(mud);
     }
 
+    unsigned long long window = 0;
+    size_t mtu = 0;
+
     for (unsigned i = 0; i < mud->count; i++) {
         struct mud_path *path = &mud->paths[i];
 
         if (path->state < MUD_DOWN)
             continue;
 
-        if (path->send.bytes && path->recv.time &&
-            mud_timeout(now, path->recv.time, mud->send_timeout))
-            mud_reset_path(mud, path);
+        path->window = 0;
+
+        if (path->ok) {
+            if (path->stat_count >= 10) {
+                mud_reset_path(mud, path);
+            } else {
+                if (!mtu || mtu > path->mtu.ok)
+                    mtu = path->mtu.ok;
+            }
+        }
+
+        int reset = mud_timeout(now, path->send.stat_time, mud->send_timeout / 2);
+
+        if (reset) {
+            if (path->send.bytes > path->send.ratemax) {
+                path->send.bytes -= path->send.ratemax;
+            } else {
+                path->send.bytes = 0;
+            }
+        }
+
+        if (path->ok && path->send.ratemax > path->send.bytes) {
+            path->window = path->send.ratemax - path->send.bytes;
+            window += path->window;
+        }
+
+        if (!reset)
+            continue;
+
+        path->send.stat_time = now;
 
         if (mud->peer.set) {
-            if (mud->crypto.ready)
-                mud_packet_send(mud, path, now, 0, 0);
+            if (path->ok)
+                mud_probe_mtu(mud, path, now);
 
-            mud_probe_mtu(mud, path, now);
+            if (mud_timeout(now, path->send.time, mud->send_timeout))
+                mud_packet_send(mud, path, now, 0, 0); //path->mtu.ok);
         }
 
-        if (mud_timeout(now, path->send.stat_time, MUD_STAT_TIMEOUT)) {
-            path->send.bytes = 0;
-            path->send.stat_time = now;
-        }
+        if (path->ok)
+            path->stat_count++;
     }
+
+    mud->window = window;
+    mud->mtu = mtu ?: MUD_MTU_MIN;
+}
+
+unsigned long
+mud_send_wait(struct mud *mud)
+{
+    const uint64_t now = mud_now();
+
+    mud_update(mud, now);
+
+    if (mud->window)
+        return 0;
+
+    unsigned long dt = MUD_ONE_SEC - 1;
+
+    for (unsigned i = 0; i < mud->count; i++) {
+        struct mud_path *path = &mud->paths[i];
+
+        if (path->state < MUD_DOWN || !path->ok)
+            continue;
+
+        if (!path->send.stat_time) // TODO
+            continue;
+
+        uint64_t elapsed = MUD_TIME_MASK(now - path->send.stat_time);
+
+        if (elapsed >= mud->send_timeout / 2)
+            continue; // TODO
+
+        uint64_t new_dt = (mud->send_timeout / 2) - elapsed;
+
+        if ((uint64_t)dt > new_dt)
+            dt = (unsigned long)new_dt;
+    }
+
+    return dt;
+}
+
+unsigned long
+mud_sync(struct mud *mud)
+{
+    const uint64_t last = mud->last_recv_time;
+    const uint64_t now = mud_now();
+
+    mud_update(mud, now);
+
+    return last ? MUD_TIME_MASK(now - last) / MUD_ONE_MSEC : ~0UL;
 }
 
 int
 mud_send(struct mud *mud, const void *data, size_t size, unsigned tc)
 {
-    unsigned char packet[MUD_PACKET_MAX_SIZE];
-    const uint64_t now = mud_now();
-
-    mud_update(mud, now);
-
-    if (!size || !mud->count)
+    if (!size)
         return 0;
 
+    if (!mud->window) {
+        errno = EAGAIN;
+        return -1;
+    }
+
+    unsigned char packet[MUD_PACKET_MAX_SIZE];
+    const uint64_t now = mud_now();
     const int packet_size = mud_encrypt(mud, now, packet, sizeof(packet), data, size);
 
     if (!packet_size) {

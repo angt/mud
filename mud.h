@@ -20,35 +20,31 @@ struct mud_public {
     unsigned char local[MUD_PUB_SIZE];
 };
 
+struct mud_value {
+    uint64_t val;
+    uint64_t var;
+    int setup;
+};
+
 struct mud_path {
     enum mud_state state;
     struct sockaddr_storage local_addr, addr, r_addr;
-    struct {
-        uint64_t send_time;
-        int remote;
-    } conf;
-    uint64_t rtt;
-    uint64_t rttvar;
-    uint64_t lat;
+    struct mud_value rtt, lat, rate;
     uint64_t latmin;
-    uint64_t latmax;
     uint64_t r_lat;
     uint64_t r_latmin;
     uint64_t r_rate;
     uint64_t r_ratemax;
-    uint64_t r_max;
-    uint64_t r_max_time;
-    uint64_t prob;
+    uint64_t window;
     struct {
+        size_t min;
+        size_t max;
         size_t ok;
-        size_t probe;
         uint64_t time;
+        unsigned char count;
     } mtu;
     struct {
-        uint64_t max;
-        uint64_t max_time;
         uint64_t total;
-        uint64_t rate;
         uint64_t ratemax;
         uint64_t bytes;
         uint64_t stat_time;
@@ -56,6 +52,7 @@ struct mud_path {
     } send, recv;
     struct mud_public pub;
     unsigned char ok;
+    unsigned char stat_count;
 };
 
 struct mud *mud_create (struct sockaddr *);
@@ -69,7 +66,8 @@ int mud_get_key (struct mud *, unsigned char *, size_t *);
 void   mud_set_mtu (struct mud *, size_t);
 size_t mud_get_mtu (struct mud *);
 
-unsigned long mud_sync (struct mud *);
+unsigned long mud_send_wait (struct mud *);
+unsigned long mud_sync      (struct mud *);
 
 int mud_set_send_timeout   (struct mud *, unsigned long);
 int mud_set_time_tolerance (struct mud *, unsigned long);
