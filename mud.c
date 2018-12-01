@@ -528,7 +528,7 @@ mud_reset_path(struct mud *mud, struct mud_path *path)
     path->mtu.max = MUD_MTU_MAX;
     path->mtu.count = 0;
     path->send.ratemax = 0;
-    path->send_factor = 8;
+    path->send_factor = 1;
     path->window = 0;
     path->ok = 0;
     path->stat_count = 0;
@@ -1238,18 +1238,24 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
     const uint64_t b = (path->send.ratemax ?: 5000) * target;
 
     if (dt < target) {
-        uint64_t delta = ((target - dt) * a * path->send_factor) / b;
-        path->send.ratemax += delta;
+        if (path->send_factor) {
+            path->send.ratemax = path->r_ratemax;
+        } else {
+            path->send.ratemax += ((target - dt) * a) / b;
+        }
     } else if (dt > target) {
         uint64_t delta = ((dt - target) * a) / b;
+
         if (path->send.ratemax > delta) {
             path->send.ratemax -= delta;
         } else {
             path->send.ratemax = 5000;
         }
+
         if (path->send.ratemax < 5000)
             path->send.ratemax = 5000;
-        path->send_factor = 1;
+
+        path->send_factor = 0;
     }
 
     return !!peer_sent;
