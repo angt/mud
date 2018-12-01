@@ -118,8 +118,7 @@ struct mud_packet {
     struct mud_addr addr;
     unsigned char pub[MUD_PUB_SIZE];
     unsigned char aes;
-    unsigned char lat[MUD_U48_SIZE];
-    unsigned char latmin[MUD_U48_SIZE];
+    unsigned char dt[MUD_U48_SIZE];
     unsigned char rate[MUD_U48_SIZE];
     unsigned char ratemax[MUD_U48_SIZE];
 };
@@ -1101,8 +1100,7 @@ mud_packet_send(struct mud *mud, struct mud_path *path,
 
     packet->aes = (unsigned char)mud->crypto.aes;
 
-    mud_write48(packet->lat, path->lat.val);
-    mud_write48(packet->latmin, path->latmin);
+    mud_write48(packet->dt, path->dt);
     mud_write48(packet->rate, path->rate.val);
     mud_write48(packet->ratemax, path->recv.ratemax);
 
@@ -1228,14 +1226,12 @@ mud_packet_recv(struct mud *mud, struct mud_path *path,
         mud->crypto.use_next = 1;
     }
 
-    path->r_lat = mud_read48(packet->lat);
-    path->r_latmin = mud_read48(packet->latmin);
     path->r_rate = mud_read48(packet->rate);
     path->r_ratemax = mud_read48(packet->ratemax);
 
     // TODO
 
-    const uint64_t dt = MUD_TIME_MASK(path->r_lat - path->r_latmin);
+    const uint64_t dt = mud_read48(packet->dt);
     const uint64_t target = 15 * MUD_ONE_MSEC;
     const uint64_t a = (path->r_ratemax * 1500) >> 1;
     const uint64_t b = (path->send.ratemax ?: 5000) * target;
@@ -1360,6 +1356,12 @@ mud_recv(struct mud *mud, void *data, size_t size)
             } else {
                 // TODO
             }
+        }
+
+        if (path->lat.val > path->latmin) {
+            path->dt = MUD_TIME_MASK(path->lat.val - path->latmin);
+        } else {
+            path->dt = 0;
         }
 
         if (!reply_size)

@@ -30,9 +30,7 @@ struct mud_path {
     enum mud_state state;
     struct sockaddr_storage local_addr, addr, r_addr;
     struct mud_value rtt, lat, rate;
-    uint64_t latmin;
-    uint64_t r_lat;
-    uint64_t r_latmin;
+    uint64_t latmin, dt;
     uint64_t r_rate;
     uint64_t r_ratemax;
     uint64_t window;
