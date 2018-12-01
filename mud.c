@@ -125,7 +125,6 @@ struct mud_packet {
 
 struct mud {
     int fd;
-    uint64_t send_timeout;
     uint64_t time_tolerance;
     uint64_t keyx_timeout;
     struct sockaddr_storage addr;
@@ -709,12 +708,6 @@ mud_set_msec(uint64_t *dst, unsigned long msec)
 }
 
 int
-mud_set_send_timeout(struct mud *mud, unsigned long msec)
-{
-    return mud_set_msec(&mud->send_timeout, msec);
-}
-
-int
 mud_set_time_tolerance(struct mud *mud, unsigned long msec)
 {
     return mud_set_msec(&mud->time_tolerance, msec);
@@ -932,7 +925,6 @@ mud_create(struct sockaddr *addr)
         return NULL;
     }
 
-    mud->send_timeout = MUD_SEND_TIMEOUT;
     mud->time_tolerance = MUD_TIME_TOLERANCE;
     mud->keyx_timeout = MUD_KEYX_TIMEOUT;
     mud->tc = MUD_PACKET_TC;
@@ -1342,7 +1334,7 @@ mud_recv(struct mud *mud, void *data, size_t size)
         if (!mud_packet_recv(mud, path, now, send_time, data, packet_size))
             reply_size = packet_size;
 
-    if (mud_timeout(now, path->recv.stat_time, mud->send_timeout)) {
+    if (mud_timeout(now, path->recv.stat_time, MUD_SEND_TIMEOUT)) {
         const uint64_t rate = path->recv.bytes;
         mud_stat_update(&path->rate, rate);
 
@@ -1446,7 +1438,7 @@ mud_update(struct mud *mud, uint64_t now)
             }
         }
 
-        int reset = mud_timeout(now, path->send.stat_time, mud->send_timeout / 2);
+        int reset = mud_timeout(now, path->send.stat_time, MUD_SEND_TIMEOUT / 2);
 
         if (reset) {
             if (path->send.bytes > path->send.ratemax) {
@@ -1470,7 +1462,7 @@ mud_update(struct mud *mud, uint64_t now)
             if (path->ok)
                 mud_probe_mtu(mud, path, now);
 
-            if (mud_timeout(now, path->send.time, mud->send_timeout))
+            if (mud_timeout(now, path->send.time, MUD_SEND_TIMEOUT))
                 mud_packet_send(mud, path, now, 0, 0); //path->mtu.ok);
         }
 
@@ -1505,10 +1497,10 @@ mud_send_wait(struct mud *mud)
 
         uint64_t elapsed = MUD_TIME_MASK(now - path->send.stat_time);
 
-        if (elapsed >= mud->send_timeout / 2)
+        if (elapsed >= MUD_SEND_TIMEOUT / 2)
             continue; // TODO
 
-        uint64_t new_dt = (mud->send_timeout / 2) - elapsed;
+        uint64_t new_dt = (MUD_SEND_TIMEOUT / 2) - elapsed;
 
         if ((uint64_t)dt > new_dt)
             dt = (unsigned long)new_dt;
