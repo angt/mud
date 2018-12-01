@@ -20,7 +20,7 @@ struct mud_public {
     unsigned char local[MUD_PUB_SIZE];
 };
 
-struct mud_value {
+struct mud_stat {
     uint64_t val;
     uint64_t var;
     int setup;
@@ -29,7 +29,7 @@ struct mud_value {
 struct mud_path {
     enum mud_state state;
     struct sockaddr_storage local_addr, addr, r_addr;
-    struct mud_value rtt, lat, rate;
+    struct mud_stat rtt, lat, rate;
     uint64_t latmin, dt;
     uint64_t send_factor;
     uint64_t r_rate;
