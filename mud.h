@@ -31,6 +31,7 @@ struct mud_path {
     struct sockaddr_storage local_addr, addr, r_addr;
     struct mud_value rtt, lat, rate;
     uint64_t latmin, dt;
+    uint64_t send_factor;
     uint64_t r_rate;
     uint64_t r_ratemax;
     uint64_t window;
