@@ -410,8 +410,13 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
     ssize_t ret = sendmsg(mud->fd, &msg, flags);
 
     path->send.total++;
-    path->send.bytes += size;
     path->send.time = now;
+
+    if (path->window > size) {
+        path->window -= size;
+    } else {
+        path->window = 0;
+    }
 
     return ret;
 }
@@ -1430,8 +1435,6 @@ mud_update(struct mud *mud, uint64_t now)
         if (path->state <= MUD_DOWN)
             continue;
 
-        path->window = 0;
-
         if (path->ok) {
             if (path->stat_count >= 10) {
                 mud_reset_path(mud, path);
@@ -1441,36 +1444,24 @@ mud_update(struct mud *mud, uint64_t now)
             }
         }
 
-        int reset = mud_timeout(now, path->send.stat_time, MUD_SEND_TIMEOUT / 2);
+        if (mud_timeout(now, path->send.stat_time, MUD_SEND_TIMEOUT / 2)) {
+            path->send.stat_time = now;
 
-        if (reset) {
-            if (path->send.bytes > path->send.ratemax) {
-                path->send.bytes -= path->send.ratemax;
-            } else {
-                path->send.bytes = 0;
+            if (path->ok) {
+                path->window = path->send.ratemax;
+                path->stat_count++;
+            }
+
+            if (mud->peer.set) {
+                if (path->ok)
+                    mud_probe_mtu(mud, path, now);
+
+                if (mud_timeout(now, path->send.time, MUD_SEND_TIMEOUT))
+                    mud_packet_send(mud, path, now, 0, 0); //path->mtu.ok);
             }
         }
 
-        if (path->ok && path->send.ratemax > path->send.bytes) {
-            path->window = path->send.ratemax - path->send.bytes;
-            window += path->window;
-        }
-
-        if (!reset)
-            continue;
-
-        path->send.stat_time = now;
-
-        if (mud->peer.set) {
-            if (path->ok)
-                mud_probe_mtu(mud, path, now);
-
-            if (mud_timeout(now, path->send.time, MUD_SEND_TIMEOUT))
-                mud_packet_send(mud, path, now, 0, 0); //path->mtu.ok);
-        }
-
-        if (path->ok)
-            path->stat_count++;
+        window += path->window;
     }
 
     mud->window = window;
