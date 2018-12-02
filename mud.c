@@ -1486,13 +1486,10 @@ mud_send_wait(struct mud *mud)
         if (path->state <= MUD_DOWN || !path->ok)
             continue;
 
-        if (!path->send.stat_time) // TODO
-            continue;
-
         uint64_t elapsed = MUD_TIME_MASK(now - path->send.stat_time);
 
         if (elapsed >= MUD_SEND_TIMEOUT / 2)
-            continue; // TODO
+            continue;
 
         uint64_t new_dt = (MUD_SEND_TIMEOUT / 2) - elapsed;
 
