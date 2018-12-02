@@ -1316,6 +1316,9 @@ mud_recv(struct mud *mud, void *data, size_t size)
     if (!path)
         return 0;
 
+    if (path->state <= MUD_DOWN)
+        return 0;
+
     path->ok = 1;
     path->stat_count = 0;
     path->recv.total++;
@@ -1424,7 +1427,7 @@ mud_update(struct mud *mud, uint64_t now)
     for (unsigned i = 0; i < mud->count; i++) {
         struct mud_path *path = &mud->paths[i];
 
-        if (path->state < MUD_DOWN)
+        if (path->state <= MUD_DOWN)
             continue;
 
         path->window = 0;
@@ -1489,7 +1492,7 @@ mud_send_wait(struct mud *mud)
     for (unsigned i = 0; i < mud->count; i++) {
         struct mud_path *path = &mud->paths[i];
 
-        if (path->state < MUD_DOWN || !path->ok)
+        if (path->state <= MUD_DOWN || !path->ok)
             continue;
 
         if (!path->send.stat_time) // TODO
