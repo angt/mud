@@ -29,12 +29,12 @@ struct mud_stat {
 struct mud_path {
     enum mud_state state;
     struct sockaddr_storage local_addr, addr, r_addr;
-    struct mud_stat rtt, lat, rate;
-    uint64_t latmin, dt;
-    uint64_t send_factor;
-    uint64_t r_rate;
-    uint64_t r_ratemax;
+    struct mud_stat rtt;
+    uint64_t rate_tx;
+    uint64_t rate_rx;
     uint64_t window;
+    uint64_t window_time;
+    uint64_t window_size;
     struct {
         size_t min;
         size_t max;
@@ -44,7 +44,6 @@ struct mud_path {
     } mtu;
     struct {
         uint64_t total;
-        uint64_t ratemax;
         uint64_t bytes;
         uint64_t stat_time;
         uint64_t time;
@@ -73,7 +72,8 @@ int mud_set_keyx_timeout   (struct mud *, unsigned long);
 int mud_set_tc             (struct mud *, int);
 int mud_set_aes            (struct mud *);
 
-int mud_set_state (struct mud *, struct sockaddr *, enum mud_state);
+int mud_set_state (struct mud *, struct sockaddr *, enum mud_state,
+                   unsigned long, unsigned long);
 
 int mud_peer (struct mud *, struct sockaddr *);
 
