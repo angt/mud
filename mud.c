@@ -856,11 +856,11 @@ mud_keyx(struct mud *mud, unsigned char *remote, int aes)
         return 0;
 
     crypto_aead_aes256gcm_beforenm((crypto_aead_aes256gcm_state *)
-                                       mud->crypto.next.encrypt.state,
+                                       &mud->crypto.next.encrypt.state,
                                    mud->crypto.next.encrypt.key);
 
     crypto_aead_aes256gcm_beforenm((crypto_aead_aes256gcm_state *)
-                                       mud->crypto.next.decrypt.state,
+                                       &mud->crypto.next.decrypt.state,
                                    mud->crypto.next.decrypt.key);
 
     return 0;
