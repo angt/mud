@@ -156,7 +156,7 @@ struct mud {
             uint64_t time;
         } decrypt, difftime, keyx;
     } bad;
-    unsigned long long window;
+    uint64_t window;
 };
 
 static int
@@ -418,8 +418,10 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
     path->send.time = now;
 
     if (path->window > size) {
+        mud->window -= size;
         path->window -= size;
     } else {
+        mud->window -= path->window;
         path->window = 0;
     }
 
@@ -1415,7 +1417,7 @@ mud_update(struct mud *mud, uint64_t now)
             mud_keyx_reset(mud);
     }
 
-    unsigned long long window = 0;
+    uint64_t window = 0;
     size_t mtu = 0;
 
     for (unsigned i = 0; i < mud->count; i++) {
