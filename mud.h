@@ -50,7 +50,7 @@ struct mud_path {
     } send, recv;
     struct mud_public pub;
     unsigned char ok;
-    unsigned char stat_count;
+    unsigned msg_sent;
 };
 
 struct mud *mud_create (struct sockaddr *);
