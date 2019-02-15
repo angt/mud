@@ -65,6 +65,7 @@
 #define MUD_MSG_MARK(X)  ((X) | UINT64_C(1))
 #define MUD_MSG_TC       (192) // CS6
 #define MUD_MSG_SENT_MAX (10)
+#define MUD_MSG_MIN_RTT  (100 * MUD_ONE_MSEC)
 
 #define MUD_PKT_MIN_SIZE (MUD_U48_SIZE + MUD_MAC_SIZE)
 #define MUD_PKT_MAX_SIZE (1500U)
@@ -75,7 +76,6 @@
 #define MUD_TIME_BITS    (48)
 #define MUD_TIME_MASK(X) ((X) & ((UINT64_C(1) << MUD_TIME_BITS) - 2))
 
-#define MUD_SEND_TIMEOUT       (100 * MUD_ONE_MSEC)
 #define MUD_WINDOW_TIMEOUT     ( 50 * MUD_ONE_MSEC)
 #define MUD_KEYX_TIMEOUT       ( 60 * MUD_ONE_MIN)
 #define MUD_KEYX_RESET_TIMEOUT (200 * MUD_ONE_MSEC)
@@ -1386,14 +1386,25 @@ mud_recv(struct mud *mud, void *data, size_t size)
     return MUD_MSG(send_time) ? 0 : ret;
 }
 
+static uint64_t
+mud_path_timeout(struct mud_path *path)
+{
+    if (!path->rtt.setup)
+        return MUD_MSG_MIN_RTT;
+
+    const uint64_t rtt = (path->rtt.val + path->rtt.var) << 1;
+
+    return rtt > MUD_MSG_MIN_RTT ? rtt : MUD_MSG_MIN_RTT;
+}
+
 static void
 mud_probe_mtu(struct mud *mud, struct mud_path *path, uint64_t now)
 {
     if (path->mtu.min > path->mtu.max)
         return;
 
-    if (path->mtu.count && path->rtt.setup &&
-        !mud_timeout(now, path->mtu.time, path->rtt.val + 4 * path->rtt.var))
+    if (path->mtu.count &&
+        !mud_timeout(now, path->mtu.time, mud_path_timeout(path)))
         return;
 
     path->mtu.time = now;
@@ -1455,7 +1466,7 @@ mud_update(struct mud *mud, uint64_t now)
         }
 
         if (mud->peer.set) {
-            if (mud_timeout(now, path->send.msg_time, MUD_SEND_TIMEOUT))
+            if (mud_timeout(now, path->send.msg_time, mud_path_timeout(path)))
                 mud_send_msg(mud, path, now, 0, 0, 0, 0);
         }
 
