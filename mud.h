@@ -45,8 +45,8 @@ struct mud_path {
     struct {
         uint64_t total;
         uint64_t bytes;
-        uint64_t stat_time;
         uint64_t time;
+        uint64_t msg_time;
     } send, recv;
     struct mud_public pub;
     unsigned char ok;
