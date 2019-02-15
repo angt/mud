@@ -1227,9 +1227,6 @@ mud_update_window(struct mud *mud, struct mud_path *path,
                   uint64_t send_dt, uint64_t send_bytes,
                   uint64_t recv_dt, uint64_t recv_bytes)
 {
-    if (!send_dt || recv_dt < send_dt)
-        return;
-
     // TODO
 }
 
