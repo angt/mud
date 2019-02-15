@@ -1446,7 +1446,8 @@ mud_update(struct mud *mud, uint64_t now)
             continue;
 
         if (path->ok) {
-            if (path->msg_sent >= MUD_MSG_SENT_MAX) {
+            if (path->msg_sent >= MUD_MSG_SENT_MAX || (path->recv.time &&
+                        mud->last_recv_time > path->recv.time + MUD_ONE_SEC)) {
                 mud_reset_path(mud, path);
             } else {
                 if (!mtu || mtu > path->mtu.ok)
