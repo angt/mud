@@ -64,7 +64,7 @@
 #define MUD_MSG(X)       ((X) & UINT64_C(1))
 #define MUD_MSG_MARK(X)  ((X) | UINT64_C(1))
 #define MUD_MSG_TC       (192) // CS6
-#define MUD_MSG_SENT_MAX (10)
+#define MUD_MSG_SENT_MAX (3)
 #define MUD_MSG_MIN_RTT  (100 * MUD_ONE_MSEC)
 
 #define MUD_PKT_MIN_SIZE (MUD_U48_SIZE + MUD_MAC_SIZE)
@@ -545,10 +545,6 @@ mud_update_rate(struct mud *mud, struct mud_path *path, uint64_t rate)
 static void
 mud_reset_path(struct mud *mud, struct mud_path *path)
 {
-    path->mtu.ok = MUD_MTU_MIN;
-    path->mtu.min = MUD_MTU_MIN;
-    path->mtu.max = MUD_MTU_MAX;
-    path->mtu.count = 0;
     path->window = 0;
     path->ok = 0;
     path->msg_sent = 0;
@@ -612,6 +608,12 @@ mud_get_path(struct mud *mud, struct sockaddr_storage *local_addr,
     memcpy(&path->addr, addr, sizeof(*addr));
 
     path->state = MUD_UP;
+
+    path->mtu.ok = MUD_MTU_MIN;
+    path->mtu.min = MUD_MTU_MIN;
+    path->mtu.max = MUD_MTU_MAX;
+    path->mtu.probe = MUD_MTU_MAX;
+
     mud_reset_path(mud, path);
 
     return path;
@@ -1242,10 +1244,14 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
     const uint64_t peer_sent = mud_read48(msg->sent);
 
     if (peer_sent) {
-        if (path->mtu.ok < size) {
-            path->mtu.ok = size;
-            path->mtu.min = size + 1;
-            path->mtu.count = 0;
+        path->mtu.min = size + 1;
+        path->mtu.ok = size;
+
+        if (!path->ok) {
+            path->mtu.max = MUD_MTU_MAX;
+            path->mtu.probe = MUD_MTU_MAX;
+        } else {
+            path->mtu.probe = (path->mtu.min + path->mtu.max) >> 1;
         }
 
         mud_update_stat(&path->rtt, MUD_TIME_MASK(now - peer_sent));
@@ -1395,35 +1401,6 @@ mud_path_timeout(struct mud_path *path)
 }
 
 static void
-mud_probe_mtu(struct mud *mud, struct mud_path *path, uint64_t now)
-{
-    if (path->mtu.min > path->mtu.max)
-        return;
-
-    if (path->mtu.count &&
-        !mud_timeout(now, path->mtu.time, mud_path_timeout(path)))
-        return;
-
-    path->mtu.time = now;
-
-    while (1) {
-        const size_t probe = (path->mtu.min + path->mtu.max) >> 1;
-
-        if (path->mtu.count == 2) {
-            path->mtu.max = probe - 1;
-            path->mtu.count = 0;
-            continue;
-        }
-
-        path->mtu.count++;
-
-        if ((mud_send_msg(mud, path, now, 0, 0, 0, probe) != -1) ||
-            (errno != EMSGSIZE))
-            break;
-    }
-}
-
-static void
 mud_update(struct mud *mud, uint64_t now)
 {
     if (mud->peer.set) {
@@ -1442,19 +1419,34 @@ mud_update(struct mud *mud, uint64_t now)
         if (path->state <= MUD_DOWN)
             continue;
 
-        if (path->ok) {
-            if (path->msg_sent >= MUD_MSG_SENT_MAX || (path->recv.time &&
-                        mud->last_recv_time > path->recv.time + MUD_ONE_SEC)) {
-                mud_reset_path(mud, path);
-            } else {
-                if (!mtu || mtu > path->mtu.ok)
-                    mtu = path->mtu.ok;
+        if (mud->peer.set) {
+            if (path->msg_sent >= MUD_MSG_SENT_MAX) {
+                if (path->mtu.probe == MUD_MTU_MIN) {
+                    mud_reset_path(mud, path);
+                } else {
+                    if (path->mtu.ok == path->mtu.probe) {
+                        path->mtu.min = MUD_MTU_MIN;
+                        path->mtu.ok = MUD_MTU_MIN;
+                        mud_reset_path(mud, path);
+                    } else {
+                        path->msg_sent = 0;
+                    }
+                    path->mtu.max = path->mtu.probe - 1;
+                    path->mtu.probe = (path->mtu.min + path->mtu.max) >> 1;
+                }
             }
-            if (mud->peer.set)
-                mud_probe_mtu(mud, path, now);
+        } else {
+            if ((path->msg_sent >= MUD_MSG_SENT_MAX) ||
+                (path->recv.time &&
+                 mud->last_recv_time > path->recv.time + MUD_ONE_SEC)) {
+                mud_reset_path(mud, path);
+            }
         }
 
         if (path->ok) {
+            if (!mtu || mtu > path->mtu.ok) {
+                mtu = path->mtu.ok;
+            }
             if (mud_timeout(now, path->window_time, MUD_WINDOW_TIMEOUT)) {
                 path->window = path->window_size;
                 path->window_time = now;
@@ -1465,7 +1457,7 @@ mud_update(struct mud *mud, uint64_t now)
 
         if (mud->peer.set) {
             if (mud_timeout(now, path->send.msg_time, mud_path_timeout(path)))
-                mud_send_msg(mud, path, now, 0, 0, 0, 0);
+                mud_send_msg(mud, path, now, 0, 0, 0, path->mtu.probe);
         }
 
         window += path->window;

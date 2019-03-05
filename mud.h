@@ -38,9 +38,8 @@ struct mud_path {
     struct {
         size_t min;
         size_t max;
+        size_t probe;
         size_t ok;
-        uint64_t time;
-        unsigned char count;
     } mtu;
     struct {
         uint64_t total;
