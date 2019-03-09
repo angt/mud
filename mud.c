@@ -1505,17 +1505,6 @@ mud_send_wait(struct mud *mud)
     return not_down ? dt : -1;
 }
 
-unsigned long
-mud_sync(struct mud *mud)
-{
-    const uint64_t last = mud->last_recv_time;
-    const uint64_t now = mud_now();
-
-    mud_update(mud, now);
-
-    return last ? MUD_TIME_MASK(now - last) / MUD_ONE_MSEC : ~0UL;
-}
-
 int
 mud_send(struct mud *mud, const void *data, size_t size, unsigned tc)
 {

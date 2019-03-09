@@ -63,8 +63,7 @@ int mud_get_key (struct mud *, unsigned char *, size_t *);
 void   mud_set_mtu (struct mud *, size_t);
 size_t mud_get_mtu (struct mud *);
 
-long          mud_send_wait (struct mud *);
-unsigned long mud_sync      (struct mud *);
+long mud_send_wait (struct mud *);
 
 int mud_set_time_tolerance (struct mud *, unsigned long);
 int mud_set_keyx_timeout   (struct mud *, unsigned long);
