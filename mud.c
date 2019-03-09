@@ -1467,7 +1467,7 @@ mud_update(struct mud *mud, uint64_t now)
     mud->mtu = mtu ?: MUD_MTU_MIN;
 }
 
-unsigned long
+long
 mud_send_wait(struct mud *mud)
 {
     const uint64_t now = mud_now();
@@ -1477,12 +1477,18 @@ mud_send_wait(struct mud *mud)
     if (mud->window)
         return 0;
 
-    unsigned long dt = MUD_ONE_SEC - 1;
+    long dt = MUD_ONE_SEC - 1;
+    unsigned not_down = 0;
 
     for (unsigned i = 0; i < mud->count; i++) {
         struct mud_path *path = &mud->paths[i];
 
-        if (path->state <= MUD_DOWN || !path->ok)
+        if (path->state <= MUD_DOWN)
+            continue;
+
+        not_down++;
+
+        if (!path->ok)
             continue;
 
         uint64_t elapsed = MUD_TIME_MASK(now - path->window_time);
@@ -1493,10 +1499,10 @@ mud_send_wait(struct mud *mud)
         uint64_t new_dt = MUD_WINDOW_TIMEOUT - elapsed;
 
         if ((uint64_t)dt > new_dt)
-            dt = (unsigned long)new_dt;
+            dt = (long)new_dt;
     }
 
-    return dt;
+    return not_down ? dt : -1;
 }
 
 unsigned long
