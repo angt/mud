@@ -1451,8 +1451,6 @@ mud_update(struct mud *mud, uint64_t now)
                 path->window = path->window_size;
                 path->window_time = now;
             }
-        } else {
-            path->window = 0;
         }
 
         if (mud->peer.set) {
