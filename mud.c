@@ -277,11 +277,13 @@ mud_now(void)
 #if defined CLOCK_REALTIME
     struct timespec tv;
     clock_gettime(CLOCK_REALTIME, &tv);
-    now = tv.tv_sec * MUD_ONE_SEC + tv.tv_nsec / MUD_ONE_MSEC;
+    now = (uint64_t)tv.tv_sec * MUD_ONE_SEC
+        + (uint64_t)tv.tv_nsec / MUD_ONE_MSEC;
 #else
     struct timeval tv;
     gettimeofday(&tv, NULL);
-    now = tv.tv_sec * MUD_ONE_SEC + tv.tv_usec;
+    now = (uint64_t)tv.tv_sec * MUD_ONE_SEC
+        + (uint64_t)tv.tv_usec;
 #endif
     return MUD_TIME_MASK(now);
 }
@@ -324,7 +326,7 @@ mud_unmapv4(struct sockaddr_storage *addr)
 static struct mud_path *
 mud_select_path(struct mud *mud, unsigned k)
 {
-    unsigned w = 0;
+    uint64_t window = 0;
     struct mud_path *last = NULL;
 
     for (unsigned i = 0; i < mud->count; i++) {
@@ -333,17 +335,17 @@ mud_select_path(struct mud *mud, unsigned k)
         if (!path->window)
             continue;
 
-        w += ((path->window << 16) + (mud->window >> 1)) / mud->window;
+        window += ((path->window << 16) + (mud->window >> 1)) / mud->window;
         last = path;
 
-        if (k <= w)
+        if ((uint64_t)k <= window)
             break;
     }
 
     return last;
 }
 
-static ssize_t
+static int
 mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
               void *data, size_t size, int tc, int flags)
 {
@@ -426,7 +428,7 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
         path->window = 0;
     }
 
-    return ret;
+    return (int)ret;
 }
 
 static int
@@ -468,12 +470,12 @@ mud_cmp_addr(struct sockaddr_storage *a, struct sockaddr_storage *b)
 struct mud_path *
 mud_get_paths(struct mud *mud, unsigned *ret_count)
 {
-    unsigned count = 0;
-
     if (!ret_count) {
         errno = EINVAL;
         return NULL;
     }
+
+    unsigned count = 0;
 
     for (unsigned i = 0; i < mud->count; i++) {
         struct mud_path *path = &mud->paths[i];
@@ -1013,7 +1015,7 @@ mud_encrypt(struct mud *mud, uint64_t now,
         mud_encrypt_opt(&mud->crypto.current, &opt);
     }
 
-    return size;
+    return (int)size;
 }
 
 static int
@@ -1045,7 +1047,7 @@ mud_decrypt(struct mud *mud,
         }
     }
 
-    return size;
+    return (int)size;
 }
 
 static int
@@ -1192,7 +1194,7 @@ mud_decrypt_msg(struct mud *mud,
     if (mud_decrypt_opt(&mud->crypto.private, &opt))
         return -1;
 
-    return size;
+    return (int)size;
 }
 
 static void
@@ -1355,8 +1357,8 @@ mud_recv(struct mud *mud, void *data, size_t size)
     }
 
     const int ret = MUD_MSG(send_time)
-                  ? mud_decrypt_msg(mud, data, size, packet, packet_size)
-                  : mud_decrypt(mud, data, size, packet, packet_size);
+                  ? mud_decrypt_msg(mud, data, size, packet, (size_t)packet_size)
+                  : mud_decrypt(mud, data, size, packet, (size_t)packet_size);
 
     if (ret <= 0) {
         mud->bad.decrypt.addr = addr;
@@ -1378,11 +1380,11 @@ mud_recv(struct mud *mud, void *data, size_t size)
         return 0;
 
     if (MUD_MSG(send_time))
-        mud_recv_msg(mud, path, now, send_time, data, packet_size);
+        mud_recv_msg(mud, path, now, send_time, data, (size_t)packet_size);
 
     path->recv.total++;
     path->recv.time = now;
-    path->recv.bytes += packet_size;
+    path->recv.bytes += (size_t)packet_size;
 
     mud->last_recv_time = now;
 
@@ -1535,5 +1537,5 @@ mud_send(struct mud *mud, const void *data, size_t size, unsigned tc)
     }
 
     return mud_send_path(mud, mud_select_path(mud, k),
-                         now, packet, packet_size, tc & 255, 0);
+                         now, packet, (size_t)packet_size, tc & 255, 0);
 }
