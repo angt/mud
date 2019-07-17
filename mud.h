@@ -4,6 +4,7 @@
 #include <inttypes.h>
 #include <sys/socket.h>
 
+#define MUD_PATH_MAX (32U)
 #define MUD_PUB_SIZE (32U)
 
 struct mud;

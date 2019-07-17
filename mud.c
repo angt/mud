@@ -85,8 +85,6 @@
                        CMSG_SPACE(sizeof(struct in6_pktinfo)) + \
                        CMSG_SPACE(sizeof(int)))
 
-#define MUD_PATH_MAX (32U)
-
 struct mud_crypto_opt {
     unsigned char *dst;
     const unsigned char *src;
