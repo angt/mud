@@ -1416,8 +1416,12 @@ mud_update(struct mud *mud, uint64_t now)
     for (unsigned i = 0; i < mud->count; i++) {
         struct mud_path *path = &mud->paths[i];
 
-        if (path->state <= MUD_DOWN)
+        if (path->state <= MUD_DOWN) {
+            if (path->state == MUD_DOWN &&
+                mud_timeout(now, path->recv.time, 10 * MUD_ONE_SEC))
+                path->state = MUD_EMPTY;
             continue;
+        }
 
         if (mud->peer.set) {
             if (path->msg_sent >= MUD_MSG_SENT_MAX) {
