@@ -33,6 +33,10 @@
 #define MUD_V4V6 0
 #endif
 
+#if defined __APPLE__
+#include <mach/mach_time.h>
+#endif
+
 #if defined IP_PKTINFO
 #define MUD_PKTINFO IP_PKTINFO
 #define MUD_PKTINFO_SRC(X) &((struct in_pktinfo *)(X))->ipi_addr
@@ -156,6 +160,7 @@ struct mud {
         } decrypt, difftime, keyx;
     } bad;
     uint64_t window;
+    uint64_t base_time;
 };
 
 static int
@@ -269,21 +274,34 @@ mud_read48(const unsigned char *src)
 }
 
 static uint64_t
-mud_now(void)
+mud_gettimeofday(void)
 {
-    uint64_t now;
-#if defined CLOCK_REALTIME
-    struct timespec tv;
-    clock_gettime(CLOCK_REALTIME, &tv);
-    now = (uint64_t)tv.tv_sec * MUD_ONE_SEC
-        + (uint64_t)tv.tv_nsec / MUD_ONE_MSEC;
-#else
     struct timeval tv;
     gettimeofday(&tv, NULL);
-    now = (uint64_t)tv.tv_sec * MUD_ONE_SEC
-        + (uint64_t)tv.tv_usec;
+    return MUD_TIME_MASK(0
+            + (uint64_t)tv.tv_sec * MUD_ONE_SEC
+            + (uint64_t)tv.tv_usec);
+}
+
+static uint64_t
+mud_now(struct mud *mud)
+{
+#if defined __APPLE__
+    static mach_timebase_info_data_t mtid;
+    if (!mtid.denom)
+        mach_timebase_info(&mtid);
+    return MUD_TIME_MASK(mud->base_time
+            + (mach_absolute_time() * mtid.numer / mtid.denom)
+            / 1000ULL);
+#elif defined CLOCK_MONOTONIC
+    struct timespec tv;
+    clock_gettime(CLOCK_MONOTONIC, &tv);
+    return MUD_TIME_MASK(mud->base_time
+            + (uint64_t)tv.tv_sec * MUD_ONE_SEC
+            + (uint64_t)tv.tv_nsec / MUD_ONE_MSEC);
+#else
+    return mud_gettimeofday();
 #endif
-    return MUD_TIME_MASK(now);
 }
 
 static uint64_t
@@ -962,6 +980,12 @@ mud_create(struct sockaddr *addr)
 
     memcpy(&mud->addr, addr, addrlen);
 
+    uint64_t now = mud_now(mud);
+    uint64_t base_time = mud_gettimeofday();
+
+    if (base_time > now)
+        mud->base_time = base_time - now;
+
     return mud;
 }
 
@@ -1342,7 +1366,7 @@ mud_recv(struct mud *mud, void *data, size_t size)
         (packet_size <= (ssize_t)MUD_PKT_MIN_SIZE))
         return 0;
 
-    const uint64_t now = mud_now();
+    const uint64_t now = mud_now(mud);
     const uint64_t send_time = mud_read48(packet);
 
     mud_unmapv4(&addr);
@@ -1472,7 +1496,7 @@ mud_update(struct mud *mud, uint64_t now)
 long
 mud_send_wait(struct mud *mud)
 {
-    const uint64_t now = mud_now();
+    const uint64_t now = mud_now(mud);
 
     mud_update(mud, now);
 
@@ -1519,7 +1543,7 @@ mud_send(struct mud *mud, const void *data, size_t size, unsigned tc)
     }
 
     unsigned char packet[MUD_PKT_MAX_SIZE];
-    const uint64_t now = mud_now();
+    const uint64_t now = mud_now(mud);
     const int packet_size = mud_encrypt(mud, now,
                                         packet, sizeof(packet),
                                         data, size);
