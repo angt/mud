@@ -1553,15 +1553,9 @@ mud_send(struct mud *mud, const void *data, size_t size, unsigned tc)
         return -1;
     }
 
-    unsigned k = tc >> 8;
-
-    if (!k) {
-        const unsigned a = packet[packet_size - 1];
-        const unsigned b = packet[packet_size - 2];
-        k = (a << 8) | b;
-    } else {
-        k--;
-    }
+    const unsigned a = packet[packet_size - 1];
+    const unsigned b = packet[packet_size - 2];
+    const unsigned k = (a << 8) | b;
 
     return mud_send_path(mud, mud_select_path(mud, k),
                          now, packet, (size_t)packet_size, tc & 255, 0);
