@@ -179,9 +179,10 @@ mud_encrypt_opt(const struct mud_crypto_key *k,
                 const struct mud_crypto_opt *c)
 {
     if (k->aes) {
-        unsigned char npub[crypto_aead_aes256gcm_NPUBBYTES] = {0};
+        unsigned char npub[crypto_aead_aes256gcm_NPUBBYTES];
 
         memcpy(npub, c->dst, MUD_U48_SIZE);
+        memset(npub + MUD_U48_SIZE, 0, sizeof(npub) - MUD_U48_SIZE);
 
         return crypto_aead_aes256gcm_encrypt_afternm(
             c->dst + MUD_U48_SIZE,
@@ -195,9 +196,10 @@ mud_encrypt_opt(const struct mud_crypto_key *k,
             (const crypto_aead_aes256gcm_state *)&k->encrypt.state
         );
     } else {
-        unsigned char npub[crypto_aead_chacha20poly1305_NPUBBYTES] = {0};
+        unsigned char npub[crypto_aead_chacha20poly1305_NPUBBYTES];
 
         memcpy(npub, c->dst, MUD_U48_SIZE);
+        memset(npub + MUD_U48_SIZE, 0, sizeof(npub) - MUD_U48_SIZE);
 
         return crypto_aead_chacha20poly1305_encrypt(
             c->dst + MUD_U48_SIZE,
@@ -218,9 +220,10 @@ mud_decrypt_opt(const struct mud_crypto_key *k,
                 const struct mud_crypto_opt *c)
 {
     if (k->aes) {
-        unsigned char npub[crypto_aead_aes256gcm_NPUBBYTES] = {0};
+        unsigned char npub[crypto_aead_aes256gcm_NPUBBYTES];
 
         memcpy(npub, c->src, MUD_U48_SIZE);
+        memset(npub + MUD_U48_SIZE, 0, sizeof(npub) - MUD_U48_SIZE);
 
         return crypto_aead_aes256gcm_decrypt_afternm(
             c->dst,
@@ -233,9 +236,10 @@ mud_decrypt_opt(const struct mud_crypto_key *k,
             (const crypto_aead_aes256gcm_state *)&k->decrypt.state
         );
     } else {
-        unsigned char npub[crypto_aead_chacha20poly1305_NPUBBYTES] = {0};
+        unsigned char npub[crypto_aead_chacha20poly1305_NPUBBYTES];
 
         memcpy(npub, c->src, MUD_U48_SIZE);
+        memset(npub + MUD_U48_SIZE, 0, sizeof(npub) - MUD_U48_SIZE);
 
         return crypto_aead_chacha20poly1305_decrypt(
             c->dst,
@@ -368,7 +372,7 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
     if (!size || !path)
         return 0;
 
-    unsigned char ctrl[MUD_CTRL_SIZE] = {0};
+    unsigned char ctrl[MUD_CTRL_SIZE];
 
     struct iovec iov = {
         .iov_base = data,
@@ -381,6 +385,8 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
         .msg_iovlen = 1,
         .msg_control = ctrl,
     };
+
+    memset(ctrl, 0, sizeof(ctrl));
 
     if (path->addr.ss_family == AF_INET) {
         msg.msg_namelen = sizeof(struct sockaddr_in);
@@ -1113,8 +1119,10 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
                 uint64_t sent, uint64_t fwd_send, uint64_t fwd_dt, size_t size)
 {
     unsigned char dst[MUD_PKT_MAX_SIZE];
-    unsigned char src[MUD_PKT_MAX_SIZE] = {0};
+    unsigned char src[MUD_PKT_MAX_SIZE];
     struct mud_msg *msg = (struct mud_msg *)src;
+
+    memset(src, 0, sizeof(src));
 
     if (size < MUD_PKT_MIN_SIZE + sizeof(struct mud_msg))
         size = MUD_PKT_MIN_SIZE + sizeof(struct mud_msg);
