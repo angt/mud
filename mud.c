@@ -436,11 +436,7 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
         memcpy(CMSG_DATA(cmsg), &tc, sizeof(int));
     }
 
-    ssize_t ret = 0;
-
-    do {
-        ret = sendmsg(mud->fd, &msg, flags);
-    } while (ret == (ssize_t)-1 && errno == EAGAIN);
+    ssize_t ret = sendmsg(mud->fd, &msg, flags);
 
     path->send.total++;
     path->send.bytes += size;
