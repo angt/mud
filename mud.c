@@ -278,13 +278,21 @@ mud_read48(const unsigned char *src)
 }
 
 static uint64_t
-mud_gettimeofday(void)
+mud_time(void)
 {
+#if defined CLOCK_REALTIME
+    struct timespec tv;
+    clock_gettime(CLOCK_REALTIME, &tv);
+    return MUD_TIME_MASK(0
+            + (uint64_t)tv.tv_sec * MUD_ONE_SEC
+            + (uint64_t)tv.tv_nsec / MUD_ONE_MSEC);
+#else
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return MUD_TIME_MASK(0
             + (uint64_t)tv.tv_sec * MUD_ONE_SEC
             + (uint64_t)tv.tv_usec);
+#endif
 }
 
 static uint64_t
@@ -304,7 +312,7 @@ mud_now(struct mud *mud)
             + (uint64_t)tv.tv_sec * MUD_ONE_SEC
             + (uint64_t)tv.tv_nsec / MUD_ONE_MSEC);
 #else
-    return mud_gettimeofday();
+    return mud_time();
 #endif
 }
 
@@ -987,7 +995,7 @@ mud_create(struct sockaddr *addr)
     memcpy(&mud->addr, addr, addrlen);
 
     uint64_t now = mud_now(mud);
-    uint64_t base_time = mud_gettimeofday();
+    uint64_t base_time = mud_time();
 
     if (base_time > now)
         mud->base_time = base_time - now;
