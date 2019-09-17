@@ -22,6 +22,7 @@
 #include <netinet/in.h>
 
 #include <sodium.h>
+#include "aegis256/aegis256.h"
 
 #if !defined MSG_CONFIRM
 #define MSG_CONFIRM 0
@@ -98,7 +99,6 @@ struct mud_crypto_opt {
 struct mud_crypto_key {
     struct {
         unsigned char key[MUD_KEY_SIZE];
-        crypto_aead_aes256gcm_state state;
     } encrypt, decrypt;
     int aes;
 };
@@ -179,21 +179,20 @@ mud_encrypt_opt(const struct mud_crypto_key *k,
                 const struct mud_crypto_opt *c)
 {
     if (k->aes) {
-        unsigned char npub[crypto_aead_aes256gcm_NPUBBYTES];
+        unsigned char npub[AEGIS256_NPUBBYTES];
 
         memcpy(npub, c->dst, MUD_U48_SIZE);
         memset(npub + MUD_U48_SIZE, 0, sizeof(npub) - MUD_U48_SIZE);
 
-        return crypto_aead_aes256gcm_encrypt_afternm(
+        return aegis256_encrypt(
             c->dst + MUD_U48_SIZE,
             NULL,
             c->src,
             c->size,
             c->dst,
             MUD_U48_SIZE,
-            NULL,
             npub,
-            (const crypto_aead_aes256gcm_state *)&k->encrypt.state
+            k->encrypt.key
         );
     } else {
         unsigned char npub[crypto_aead_chacha20poly1305_NPUBBYTES];
@@ -220,20 +219,19 @@ mud_decrypt_opt(const struct mud_crypto_key *k,
                 const struct mud_crypto_opt *c)
 {
     if (k->aes) {
-        unsigned char npub[crypto_aead_aes256gcm_NPUBBYTES];
+        unsigned char npub[AEGIS256_NPUBBYTES];
 
         memcpy(npub, c->src, MUD_U48_SIZE);
         memset(npub + MUD_U48_SIZE, 0, sizeof(npub) - MUD_U48_SIZE);
 
-        return crypto_aead_aes256gcm_decrypt_afternm(
+        return aegis256_decrypt(
             c->dst,
-            NULL,
             NULL,
             c->src + MUD_U48_SIZE,
             c->size - MUD_U48_SIZE,
             c->src, MUD_U48_SIZE,
             npub,
-            (const crypto_aead_aes256gcm_state *)&k->decrypt.state
+            k->decrypt.key
         );
     } else {
         unsigned char npub[crypto_aead_chacha20poly1305_NPUBBYTES];
@@ -889,17 +887,6 @@ mud_keyx(struct mud *mud, unsigned char *remote, int aes)
 
     mud->crypto.next.aes = mud->crypto.aes && aes;
 
-    if (!mud->crypto.next.aes)
-        return 0;
-
-    crypto_aead_aes256gcm_beforenm((crypto_aead_aes256gcm_state *)
-                                       &mud->crypto.next.encrypt.state,
-                                   mud->crypto.next.encrypt.key);
-
-    crypto_aead_aes256gcm_beforenm((crypto_aead_aes256gcm_state *)
-                                       &mud->crypto.next.decrypt.state,
-                                   mud->crypto.next.decrypt.key);
-
     return 0;
 }
 
@@ -935,7 +922,7 @@ mud_keyx_init(struct mud *mud, uint64_t now)
 int
 mud_set_aes(struct mud *mud)
 {
-    if (!crypto_aead_aes256gcm_is_available()) {
+    if (!aegis256_is_available()) {
         errno = ENOTSUP;
         return -1;
     }
