@@ -81,7 +81,7 @@
 #define MUD_TIME_BITS    (48)
 #define MUD_TIME_MASK(X) ((X) & ((UINT64_C(1) << MUD_TIME_BITS) - 2))
 
-#define MUD_WINDOW_TIMEOUT     ( 50 * MUD_ONE_MSEC)
+#define MUD_WINDOW_TIMEOUT     (MUD_ONE_MSEC)
 #define MUD_KEYX_TIMEOUT       ( 60 * MUD_ONE_MIN)
 #define MUD_KEYX_RESET_TIMEOUT (200 * MUD_ONE_MSEC)
 #define MUD_TIME_TOLERANCE     ( 10 * MUD_ONE_MIN)
@@ -569,7 +569,6 @@ mud_update_rate(struct mud *mud, struct mud_path *path, uint64_t rate)
         return;
 
     path->rate_tx = rate;
-    path->window_size = (rate * MUD_WINDOW_TIMEOUT) / MUD_ONE_SEC;
 }
 
 static void
@@ -795,7 +794,7 @@ mud_set_state(struct mud *mud, struct sockaddr *addr,
         return -1;
 
     if (rate_tx)
-        mud_update_rate(mud, path, rate_tx);
+        path->rate_tx = rate_tx;
 
     if (rate_rx)
         path->rate_rx = rate_rx;
@@ -1293,7 +1292,7 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
     } else {
         mud_keyx_init(mud, now);
         path->state = (enum mud_state)msg->state;
-        mud_update_rate(mud, path, mud_read48(msg->rate));
+        path->rate_tx = mud_read48(msg->rate);
     }
 
     const int rem = memcmp(msg->pub,
@@ -1427,9 +1426,15 @@ mud_path_timeout(struct mud_path *path)
     return rtt > MUD_MSG_MIN_RTT ? rtt : MUD_MSG_MIN_RTT;
 }
 
-static void
-mud_update(struct mud *mud, uint64_t now)
+static int
+mud_update(struct mud *mud)
 {
+    uint64_t window = 0;
+    size_t mtu = 0;
+    unsigned ret = 0;
+
+    uint64_t now = mud_now(mud);
+
     if (mud->peer.set) {
         mud_keyx_init(mud, now);
 
@@ -1437,8 +1442,7 @@ mud_update(struct mud *mud, uint64_t now)
             mud_keyx_reset(mud);
     }
 
-    uint64_t window = 0;
-    size_t mtu = 0;
+    now = mud_now(mud);
 
     for (unsigned i = 0; i < mud->count; i++) {
         struct mud_path *path = &mud->paths[i];
@@ -1479,9 +1483,13 @@ mud_update(struct mud *mud, uint64_t now)
             if (!mtu || mtu > path->mtu.ok) {
                 mtu = path->mtu.ok;
             }
-            if (mud_timeout(now, path->window_time, MUD_WINDOW_TIMEOUT)) {
-                path->window = path->window_size;
+            if (path->window_time + MUD_WINDOW_TIMEOUT <= now) {
+                path->window += (path->rate_tx * (now - path->window_time))
+                    / MUD_ONE_SEC;
                 path->window_time = now;
+                const uint64_t rate_tx_max = path->rate_tx >> 2; // use rtt
+                if (path->window > rate_tx_max)
+                    path->window = rate_tx_max;
             }
         }
 
@@ -1490,49 +1498,25 @@ mud_update(struct mud *mud, uint64_t now)
                 mud_send_msg(mud, path, now, 0, 0, 0, path->mtu.probe);
         }
 
-        window += path->window;
+        if (path->window >= 1500)
+            window += path->window;
+
+        ret++;
     }
 
     mud->window = window;
     mud->mtu = mtu ?: MUD_MTU_MIN;
+
+    return ret;
 }
 
 long
 mud_send_wait(struct mud *mud)
 {
-    const uint64_t now = mud_now(mud);
+    if (!mud_update(mud))
+        return -1;
 
-    mud_update(mud, now);
-
-    if (mud->window)
-        return 0;
-
-    long dt = MUD_ONE_SEC - 1;
-    unsigned not_down = 0;
-
-    for (unsigned i = 0; i < mud->count; i++) {
-        struct mud_path *path = &mud->paths[i];
-
-        if (path->state <= MUD_DOWN)
-            continue;
-
-        not_down++;
-
-        if (!path->ok)
-            continue;
-
-        uint64_t elapsed = MUD_TIME_MASK(now - path->window_time);
-
-        if (elapsed >= MUD_WINDOW_TIMEOUT)
-            continue;
-
-        uint64_t new_dt = MUD_WINDOW_TIMEOUT - elapsed;
-
-        if ((uint64_t)dt > new_dt)
-            dt = (long)new_dt;
-    }
-
-    return not_down ? dt : -1;
+    return !mud->window;
 }
 
 int
