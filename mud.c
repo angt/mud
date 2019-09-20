@@ -563,15 +563,6 @@ mud_copy_port(struct sockaddr_storage *d, struct sockaddr_storage *s)
 }
 
 static void
-mud_update_rate(struct mud *mud, struct mud_path *path, uint64_t rate)
-{
-    if (!rate)
-        return;
-
-    path->rate_tx = rate;
-}
-
-static void
 mud_reset_path(struct mud *mud, struct mud_path *path)
 {
     path->window = 0;
