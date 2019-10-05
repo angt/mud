@@ -1246,6 +1246,9 @@ mud_update_window(struct mud *mud, struct mud_path *path,
                   uint64_t send_dt, uint64_t send_bytes,
                   uint64_t recv_dt, uint64_t recv_bytes)
 {
+    if (send_bytes && send_bytes >= recv_bytes)
+        path->loss = (send_bytes - recv_bytes) * 100 / send_bytes;
+
     // TODO
 }
 
