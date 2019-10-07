@@ -36,7 +36,8 @@ struct mud_path {
     uint64_t window;
     uint64_t window_time;
     uint64_t window_size;
-    uint64_t loss;
+    uint64_t loss_tx;
+    uint64_t loss_rx;
     struct {
         size_t min;
         size_t max;

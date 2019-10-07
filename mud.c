@@ -128,6 +128,7 @@ struct mud_msg {
     unsigned char recv[MUD_U48_SIZE];
  // unsigned char delay[MUD_U48_SIZE];
     unsigned char rate[MUD_U48_SIZE];
+    unsigned char loss;
 };
 
 struct mud {
@@ -1177,6 +1178,7 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
     mud_write48(msg->fwd_dt, fwd_dt);
     mud_write48(msg->fwd_send, fwd_send);
     mud_write48(msg->rate, path->rate_rx);
+    msg->loss = (unsigned char)path->loss_tx;
 
     const struct mud_crypto_opt opt = {
         .dst = dst,
@@ -1247,7 +1249,7 @@ mud_update_window(struct mud *mud, struct mud_path *path,
                   uint64_t recv_dt, uint64_t recv_bytes)
 {
     if (send_bytes && send_bytes >= recv_bytes)
-        path->loss = (send_bytes - recv_bytes) * 100 / send_bytes;
+        path->loss_tx = (send_bytes - recv_bytes) * 100 / send_bytes;
 
     // TODO
 }
@@ -1275,12 +1277,14 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
         }
 
         mud_update_stat(&path->rtt, MUD_TIME_MASK(now - peer_sent));
+
         mud_update_window(mud, path, now, sent,
                 mud_read48(msg->fwd_dt),
                 mud_read48(msg->fwd_send),
                 mud_read48(msg->dt),
                 mud_read48(msg->recv));
 
+        path->loss_rx = (uint64_t)msg->loss;
         path->msg_sent = 0;
         path->ok = 1;
     } else {
