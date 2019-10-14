@@ -119,13 +119,13 @@ struct mud_msg {
     unsigned char sent[MUD_U48_SIZE];
     unsigned char state;
     struct mud_addr addr;
-    unsigned char pub[MUD_PUB_SIZE];
+    unsigned char pk[MUD_PUBKEY_SIZE];
     unsigned char aes;
     unsigned char fwd_dt[MUD_U48_SIZE];
-    unsigned char fwd_send[MUD_U48_SIZE];
+    unsigned char fwd_tx[MUD_U48_SIZE];
     unsigned char dt[MUD_U48_SIZE];
-    unsigned char send[MUD_U48_SIZE];
-    unsigned char recv[MUD_U48_SIZE];
+    unsigned char tx[MUD_U48_SIZE];
+    unsigned char rx[MUD_U48_SIZE];
  // unsigned char delay[MUD_U48_SIZE];
     unsigned char rate[MUD_U48_SIZE];
     unsigned char loss;
@@ -141,7 +141,7 @@ struct mud {
     struct {
         uint64_t time;
         unsigned char secret[crypto_scalarmult_SCALARBYTES];
-        struct mud_public pub;
+        struct mud_pubkey pk;
         struct mud_crypto_key private, last, next, current;
         int ready;
         int use_next;
@@ -445,9 +445,9 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
 
     ssize_t ret = sendmsg(mud->fd, &msg, flags);
 
-    path->send.total++;
-    path->send.bytes += size;
-    path->send.time = now;
+    path->tx.total++;
+    path->tx.bytes += size;
+    path->tx.time = now;
 
     if (path->window > size) {
         mud->window -= size;
@@ -786,10 +786,10 @@ mud_set_state(struct mud *mud, struct sockaddr *addr,
         return -1;
 
     if (rate_tx)
-        path->rate_tx = rate_tx;
+        path->tx.rate = rate_tx;
 
     if (rate_rx)
-        path->rate_rx = rate_rx;
+        path->rx.rate = rate_rx;
 
     if (state && path->state != state) {
         path->state = state;
@@ -830,7 +830,7 @@ mud_setup_socket(int fd, int v4, int v6)
 
 static void
 mud_keyx_set(struct mud *mud, unsigned char *key, unsigned char *secret,
-             unsigned char *pub0, unsigned char *pub1)
+             unsigned char *pk0, unsigned char *pk1)
 {
     crypto_generichash_state state;
 
@@ -838,8 +838,8 @@ mud_keyx_set(struct mud *mud, unsigned char *key, unsigned char *secret,
                             MUD_KEY_SIZE, MUD_KEY_SIZE);
 
     crypto_generichash_update(&state, secret, crypto_scalarmult_BYTES);
-    crypto_generichash_update(&state, pub0, MUD_PUB_SIZE);
-    crypto_generichash_update(&state, pub1, MUD_PUB_SIZE);
+    crypto_generichash_update(&state, pk0, MUD_PUBKEY_SIZE);
+    crypto_generichash_update(&state, pk1, MUD_PUBKEY_SIZE);
 
     crypto_generichash_final(&state, key, MUD_KEY_SIZE);
 
@@ -867,14 +867,14 @@ mud_keyx(struct mud *mud, unsigned char *remote, int aes)
     if (crypto_scalarmult(secret, mud->crypto.secret, remote))
         return 1;
 
-    unsigned char *local = mud->crypto.pub.local;
+    unsigned char *local = mud->crypto.pk.local;
 
     mud_keyx_set(mud, mud->crypto.next.encrypt.key, secret, remote, local);
     mud_keyx_set(mud, mud->crypto.next.decrypt.key, secret, local, remote);
 
     sodium_memzero(secret, sizeof(secret));
 
-    memcpy(mud->crypto.pub.remote, remote, MUD_PUB_SIZE);
+    memcpy(mud->crypto.pk.remote, remote, MUD_PUBKEY_SIZE);
 
     mud->crypto.next.aes = mud->crypto.aes && aes;
 
@@ -902,8 +902,8 @@ mud_keyx_init(struct mud *mud, uint64_t now)
 
     do {
         randombytes_buf(mud->crypto.secret, sizeof(mud->crypto.secret));
-        crypto_scalarmult_base(mud->crypto.pub.local, mud->crypto.secret);
-    } while (crypto_scalarmult(tmp, test, mud->crypto.pub.local));
+        crypto_scalarmult_base(mud->crypto.pk.local, mud->crypto.secret);
+    } while (crypto_scalarmult(tmp, test, mud->crypto.pk.local));
 
     sodium_memzero(tmp, sizeof(tmp));
 
@@ -1102,7 +1102,7 @@ mud_localaddr(struct sockaddr_storage *addr, struct msghdr *msg)
 
 static int
 mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
-                uint64_t sent, uint64_t fwd_send, uint64_t fwd_dt, size_t size)
+                uint64_t sent, uint64_t fwd_tx, uint64_t fwd_dt, size_t size)
 {
     unsigned char dst[MUD_PKT_MAX_SIZE];
     unsigned char src[MUD_PKT_MAX_SIZE];
@@ -1135,40 +1135,40 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
 
     msg->state = (unsigned char)path->state;
 
-    memcpy(msg->pub,
-           mud->crypto.pub.local,
-           sizeof(mud->crypto.pub.local));
+    memcpy(msg->pk,
+           mud->crypto.pk.local,
+           sizeof(mud->crypto.pk.local));
 
     msg->aes = (unsigned char)mud->crypto.aes;
 
     uint64_t dt = 0;
 
-    mud_write48(msg->send, path->send.bytes);
-    mud_write48(msg->recv, path->recv.bytes);
+    mud_write48(msg->tx, path->tx.bytes);
+    mud_write48(msg->rx, path->rx.bytes);
 
     if (mud->peer.set) {
         if (sent) {
-            dt = MUD_TIME_MASK(now - path->recv.msg_time);
+            dt = MUD_TIME_MASK(now - path->rx.msg_time);
 
-            path->recv.bytes = 0;
-            path->recv.msg_time = now;
+            path->rx.bytes = 0;
+            path->rx.msg_time = now;
         } else {
-            dt = MUD_TIME_MASK(now - path->send.msg_time);
+            dt = MUD_TIME_MASK(now - path->tx.msg_time);
 
-            path->send.bytes = 0;
-            path->send.msg_time = now;
+            path->tx.bytes = 0;
+            path->tx.msg_time = now;
 
             if (path->msg_sent < MUD_MSG_SENT_MAX)
                 path->msg_sent++;
         }
     } else {
-        dt = MUD_TIME_MASK(now - path->recv.msg_time);
+        dt = MUD_TIME_MASK(now - path->rx.msg_time);
 
-        path->send.bytes = 0;
-        path->send.msg_time = now;
+        path->tx.bytes = 0;
+        path->tx.msg_time = now;
 
-        path->recv.bytes = 0;
-        path->recv.msg_time = now;
+        path->rx.bytes = 0;
+        path->rx.msg_time = now;
 
         if (path->msg_sent < MUD_MSG_SENT_MAX)
             path->msg_sent++;
@@ -1176,9 +1176,9 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
 
     mud_write48(msg->dt, dt);
     mud_write48(msg->fwd_dt, fwd_dt);
-    mud_write48(msg->fwd_send, fwd_send);
-    mud_write48(msg->rate, path->rate_rx);
-    msg->loss = (unsigned char)path->loss_tx;
+    mud_write48(msg->fwd_tx, fwd_tx);
+    mud_write48(msg->rate, path->rx.rate);
+    msg->loss = (unsigned char)path->tx.loss;
 
     const struct mud_crypto_opt opt = {
         .dst = dst,
@@ -1249,7 +1249,7 @@ mud_update_window(struct mud *mud, struct mud_path *path,
                   uint64_t recv_dt, uint64_t recv_bytes)
 {
     if (send_bytes && send_bytes >= recv_bytes)
-        path->loss_tx = (send_bytes - recv_bytes) * 100 / send_bytes;
+        path->tx.loss = (send_bytes - recv_bytes) * 100 / send_bytes;
 
     // TODO
 }
@@ -1280,29 +1280,29 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
 
         mud_update_window(mud, path, now, sent,
                 mud_read48(msg->fwd_dt),
-                mud_read48(msg->fwd_send),
+                mud_read48(msg->fwd_tx),
                 mud_read48(msg->dt),
-                mud_read48(msg->recv));
+                mud_read48(msg->rx));
 
-        path->loss_rx = (uint64_t)msg->loss;
+        path->rx.loss = (uint64_t)msg->loss;
         path->msg_sent = 0;
         path->ok = 1;
     } else {
         mud_keyx_init(mud, now);
         path->state = (enum mud_state)msg->state;
-        path->rate_tx = mud_read48(msg->rate);
+        path->tx.rate = mud_read48(msg->rate);
     }
 
-    const int rem = memcmp(msg->pub,
-                           mud->crypto.pub.remote,
-                           MUD_PUB_SIZE);
+    const int rem = memcmp(msg->pk,
+                           mud->crypto.pk.remote,
+                           MUD_PUBKEY_SIZE);
 
-    const int loc = memcmp(path->pub.local,
-                           mud->crypto.pub.local,
-                           MUD_PUB_SIZE);
+    const int loc = memcmp(path->pk.local,
+                           mud->crypto.pk.local,
+                           MUD_PUBKEY_SIZE);
 
     if (rem || loc) {
-        if (mud_keyx(mud, msg->pub, msg->aes)) {
+        if (mud_keyx(mud, msg->pk, msg->aes)) {
             mud->bad.keyx.addr = path->addr;
             mud->bad.keyx.time = now;
             return;
@@ -1313,26 +1313,26 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
                 if (mud->paths[i].state == MUD_EMPTY)
                     continue;
 
-                if (memcmp(mud->paths[i].pub.remote,
-                           path->pub.remote,
-                           MUD_PUB_SIZE) &&
-                    memcmp(mud->paths[i].pub.remote,
-                           msg->pub,
-                           MUD_PUB_SIZE))
+                if (memcmp(mud->paths[i].pk.remote,
+                           path->pk.remote,
+                           MUD_PUBKEY_SIZE) &&
+                    memcmp(mud->paths[i].pk.remote,
+                           msg->pk,
+                           MUD_PUBKEY_SIZE))
                     mud->paths[i].state = MUD_EMPTY;
             }
         }
 
-        path->pub = mud->crypto.pub;
+        path->pk = mud->crypto.pk;
     } else {
         mud->crypto.use_next = 1;
     }
 
     const uint64_t fwd_dt = mud_read48(msg->dt);
-    const uint64_t fwd_send = mud_read48(msg->send);
+    const uint64_t fwd_tx = mud_read48(msg->tx);
 
     if (!peer_sent || mud->peer.set)
-        mud_send_msg(mud, path, now, sent, fwd_send, fwd_dt, size);
+        mud_send_msg(mud, path, now, sent, fwd_tx, fwd_dt, size);
 }
 
 int
@@ -1404,9 +1404,9 @@ mud_recv(struct mud *mud, void *data, size_t size)
     if (MUD_MSG(send_time))
         mud_recv_msg(mud, path, now, send_time, data, (size_t)packet_size);
 
-    path->recv.total++;
-    path->recv.time = now;
-    path->recv.bytes += (size_t)packet_size;
+    path->rx.total++;
+    path->rx.time = now;
+    path->rx.bytes += (size_t)packet_size;
 
     mud->last_recv_time = now;
 
@@ -1447,7 +1447,7 @@ mud_update(struct mud *mud)
 
         if (path->state <= MUD_DOWN) {
             if (path->state == MUD_DOWN &&
-                mud_timeout(now, path->recv.time, 10 * MUD_ONE_SEC))
+                mud_timeout(now, path->rx.time, 10 * MUD_ONE_SEC))
                 path->state = MUD_EMPTY;
             continue;
         }
@@ -1470,8 +1470,8 @@ mud_update(struct mud *mud)
             }
         } else {
             if ((path->msg_sent >= MUD_MSG_SENT_MAX) ||
-                (path->recv.time &&
-                 mud->last_recv_time > path->recv.time + MUD_ONE_SEC)) {
+                (path->rx.time &&
+                 mud->last_recv_time > path->rx.time + MUD_ONE_SEC)) {
                 path->state = MUD_EMPTY;
                 continue;
             }
@@ -1482,17 +1482,17 @@ mud_update(struct mud *mud)
                 mtu = path->mtu.ok;
             }
             if (path->window_time + MUD_WINDOW_TIMEOUT <= now) {
-                path->window += (path->rate_tx * (now - path->window_time))
+                path->window += (path->tx.rate * (now - path->window_time))
                     / MUD_ONE_SEC;
                 path->window_time = now;
-                const uint64_t rate_tx_max = path->rate_tx >> 2; // use rtt
+                const uint64_t rate_tx_max = path->tx.rate >> 2; // use rtt
                 if (path->window > rate_tx_max)
                     path->window = rate_tx_max;
             }
         }
 
         if (mud->peer.set) {
-            if (mud_timeout(now, path->send.msg_time, mud_path_timeout(path)))
+            if (mud_timeout(now, path->tx.msg_time, mud_path_timeout(path)))
                 mud_send_msg(mud, path, now, 0, 0, 0, path->mtu.probe);
         }
 

@@ -4,8 +4,8 @@
 #include <inttypes.h>
 #include <sys/socket.h>
 
-#define MUD_PATH_MAX (32U)
-#define MUD_PUB_SIZE (32U)
+#define MUD_PATH_MAX    (32U)
+#define MUD_PUBKEY_SIZE (32U)
 
 struct mud;
 
@@ -16,9 +16,9 @@ enum mud_state {
     MUD_UP,
 };
 
-struct mud_public {
-    unsigned char remote[MUD_PUB_SIZE];
-    unsigned char local[MUD_PUB_SIZE];
+struct mud_pubkey {
+    unsigned char remote[MUD_PUBKEY_SIZE];
+    unsigned char local[MUD_PUBKEY_SIZE];
 };
 
 struct mud_stat {
@@ -31,26 +31,24 @@ struct mud_path {
     enum mud_state state;
     struct sockaddr_storage local_addr, addr, r_addr;
     struct mud_stat rtt;
-    uint64_t rate_tx;
-    uint64_t rate_rx;
-    uint64_t window;
-    uint64_t window_time;
-    uint64_t window_size;
-    uint64_t loss_tx;
-    uint64_t loss_rx;
+    struct {
+        uint64_t total;
+        uint64_t bytes;
+        uint64_t time;
+        uint64_t msg_time;
+        uint64_t rate;
+        uint64_t rate_max;
+        uint64_t loss;
+    } tx, rx;
     struct {
         size_t min;
         size_t max;
         size_t probe;
         size_t ok;
     } mtu;
-    struct {
-        uint64_t total;
-        uint64_t bytes;
-        uint64_t time;
-        uint64_t msg_time;
-    } send, recv;
-    struct mud_public pub;
+    uint64_t window;
+    uint64_t window_time;
+    struct mud_pubkey pk;
     unsigned char ok;
     unsigned msg_sent;
 };
