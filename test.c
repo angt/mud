@@ -83,11 +83,9 @@ main(int argc, char **argv)
                 }
             }
 
-            size_t len = strlen(argv[1]);
-
             // we can safely call mud_send()
             // even if the link is not ready
-            int r = mud_send(mud, argv[1], len, 0);
+            int r = mud_send(mud, argv[1], strlen(argv[1]), 0);
 
             if (r == -1) {
                 if (errno == EAGAIN)
@@ -98,7 +96,7 @@ main(int argc, char **argv)
             }
 
             // we sent everything, bye :)
-            if ((size_t)r == len)
+            if (r)
                 break;
         } else {
             int r = mud_recv(mud, buf, sizeof(buf));
