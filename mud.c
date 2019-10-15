@@ -654,13 +654,12 @@ mud_ss_from_sa(struct sockaddr_storage *ss, struct sockaddr *sa)
         break;
     case AF_INET6:
         memcpy(ss, sa, sizeof(struct sockaddr_in6));
+        mud_unmapv4(ss);
         break;
     default:
         errno = EINVAL;
         return -1;
     }
-
-    mud_unmapv4(ss);
 
     return 0;
 }
@@ -1093,9 +1092,8 @@ mud_localaddr(struct sockaddr_storage *addr, struct msghdr *msg)
         memcpy(&((struct sockaddr_in6 *)addr)->sin6_addr,
                &((struct in6_pktinfo *)CMSG_DATA(cmsg))->ipi6_addr,
                sizeof(struct in6_addr));
+        mud_unmapv4(addr);
     }
-
-    mud_unmapv4(addr);
 
     return 0;
 }
