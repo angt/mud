@@ -53,6 +53,14 @@ struct mud_path {
     unsigned msg_sent;
 };
 
+struct mud_bad {
+    struct {
+        struct sockaddr_storage addr;
+        uint64_t time;
+        uint64_t count;
+    } decrypt, difftime, keyx;
+};
+
 struct mud *mud_create (struct sockaddr *);
 void        mud_delete (struct mud *);
 
@@ -63,6 +71,8 @@ int mud_get_key (struct mud *, unsigned char *, size_t *);
 
 void   mud_set_mtu (struct mud *, size_t);
 size_t mud_get_mtu (struct mud *);
+
+int mud_get_bad (struct mud *, struct mud_bad *);
 
 long mud_send_wait (struct mud *);
 

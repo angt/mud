@@ -154,12 +154,7 @@ struct mud {
         int set;
         struct sockaddr_storage addr;
     } peer;
-    struct {
-        struct {
-            struct sockaddr_storage addr;
-            uint64_t time;
-        } decrypt, difftime, keyx;
-    } bad;
+    struct mud_bad bad;
     uint64_t window;
     uint64_t base_time;
 };
@@ -671,6 +666,19 @@ mud_peer(struct mud *mud, struct sockaddr *peer)
         return -1;
 
     mud->peer.set = 1;
+
+    return 0;
+}
+
+int
+mud_get_bad(struct mud *mud, struct mud_bad *bad)
+{
+    if (!bad) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    memcpy(bad, &mud->bad, sizeof(struct mud_bad));
 
     return 0;
 }
@@ -1303,6 +1311,7 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
         if (mud_keyx(mud, msg->pk, msg->aes)) {
             mud->bad.keyx.addr = path->addr;
             mud->bad.keyx.time = now;
+            mud->bad.keyx.count++;
             return;
         }
 
@@ -1373,6 +1382,7 @@ mud_recv(struct mud *mud, void *data, size_t size)
         (MUD_TIME_MASK(send_time - now) > mud->time_tolerance)) {
         mud->bad.difftime.addr = addr;
         mud->bad.difftime.time = now;
+        mud->bad.difftime.count++;
         return 0;
     }
 
@@ -1383,6 +1393,7 @@ mud_recv(struct mud *mud, void *data, size_t size)
     if (ret <= 0) {
         mud->bad.decrypt.addr = addr;
         mud->bad.decrypt.time = now;
+        mud->bad.decrypt.count++;
         return 0;
     }
 
