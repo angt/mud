@@ -51,6 +51,7 @@ struct mud_path {
     struct mud_pubkey pk;
     unsigned char ok;
     unsigned msg_sent;
+    unsigned loss_count;
 };
 
 struct mud_bad {

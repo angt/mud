@@ -86,6 +86,9 @@
 #define MUD_KEYX_RESET_TIMEOUT (200 * MUD_ONE_MSEC)
 #define MUD_TIME_TOLERANCE     ( 10 * MUD_ONE_MIN)
 
+#define MUD_LOSS_LIMIT (20)
+#define MUD_LOSS_COUNT (3)
+
 #define MUD_CTRL_SIZE (CMSG_SPACE(MUD_PKTINFO_SIZE) + \
                        CMSG_SPACE(sizeof(struct in6_pktinfo)) + \
                        CMSG_SPACE(sizeof(int)))
@@ -135,6 +138,7 @@ struct mud {
     int fd;
     uint64_t time_tolerance;
     uint64_t keyx_timeout;
+    unsigned loss_limit;
     struct sockaddr_storage addr;
     struct mud_path *paths;
     unsigned count;
@@ -564,6 +568,7 @@ mud_reset_path(struct mud *mud, struct mud_path *path)
     path->window = 0;
     path->ok = 0;
     path->msg_sent = 0;
+    path->loss_count = 0;
 }
 
 static struct mud_path *
@@ -733,6 +738,19 @@ mud_set_tc(struct mud *mud, int tc)
     }
 
     mud->msg_tc = tc;
+
+    return 0;
+}
+
+int
+mud_set_loss_limit(struct mud *mud, unsigned loss)
+{
+    if (loss > 100) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    mud->loss_limit = loss;
 
     return 0;
 }
@@ -976,6 +994,7 @@ mud_create(struct sockaddr *addr)
     mud->keyx_timeout = MUD_KEYX_TIMEOUT;
     mud->msg_tc = MUD_MSG_TC;
     mud->mtu = MUD_MTU_MIN;
+    mud->loss_limit = MUD_LOSS_LIMIT;
 
     memcpy(&mud->addr, addr, addrlen);
 
@@ -1254,8 +1273,14 @@ mud_update_window(struct mud *mud, struct mud_path *path,
                   uint64_t send_dt, uint64_t send_bytes,
                   uint64_t recv_dt, uint64_t recv_bytes)
 {
-    if (send_bytes && send_bytes >= recv_bytes)
+    if (send_bytes && send_bytes >= recv_bytes) {
         path->tx.loss = (send_bytes - recv_bytes) * 100 / send_bytes;
+        if (path->tx.loss < mud->loss_limit) {
+            path->loss_count = 0;
+        } else if (path->loss_count < MUD_LOSS_COUNT) {
+            path->loss_count++;
+        }
+    }
 
     // TODO
 }
@@ -1485,6 +1510,9 @@ mud_update(struct mud *mud)
                 continue;
             }
         }
+
+        if (path->loss_count == MUD_LOSS_COUNT)
+            mud_reset_path(mud, path);
 
         if (path->ok) {
             if (!mtu || mtu > path->mtu.ok) {
