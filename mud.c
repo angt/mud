@@ -1276,9 +1276,11 @@ mud_update_window(struct mud *mud, struct mud_path *path,
     if (send_bytes && send_bytes >= recv_bytes) {
         path->tx.loss = (send_bytes - recv_bytes) * 100 / send_bytes;
         if (path->tx.loss < mud->loss_limit) {
-            path->loss_count = 0;
-        } else if (path->loss_count < MUD_LOSS_COUNT) {
-            path->loss_count++;
+            if (path->loss_count > -MUD_LOSS_COUNT)
+                path->loss_count--;
+        } else {
+            if (path->loss_count < MUD_LOSS_COUNT)
+                path->loss_count++;
         }
     }
 
@@ -1317,7 +1319,9 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
 
         path->rx.loss = (uint64_t)msg->loss;
         path->msg_sent = 0;
-        path->ok = 1;
+
+        if (path->loss_count == -MUD_LOSS_COUNT) // tmp hack
+            path->ok = 1;
     } else {
         mud_keyx_init(mud, now);
         path->state = (enum mud_state)msg->state;
