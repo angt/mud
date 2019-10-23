@@ -79,6 +79,7 @@ long mud_send_wait (struct mud *);
 
 int mud_set_time_tolerance (struct mud *, unsigned long);
 int mud_set_keyx_timeout   (struct mud *, unsigned long);
+int mud_set_loss_limit     (struct mud *, unsigned);
 int mud_set_tc             (struct mud *, int);
 int mud_set_aes            (struct mud *);
 
