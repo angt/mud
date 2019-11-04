@@ -795,42 +795,6 @@ mud_set_keyx_timeout(struct mud *mud, unsigned long msec)
     return mud_set_msec(&mud->keyx_timeout, msec);
 }
 
-int
-mud_set_state(struct mud *mud, struct sockaddr *addr,
-              enum mud_state state,
-              unsigned long rate_tx,
-              unsigned long rate_rx)
-{
-    if (!mud->peer.set || state > MUD_UP) {
-        errno = EINVAL;
-        return -1;
-    }
-
-    struct sockaddr_storage local_addr;
-
-    if (mud_ss_from_sa(&local_addr, addr))
-        return -1;
-
-    struct mud_path *path = mud_get_path(mud,
-            &local_addr, &mud->peer.addr, state > MUD_DOWN);
-
-    if (!path)
-        return -1;
-
-    if (rate_tx)
-        path->tx.rate = rate_tx;
-
-    if (rate_rx)
-        path->rx.rate = rate_rx;
-
-    if (state && path->state != state) {
-        path->state = state;
-        mud_reset_path(path); // XXX
-    }
-
-    return 0;
-}
-
 size_t
 mud_get_mtu(struct mud *mud)
 {
@@ -1554,6 +1518,42 @@ mud_update(struct mud *mud)
     mud->mtu = mtu ?: MUD_MTU_MIN;
 
     return ret;
+}
+
+int
+mud_set_state(struct mud *mud, struct sockaddr *addr,
+              enum mud_state state,
+              unsigned long rate_tx,
+              unsigned long rate_rx)
+{
+    if (!mud->peer.set || state > MUD_UP) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    struct sockaddr_storage local_addr;
+
+    if (mud_ss_from_sa(&local_addr, addr))
+        return -1;
+
+    struct mud_path *path = mud_get_path(mud,
+            &local_addr, &mud->peer.addr, state > MUD_DOWN);
+
+    if (!path)
+        return -1;
+
+    if (rate_tx)
+        path->tx.rate = rate_tx;
+
+    if (rate_rx)
+        path->rx.rate = rate_rx;
+
+    if (state && path->state != state) {
+        path->state = state;
+        mud_reset_path(path); // XXX
+    }
+
+    return 0;
 }
 
 long
