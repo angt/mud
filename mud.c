@@ -642,8 +642,6 @@ mud_get_path(struct mud *mud, struct sockaddr_storage *local_addr,
     path->mtu.max = MUD_MTU_MAX;
     path->mtu.probe = MUD_MTU_MAX;
 
-    mud_reset_path(path);
-
     return path;
 }
 
