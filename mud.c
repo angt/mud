@@ -563,12 +563,19 @@ mud_copy_port(struct sockaddr_storage *d, struct sockaddr_storage *s)
 }
 
 static void
-mud_reset_path(struct mud *mud, struct mud_path *path)
+mud_reset_path(struct mud_path *path)
 {
     path->window = 0;
     path->ok = 0;
     path->msg_sent = 0;
     path->loss_count = 0;
+}
+
+static void
+mud_remove_path(struct mud_path *path)
+{
+    memset(path, 0, sizeof(struct mud_path));
+    path->state = MUD_EMPTY;
 }
 
 static struct mud_path *
@@ -635,7 +642,7 @@ mud_get_path(struct mud *mud, struct sockaddr_storage *local_addr,
     path->mtu.max = MUD_MTU_MAX;
     path->mtu.probe = MUD_MTU_MAX;
 
-    mud_reset_path(mud, path);
+    mud_reset_path(path);
 
     return path;
 }
@@ -818,7 +825,7 @@ mud_set_state(struct mud *mud, struct sockaddr *addr,
 
     if (state && path->state != state) {
         path->state = state;
-        mud_reset_path(mud, path); // XXX
+        mud_reset_path(path); // XXX
     }
 
     return 0;
@@ -1486,19 +1493,19 @@ mud_update(struct mud *mud)
         if (path->state <= MUD_DOWN) {
             if (path->state == MUD_DOWN &&
                 mud_timeout(now, path->rx.time, 10 * MUD_ONE_SEC))
-                path->state = MUD_EMPTY;
+                mud_remove_path(path);
             continue;
         }
 
         if (mud->peer.set) {
             if (path->msg_sent >= MUD_MSG_SENT_MAX) {
                 if (path->mtu.probe == MUD_MTU_MIN) {
-                    mud_reset_path(mud, path);
+                    mud_reset_path(path);
                 } else {
                     if (path->mtu.ok == path->mtu.probe) {
                         path->mtu.min = MUD_MTU_MIN;
                         path->mtu.ok = MUD_MTU_MIN;
-                        mud_reset_path(mud, path);
+                        mud_reset_path(path);
                     } else {
                         path->msg_sent = 0;
                     }
@@ -1510,13 +1517,13 @@ mud_update(struct mud *mud)
             if ((path->msg_sent >= MUD_MSG_SENT_MAX) ||
                 (path->rx.time &&
                  mud->last_recv_time > path->rx.time + MUD_ONE_SEC)) {
-                path->state = MUD_EMPTY;
+                mud_remove_path(path);
                 continue;
             }
         }
 
         if (path->loss_count == MUD_LOSS_COUNT)
-            mud_reset_path(mud, path);
+            mud_reset_path(path);
 
         if (path->ok) {
             if (!mtu || mtu > path->mtu.ok) {
