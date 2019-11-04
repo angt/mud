@@ -1548,7 +1548,8 @@ mud_set_state(struct mud *mud, struct sockaddr *addr,
 
     if (state && path->state != state) {
         path->state = state;
-        mud_reset_path(path); // XXX
+        mud_reset_path(path);
+        mud_update(mud);
     }
 
     return 0;
