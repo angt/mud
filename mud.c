@@ -1540,11 +1540,15 @@ mud_set_state(struct mud *mud, struct sockaddr *addr,
     if (!path)
         return -1;
 
-    if (rate_tx)
+    if (rate_tx) {
         path->tx.rate = rate_tx;
+        path->tx.rate_max = rate_tx;
+    }
 
-    if (rate_rx)
+    if (rate_rx) {
         path->rx.rate = rate_rx;
+        path->rx.rate_max = rate_rx;
+    }
 
     if (state && path->state != state) {
         path->state = state;
