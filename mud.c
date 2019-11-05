@@ -1242,14 +1242,18 @@ mud_update_window(struct mud *mud, struct mud_path *path,
                   uint64_t send_dt, uint64_t send_bytes,
                   uint64_t recv_dt, uint64_t recv_bytes)
 {
-    if (send_bytes && send_bytes >= recv_bytes) {
-        path->tx.loss = (send_bytes - recv_bytes) * 100 / send_bytes;
-        if (path->tx.loss < mud->loss_limit) {
-            if (path->loss_count > -MUD_LOSS_COUNT)
-                path->loss_count--;
-        } else {
-            if (path->loss_count < MUD_LOSS_COUNT)
+    if (recv_bytes && send_bytes >= recv_bytes) {
+        uint64_t loss = send_bytes - recv_bytes;
+        path->tx.loss = loss * 100 / send_bytes;
+        if (path->tx.loss > mud->loss_limit) {
+            if (path->loss_count < MUD_LOSS_COUNT) {
                 path->loss_count++;
+            } else {
+                path->loss_count = 0;
+                path->tx.rate -= loss * path->tx.rate / send_bytes;
+            }
+        } else {
+            path->loss_count = 0;
         }
     }
 
@@ -1288,9 +1292,7 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
 
         path->rx.loss = (uint64_t)msg->loss;
         path->msg_sent = 0;
-
-        if (path->loss_count == -MUD_LOSS_COUNT) // tmp hack
-            path->ok = 1;
+        path->ok = 1;
     } else {
         mud_keyx_init(mud, now);
         path->state = (enum mud_state)msg->state;
@@ -1483,9 +1485,6 @@ mud_update(struct mud *mud)
                 continue;
             }
         }
-
-        if (path->loss_count == MUD_LOSS_COUNT)
-            mud_reset_path(path);
 
         if (path->ok) {
             if (!mtu || mtu > path->mtu.ok) {
