@@ -468,9 +468,6 @@ mud_sso_int(int fd, int level, int optname, int opt)
 static int
 mud_cmp_addr(struct sockaddr_storage *a, struct sockaddr_storage *b)
 {
-    if (a == b)
-        return 0;
-
     if (a->ss_family != b->ss_family)
         return 1;
 
