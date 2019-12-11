@@ -475,7 +475,8 @@ mud_cmp_addr(struct sockaddr_storage *a, struct sockaddr_storage *b)
         struct sockaddr_in *_a = (struct sockaddr_in *)a;
         struct sockaddr_in *_b = (struct sockaddr_in *)b;
 
-        return ((_a->sin_port != _b->sin_port) ||
+        return ((memcmp(&_a->sin_port, &_b->sin_port,
+                        sizeof(_a->sin_port))) ||
                 (memcmp(&_a->sin_addr, &_b->sin_addr,
                         sizeof(_a->sin_addr))));
     }
@@ -484,7 +485,8 @@ mud_cmp_addr(struct sockaddr_storage *a, struct sockaddr_storage *b)
         struct sockaddr_in6 *_a = (struct sockaddr_in6 *)a;
         struct sockaddr_in6 *_b = (struct sockaddr_in6 *)b;
 
-        return ((_a->sin6_port != _b->sin6_port) ||
+        return ((memcmp(&_a->sin6_port, &_b->sin6_port,
+                        sizeof(_a->sin6_port))) ||
                 (memcmp(&_a->sin6_addr, &_b->sin6_addr,
                         sizeof(_a->sin6_addr))));
     }
@@ -538,23 +540,27 @@ mud_get_paths(struct mud *mud, unsigned *ret_count)
 static void
 mud_copy_port(struct sockaddr_storage *d, struct sockaddr_storage *s)
 {
-    uint16_t port = 0;
+    void *port;
 
     switch (s->ss_family) {
     case AF_INET:
-        port = ((struct sockaddr_in *)s)->sin_port;
+        port = &((struct sockaddr_in *)s)->sin_port;
         break;
     case AF_INET6:
-        port = ((struct sockaddr_in6 *)s)->sin6_port;
+        port = &((struct sockaddr_in6 *)s)->sin6_port;
         break;
+    default:
+        return;
     }
 
     switch (d->ss_family) {
     case AF_INET:
-        ((struct sockaddr_in *)d)->sin_port = port;
+        memcpy(&((struct sockaddr_in *)d)->sin_port,
+               port, sizeof(in_port_t));
         break;
     case AF_INET6:
-        ((struct sockaddr_in6 *)d)->sin6_port = port;
+        memcpy(&((struct sockaddr_in6 *)d)->sin6_port,
+               port, sizeof(in_port_t));
         break;
     }
 }
