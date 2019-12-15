@@ -35,11 +35,17 @@ struct mud_path {
         uint64_t total;
         uint64_t bytes;
         uint64_t time;
-        uint64_t msg_time;
         uint64_t rate;
         uint64_t rate_max;
         uint64_t loss;
+        uint64_t last;
+        uint64_t last_time;
     } tx, rx;
+    struct {
+        uint64_t time;
+        uint64_t timeout;
+        uint64_t set;
+    } msg;
     struct {
         size_t min;
         size_t max;
@@ -84,7 +90,7 @@ int mud_set_tc             (struct mud *, int);
 int mud_set_aes            (struct mud *);
 
 int mud_set_state (struct mud *, struct sockaddr *, enum mud_state,
-                   unsigned long, unsigned long);
+                   unsigned long, unsigned long, unsigned long);
 
 int mud_peer (struct mud *, struct sockaddr *);
 
