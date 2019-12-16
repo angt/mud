@@ -568,8 +568,8 @@ mud_reset_path(struct mud_path *path)
 {
     path->window = 0;
     path->ok = 0;
-    path->msg.sent = 0;
     path->loss_count = 0;
+    memset(&path->msg, 0, sizeof(path->msg));
 }
 
 static void
