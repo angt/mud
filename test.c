@@ -85,7 +85,7 @@ main(int argc, char **argv)
 
             // we can safely call mud_send()
             // even if the link is not ready
-            int r = mud_send(mud, argv[1], strlen(argv[1]), 0);
+            int r = mud_send(mud, argv[1], strlen(argv[1]));
 
             if (r == -1) {
                 if (errno == EAGAIN)

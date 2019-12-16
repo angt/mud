@@ -68,7 +68,6 @@
 
 #define MUD_MSG(X)       ((X) & UINT64_C(1))
 #define MUD_MSG_MARK(X)  ((X) | UINT64_C(1))
-#define MUD_MSG_TC       (192) // CS6
 #define MUD_MSG_SENT_MAX (3)
 #define MUD_MSG_TIMEOUT  (100 * MUD_ONE_MSEC)
 
@@ -85,6 +84,8 @@
 #define MUD_KEYX_TIMEOUT       ( 60 * MUD_ONE_MIN)
 #define MUD_KEYX_RESET_TIMEOUT (200 * MUD_ONE_MSEC)
 #define MUD_TIME_TOLERANCE     ( 10 * MUD_ONE_MIN)
+
+#define MUD_TC (192) // CS6
 
 #define MUD_LOSS_LIMIT (20)
 #define MUD_LOSS_COUNT (3)
@@ -151,7 +152,7 @@ struct mud {
     } crypto;
     uint64_t last_recv_time;
     size_t mtu;
-    int msg_tc;
+    int tc;
     struct {
         int set;
         struct sockaddr_storage addr;
@@ -371,7 +372,7 @@ mud_select_path(struct mud *mud, unsigned k)
 
 static int
 mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
-              void *data, size_t size, int tc, int flags)
+              void *data, size_t size, int flags)
 {
     if (!size || !path)
         return 0;
@@ -413,7 +414,7 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
         cmsg->cmsg_type = IP_TOS;
         cmsg->cmsg_len = CMSG_LEN(sizeof(int));
 
-        memcpy(CMSG_DATA(cmsg), &tc, sizeof(int));
+        memcpy(CMSG_DATA(cmsg), &mud->tc, sizeof(int));
     }
 
     if (path->addr.ss_family == AF_INET6) {
@@ -437,7 +438,7 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
         cmsg->cmsg_type = IPV6_TCLASS;
         cmsg->cmsg_len = CMSG_LEN(sizeof(int));
 
-        memcpy(CMSG_DATA(cmsg), &tc, sizeof(int));
+        memcpy(CMSG_DATA(cmsg), &mud->tc, sizeof(int));
     }
 
     ssize_t ret = sendmsg(mud->fd, &msg, flags);
@@ -745,7 +746,7 @@ mud_set_tc(struct mud *mud, int tc)
         return -1;
     }
 
-    mud->msg_tc = tc;
+    mud->tc = tc;
 
     return 0;
 }
@@ -964,7 +965,7 @@ mud_create(struct sockaddr *addr)
 
     mud->time_tolerance = MUD_TIME_TOLERANCE;
     mud->keyx_timeout = MUD_KEYX_TIMEOUT;
-    mud->msg_tc = MUD_MSG_TC;
+    mud->tc = MUD_TC;
     mud->mtu = MUD_MTU_MIN;
     mud->loss_limit = MUD_LOSS_LIMIT;
 
@@ -1158,8 +1159,7 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
 
     mud_encrypt_opt(&mud->crypto.private, &opt);
 
-    return mud_send_path(mud, path, now, dst, size,
-                         mud->msg_tc, sent_time ? MSG_CONFIRM : 0);
+    return mud_send_path(mud, path, now, dst, size, sent_time ? MSG_CONFIRM : 0);
 }
 
 static int
@@ -1553,7 +1553,7 @@ mud_send_wait(struct mud *mud)
 }
 
 int
-mud_send(struct mud *mud, const void *data, size_t size, unsigned tc)
+mud_send(struct mud *mud, const void *data, size_t size)
 {
     if (!size)
         return 0;
@@ -1578,5 +1578,5 @@ mud_send(struct mud *mud, const void *data, size_t size, unsigned tc)
     const unsigned k = (a << 8) | b;
 
     return mud_send_path(mud, mud_select_path(mud, k),
-                         now, packet, (size_t)packet_size, tc & 255, 0);
+                         now, packet, (size_t)packet_size, 0);
 }

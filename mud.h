@@ -95,6 +95,6 @@ int mud_set_state (struct mud *, struct sockaddr *, enum mud_state,
 int mud_peer (struct mud *, struct sockaddr *);
 
 int mud_recv (struct mud *, void *, size_t);
-int mud_send (struct mud *, const void *, size_t, unsigned);
+int mud_send (struct mud *, const void *, size_t);
 
 struct mud_path *mud_get_paths(struct mud *, unsigned *);
