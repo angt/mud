@@ -44,6 +44,7 @@ struct mud_path {
     struct {
         uint64_t time;
         uint64_t timeout;
+        uint64_t sent;
         uint64_t set;
     } msg;
     struct {
@@ -56,7 +57,6 @@ struct mud_path {
     uint64_t window_time;
     struct mud_pubkey pk;
     unsigned char ok;
-    unsigned msg_sent;
     int loss_count;
 };
 

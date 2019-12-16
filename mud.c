@@ -568,7 +568,7 @@ mud_reset_path(struct mud_path *path)
 {
     path->window = 0;
     path->ok = 0;
-    path->msg_sent = 0;
+    path->msg.sent = 0;
     path->loss_count = 0;
 }
 
@@ -1146,8 +1146,8 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
     msg->loss = (unsigned char)path->tx.loss;
 
     if (!mud->peer.set || !sent_time) {
-        if (path->msg_sent < MUD_MSG_SENT_MAX)
-            path->msg_sent++;
+        if (path->msg.sent < MUD_MSG_SENT_MAX)
+            path->msg.sent++;
     }
 
     const struct mud_crypto_opt opt = {
@@ -1316,7 +1316,7 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
         }
 
         path->rx.loss = (uint64_t)msg->loss;
-        path->msg_sent = 0;
+        path->msg.sent = 0;
         path->ok = 1;
 
         if (!mud->peer.set)
@@ -1445,7 +1445,7 @@ mud_update(struct mud *mud)
         }
 
         if (mud->peer.set) {
-            if (path->msg_sent >= MUD_MSG_SENT_MAX) {
+            if (path->msg.sent >= MUD_MSG_SENT_MAX) {
                 if (path->mtu.probe == MUD_MTU_MIN) {
                     mud_reset_path(path);
                 } else {
@@ -1454,14 +1454,14 @@ mud_update(struct mud *mud)
                         path->mtu.ok = MUD_MTU_MIN;
                         mud_reset_path(path);
                     } else {
-                        path->msg_sent = 0;
+                        path->msg.sent = 0;
                     }
                     path->mtu.max = path->mtu.probe - 1;
                     path->mtu.probe = (path->mtu.min + path->mtu.max) >> 1;
                 }
             }
         } else {
-            if ((path->msg_sent >= MUD_MSG_SENT_MAX) ||
+            if ((path->msg.sent >= MUD_MSG_SENT_MAX) ||
                 (path->rx.time &&
                  mud->last_recv_time > path->rx.time + MUD_ONE_SEC)) {
                 mud_remove_path(path);
