@@ -881,16 +881,16 @@ mud_keyx(struct mud *mud, unsigned char *remote, int aes)
     return 0;
 }
 
-static void
+static int
 mud_keyx_init(struct mud *mud, uint64_t now)
 {
     if (!mud_timeout(now, mud->crypto.time, mud->keyx_timeout))
-        return;
+        return 1;
 
     mud->crypto.time = now;
 
     if (mud->crypto.ready)
-        return;
+        return 1;
 
     static const unsigned char test[crypto_scalarmult_BYTES] = {
         0x9b, 0xf4, 0x14, 0x90, 0x0f, 0xef, 0xf8, 0x2d, 0x11, 0x32, 0x6e,
@@ -906,8 +906,9 @@ mud_keyx_init(struct mud *mud, uint64_t now)
     } while (crypto_scalarmult(tmp, test, mud->crypto.pk.local));
 
     sodium_memzero(tmp, sizeof(tmp));
-
     mud->crypto.ready = 1;
+
+    return 0;
 }
 
 int
@@ -1443,13 +1444,12 @@ mud_update(struct mud *mud)
     uint64_t now = mud_now(mud);
 
     if (mud->peer.set) {
-        mud_keyx_init(mud, now);
+        if (!mud_keyx_init(mud, now))
+            now = mud_now(mud);
 
         if (mud_timeout(now, mud->last_recv_time, MUD_KEYX_RESET_TIMEOUT))
             mud_keyx_reset(mud);
     }
-
-    now = mud_now(mud);
 
     for (unsigned i = 0; i < mud->count; i++) {
         struct mud_path *path = &mud->paths[i];
