@@ -38,10 +38,15 @@ struct mud_path {
         uint64_t rate;
         uint64_t rate_max;
         uint64_t loss;
-        uint64_t last;
-        uint64_t last_time;
     } tx, rx;
     struct {
+        struct {
+            uint64_t total;
+            uint64_t bytes;
+            uint64_t time;
+            uint64_t acc;
+            uint64_t acc_time;
+        } tx, rx;
         uint64_t time;
         uint64_t timeout;
         uint64_t sent;
@@ -57,7 +62,6 @@ struct mud_path {
     uint64_t window_time;
     struct mud_pubkey pk;
     unsigned char ok;
-    int loss_count;
 };
 
 struct mud_bad {

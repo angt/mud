@@ -88,7 +88,7 @@
 #define MUD_TC (192) // CS6
 
 #define MUD_LOSS_LIMIT (20)
-#define MUD_LOSS_COUNT (3)
+#define MUD_LOSS_COUNT (1000)
 
 #define MUD_CTRL_SIZE (CMSG_SPACE(MUD_PKTINFO_SIZE) + \
                        CMSG_SPACE(sizeof(struct in6_pktinfo)) + \
@@ -125,9 +125,12 @@ struct mud_msg {
     struct mud_addr addr;
     unsigned char pk[MUD_PUBKEY_SIZE];
     unsigned char aes;
-    unsigned char fwd_tx[MUD_U48_SIZE];
-    unsigned char tx[MUD_U48_SIZE];
-    unsigned char rx[MUD_U48_SIZE];
+    unsigned char fwd_total[MUD_U48_SIZE];
+    unsigned char fwd_bytes[MUD_U48_SIZE];
+    unsigned char tx_bytes[MUD_U48_SIZE];
+    unsigned char tx_total[MUD_U48_SIZE];
+    unsigned char rx_bytes[MUD_U48_SIZE];
+    unsigned char rx_total[MUD_U48_SIZE];
  // unsigned char delay[MUD_U48_SIZE];
     unsigned char rate_max[MUD_U48_SIZE];
     unsigned char loss;
@@ -569,7 +572,6 @@ mud_reset_path(struct mud_path *path)
 {
     path->window = 0;
     path->ok = 0;
-    path->loss_count = 0;
     memset(&path->msg, 0, sizeof(path->msg));
 }
 
@@ -1100,7 +1102,8 @@ mud_localaddr(struct sockaddr_storage *addr, struct msghdr *msg)
 
 static int
 mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
-             uint64_t sent_time, uint64_t fwd_tx, size_t size)
+             uint64_t sent_time, uint64_t fwd_bytes, uint64_t fwd_total,
+             size_t size)
 {
     unsigned char dst[MUD_PKT_MAX_SIZE];
     unsigned char src[MUD_PKT_MAX_SIZE];
@@ -1139,9 +1142,12 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
 
     msg->aes = (unsigned char)mud->crypto.aes;
 
-    mud_write48(msg->tx, path->tx.bytes);
-    mud_write48(msg->rx, path->rx.bytes);
-    mud_write48(msg->fwd_tx, fwd_tx);
+    mud_write48(msg->tx_bytes, path->tx.bytes);
+    mud_write48(msg->rx_bytes, path->rx.bytes);
+    mud_write48(msg->tx_total, path->tx.total);
+    mud_write48(msg->rx_total, path->rx.total);
+    mud_write48(msg->fwd_bytes, fwd_bytes);
+    mud_write48(msg->fwd_total, fwd_total);
     mud_write48(msg->rate_max, path->rx.rate_max);
 
     msg->loss = (unsigned char)path->tx.loss;
@@ -1214,25 +1220,27 @@ mud_ss_from_packet(struct sockaddr_storage *ss, struct mud_msg *pkt)
 
 static void
 mud_update_window(struct mud *mud, struct mud_path *path, uint64_t now,
-                  uint64_t send_dt, uint64_t send_bytes,
-                  uint64_t recv_dt, uint64_t recv_bytes)
+                  uint64_t tx_dt, uint64_t tx_bytes, uint64_t tx_pkt,
+                  uint64_t rx_dt, uint64_t rx_bytes, uint64_t rx_pkt)
 {
-    if (recv_bytes && send_bytes >= recv_bytes) {
-        uint64_t loss = send_bytes - recv_bytes;
-        path->tx.loss = loss * 100 / send_bytes;
-        if (path->tx.loss > mud->loss_limit) {
-            if (path->loss_count < MUD_LOSS_COUNT) {
-                path->loss_count++;
-            } else {
-                path->loss_count = 0;
-                path->tx.rate -= loss * path->tx.rate / send_bytes;
+    if (rx_dt && rx_dt > tx_dt + (tx_dt >> 3)) {
+        path->tx.rate = 1 + ((rx_bytes * MUD_ONE_SEC) - 1) / rx_dt;
+    } else {
+        uint64_t tx_acc = path->msg.tx.acc + tx_pkt;
+        uint64_t rx_acc = path->msg.rx.acc + rx_pkt;
+
+        if (tx_acc > MUD_LOSS_COUNT) {
+            if (tx_acc >= rx_acc) {
+                uint64_t loss = (tx_acc - rx_acc) * 100 / tx_acc;
+                path->tx.loss = (6 * path->tx.loss + 2 * loss) / 8;
             }
+            path->msg.tx.acc = 0;
+            path->msg.rx.acc = 0;
         } else {
-            path->loss_count = 0;
+            path->msg.tx.acc = tx_acc;
+            path->msg.rx.acc = rx_acc;
         }
     }
-
-    // TODO
 }
 
 static void
@@ -1295,23 +1303,29 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
         path->mtu.ok = size;
 
         const uint64_t rx_time = sent_time;
-        const uint64_t tx = mud_read48(msg->fwd_tx);
-        const uint64_t rx = mud_read48(msg->rx);
+        const uint64_t tx_bytes = mud_read48(msg->fwd_bytes);
+        const uint64_t rx_bytes = mud_read48(msg->rx_bytes);
+        const uint64_t tx_total = mud_read48(msg->fwd_total);
+        const uint64_t rx_total = mud_read48(msg->rx_total);
 
-        if ((tx_time > path->tx.last_time) && (tx > path->tx.last) &&
-            (rx_time > path->rx.last_time) && (rx > path->rx.last)) {
+        if ((tx_time > path->msg.tx.time) && (tx_bytes > path->msg.tx.bytes) &&
+            (rx_time > path->msg.rx.time) && (rx_bytes > path->msg.rx.bytes)) {
             if (path->msg.set) {
                 mud_update_stat(&path->rtt, MUD_TIME_MASK(now - tx_time));
                 mud_update_window(mud, path, now,
-                        MUD_TIME_MASK(tx_time - path->tx.last_time),
-                        tx - path->tx.last,
-                        MUD_TIME_MASK(rx_time - path->rx.last_time),
-                        rx - path->rx.last);
+                        MUD_TIME_MASK(tx_time - path->msg.tx.time),
+                        tx_bytes - path->msg.tx.bytes,
+                        tx_total - path->msg.tx.total,
+                        MUD_TIME_MASK(rx_time - path->msg.rx.time),
+                        rx_bytes - path->msg.rx.bytes,
+                        rx_total - path->msg.rx.total);
             }
-            path->tx.last_time = tx_time;
-            path->rx.last_time = rx_time;
-            path->tx.last = tx;
-            path->rx.last = rx;
+            path->msg.tx.time = tx_time;
+            path->msg.rx.time = rx_time;
+            path->msg.tx.bytes = tx_bytes;
+            path->msg.rx.bytes = rx_bytes;
+            path->msg.tx.total = tx_total;
+            path->msg.rx.total = rx_total;
             path->msg.set = 1;
         }
 
@@ -1333,7 +1347,10 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
         }
     }
 
-    mud_send_msg(mud, path, now, sent_time, mud_read48(msg->tx), size);
+    mud_send_msg(mud, path, now, sent_time,
+                 mud_read48(msg->tx_bytes),
+                 mud_read48(msg->tx_total),
+                 size);
 }
 
 int
@@ -1485,7 +1502,7 @@ mud_update(struct mud *mud)
 
         if (mud->peer.set) {
             if (mud_timeout(now, path->msg.time, path->msg.timeout)) {
-                mud_send_msg(mud, path, now, 0, 0, path->mtu.probe);
+                mud_send_msg(mud, path, now, 0, 0, 0, path->mtu.probe);
                 path->msg.time = now;
             }
         }
@@ -1578,5 +1595,5 @@ mud_send(struct mud *mud, const void *data, size_t size)
     const unsigned k = (a << 8) | b;
 
     return mud_send_path(mud, mud_select_path(mud, k),
-                         now, packet, (size_t)packet_size, 0);
+                         now, packet, (size_t)packet_size, 0, 0);
 }
