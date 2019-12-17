@@ -1595,5 +1595,5 @@ mud_send(struct mud *mud, const void *data, size_t size)
     const unsigned k = (a << 8) | b;
 
     return mud_send_path(mud, mud_select_path(mud, k),
-                         now, packet, (size_t)packet_size, 0, 0);
+                         now, packet, (size_t)packet_size, 0);
 }
