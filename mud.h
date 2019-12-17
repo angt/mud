@@ -36,7 +36,6 @@ struct mud_path {
         uint64_t bytes;
         uint64_t time;
         uint64_t rate;
-        uint64_t rate_max;
         uint64_t loss;
     } tx, rx;
     struct {
@@ -48,7 +47,6 @@ struct mud_path {
             uint64_t acc_time;
         } tx, rx;
         uint64_t time;
-        uint64_t timeout;
         uint64_t sent;
         uint64_t set;
     } msg;
@@ -58,6 +56,11 @@ struct mud_path {
         size_t probe;
         size_t ok;
     } mtu;
+    struct {
+        uint64_t tx_max_rate;
+        uint64_t rx_max_rate;
+        uint64_t msg_timeout;
+    } conf;
     uint64_t window;
     uint64_t window_time;
     struct mud_pubkey pk;

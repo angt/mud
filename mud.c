@@ -132,7 +132,7 @@ struct mud_msg {
     unsigned char rx_bytes[MUD_U48_SIZE];
     unsigned char rx_total[MUD_U48_SIZE];
  // unsigned char delay[MUD_U48_SIZE];
-    unsigned char rate_max[MUD_U48_SIZE];
+    unsigned char tx_max_rate[MUD_U48_SIZE];
     unsigned char loss;
 };
 
@@ -646,7 +646,7 @@ mud_get_path(struct mud *mud, struct sockaddr_storage *local_addr,
     path->mtu.max = MUD_MTU_MAX;
     path->mtu.probe = MUD_MTU_MAX;
 
-    path->msg.timeout = MUD_MSG_TIMEOUT;
+    path->conf.msg_timeout = MUD_MSG_TIMEOUT;
 
     return path;
 }
@@ -1149,7 +1149,7 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
     mud_write48(msg->rx_total, path->rx.total);
     mud_write48(msg->fwd_bytes, fwd_bytes);
     mud_write48(msg->fwd_total, fwd_total);
-    mud_write48(msg->rate_max, path->rx.rate_max);
+    mud_write48(msg->tx_max_rate, path->conf.tx_max_rate);
 
     msg->loss = (unsigned char)path->tx.loss;
 
@@ -1340,11 +1340,11 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
         mud_keyx_init(mud, now);
         path->state = (enum mud_state)msg->state;
 
-        const uint64_t rate_max = mud_read48(msg->rate_max);
+        const uint64_t tx_max_rate = mud_read48(msg->tx_max_rate);
 
-        if (path->tx.rate_max != rate_max) {
-            path->tx.rate_max = rate_max;
-            path->tx.rate = rate_max;
+        if (path->conf.tx_max_rate != tx_max_rate) {
+            path->conf.tx_max_rate = tx_max_rate;
+            path->tx.rate = tx_max_rate;
         }
     }
 
@@ -1501,7 +1501,7 @@ mud_update(struct mud *mud)
         }
 
         if (mud->peer.set) {
-            if (mud_timeout(now, path->msg.time, path->msg.timeout)) {
+            if (mud_timeout(now, path->msg.time, path->conf.msg_timeout)) {
                 mud_send_msg(mud, path, now, 0, 0, 0, path->mtu.probe);
                 path->msg.time = now;
             }
@@ -1522,8 +1522,8 @@ mud_update(struct mud *mud)
 int
 mud_set_state(struct mud *mud, struct sockaddr *addr,
               enum mud_state state,
-              unsigned long rate_tx,
-              unsigned long rate_rx,
+              unsigned long tx_max_rate,
+              unsigned long rx_max_rate,
               unsigned long msg_timeout)
 {
     if (!mud->peer.set || state > MUD_UP) {
@@ -1542,14 +1542,14 @@ mud_set_state(struct mud *mud, struct sockaddr *addr,
     if (!path)
         return -1;
 
-    if (rate_tx)
-        path->tx.rate_max = path->tx.rate = rate_tx;
+    if (tx_max_rate)
+        path->conf.tx_max_rate = path->tx.rate = tx_max_rate;
 
-    if (rate_rx)
-        path->rx.rate_max = path->rx.rate = rate_rx;
+    if (rx_max_rate)
+        path->conf.rx_max_rate = path->rx.rate = rx_max_rate;
 
     if (msg_timeout)
-        path->msg.timeout = msg_timeout;
+        path->conf.msg_timeout = msg_timeout;
 
     if (state && path->state != state) {
         path->state = state;
