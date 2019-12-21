@@ -64,7 +64,6 @@ struct mud_path {
     uint64_t window;
     uint64_t window_time;
     struct mud_pubkey pk;
-    unsigned char ok;
 };
 
 struct mud_bad {
@@ -78,15 +77,12 @@ struct mud_bad {
 struct mud *mud_create (struct sockaddr *);
 void        mud_delete (struct mud *);
 
-int mud_get_fd  (struct mud *);
+int    mud_get_fd  (struct mud *);
+size_t mud_get_mtu (struct mud *);
+int    mud_get_bad (struct mud *, struct mud_bad *);
 
 int mud_set_key (struct mud *, unsigned char *, size_t);
 int mud_get_key (struct mud *, unsigned char *, size_t *);
-
-void   mud_set_mtu (struct mud *, size_t);
-size_t mud_get_mtu (struct mud *);
-
-int mud_get_bad (struct mud *, struct mud_bad *);
 
 long mud_send_wait (struct mud *);
 
