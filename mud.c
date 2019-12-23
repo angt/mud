@@ -1306,6 +1306,8 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
     const uint64_t tx_time = mud_read48(msg->sent_time);
 
     if (tx_time) {
+        mud_update_stat(&path->rtt, MUD_TIME_MASK(now - tx_time));
+
         const uint64_t tx_bytes = mud_read48(msg->fwd_bytes);
         const uint64_t tx_total = mud_read48(msg->fwd_total);
         const uint64_t rx_bytes = mud_read48(msg->rx_bytes);
@@ -1315,7 +1317,6 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
         if ((tx_time > path->msg.tx.time) && (tx_bytes > path->msg.tx.bytes) &&
             (rx_time > path->msg.rx.time) && (rx_bytes > path->msg.rx.bytes)) {
             if (path->msg.set) {
-                mud_update_stat(&path->rtt, MUD_TIME_MASK(now - tx_time));
                 mud_update_window(mud, path, now,
                         MUD_TIME_MASK(tx_time - path->msg.tx.time),
                         tx_bytes - path->msg.tx.bytes,
