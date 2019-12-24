@@ -161,7 +161,9 @@ struct mud {
         struct sockaddr_storage addr;
     } peer;
     struct mud_bad bad;
+    uint64_t rate;
     uint64_t window;
+    uint64_t window_time;
     uint64_t base_time;
 };
 
@@ -352,25 +354,23 @@ mud_unmapv4(struct sockaddr_storage *addr)
 }
 
 static struct mud_path *
-mud_select_path(struct mud *mud, unsigned k)
+mud_select_path(struct mud *mud, unsigned cursor)
 {
-    uint64_t window = 0;
-    struct mud_path *last = NULL;
+    uint64_t k = (cursor * mud->rate) >> 16;
 
     for (unsigned i = 0; i < mud->count; i++) {
         struct mud_path *path = &mud->paths[i];
 
-        if (!path->window)
+        if (!path->ok)
             continue;
 
-        window += ((path->window << 16) + (mud->window >> 1)) / mud->window;
-        last = path;
+        if (k < path->tx.rate)
+            return path;
 
-        if ((uint64_t)k <= window)
-            break;
+        k -= path->tx.rate;
     }
 
-    return last;
+    return NULL;
 }
 
 static int
@@ -450,12 +450,10 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
     path->tx.bytes += size;
     path->tx.time = now;
 
-    if (path->window > size) {
+    if (mud->window > size) {
         mud->window -= size;
-        path->window -= size;
     } else {
-        mud->window -= path->window;
-        path->window = 0;
+        mud->window = 0;
     }
 
     return (int)ret;
@@ -570,7 +568,6 @@ mud_copy_port(struct sockaddr_storage *d, struct sockaddr_storage *s)
 static void
 mud_reset_path(struct mud_path *path)
 {
-    path->window = 0;
     path->mtu.ok = 0;
     path->mtu.probe = 0;
 }
@@ -1451,9 +1448,10 @@ mud_recv(struct mud *mud, void *data, size_t size)
 static int
 mud_update(struct mud *mud)
 {
+    int count = 0;
     uint64_t window = 0;
+    uint64_t rate = 0;
     size_t mtu = 0;
-    unsigned ret = 0;
 
     uint64_t now = mud_now(mud);
 
@@ -1480,24 +1478,20 @@ mud_update(struct mud *mud)
         if (path->msg.sent >= MUD_MSG_SENT_MAX) {
             if (path->mtu.probe) {
                 mud_update_mtu(path, 0);
+                path->msg.sent = 0;
             } else {
-                mud_reset_path(path);
+                path->msg.sent = MUD_MSG_SENT_MAX;
             }
-            path->msg.sent = 0;
         }
 
-        if (path->mtu.ok && !path->mtu.probe) {
-            if (!mtu || mtu > path->mtu.ok) {
+        if ((path->mtu.ok && !path->mtu.probe) &&
+            (path->msg.sent < MUD_MSG_SENT_MAX)) {
+            if (!mtu || mtu > path->mtu.ok)
                 mtu = path->mtu.ok;
-            }
-            if (path->window_time + MUD_WINDOW_TIMEOUT <= now) {
-                path->window += (path->tx.rate * (now - path->window_time))
-                    / MUD_ONE_SEC;
-                path->window_time = now;
-                const uint64_t rate_tx_max = path->tx.rate >> 2; // use rtt
-                if (path->window > rate_tx_max)
-                    path->window = rate_tx_max;
-            }
+            path->ok = 1;
+            rate += path->tx.rate;
+        } else {
+            path->ok = 0;
         }
 
         if (mud->peer.set) {
@@ -1508,16 +1502,23 @@ mud_update(struct mud *mud)
             }
         }
 
-        if (path->window >= 1500)
-            window += path->window;
-
-        ret++;
+        count++;
     }
 
-    mud->window = window;
+    if ((rate && mud->window < 1500)) {
+        uint64_t elapsed = MUD_TIME_MASK(now - mud->window_time);
+        if (elapsed >= MUD_WINDOW_TIMEOUT) {
+            if (elapsed > MUD_MSG_TIMEOUT)
+                elapsed = MUD_MSG_TIMEOUT;
+            mud->window += rate * elapsed / MUD_ONE_SEC;
+            mud->window_time = now;
+        }
+    }
+
+    mud->rate = rate;
     mud->mtu = mtu;
 
-    return ret;
+    return count;
 }
 
 int
@@ -1567,7 +1568,7 @@ mud_send_wait(struct mud *mud)
     if (!mud_update(mud))
         return -1;
 
-    return !mud->window;
+    return mud->window < 1500;
 }
 
 int
@@ -1576,7 +1577,7 @@ mud_send(struct mud *mud, const void *data, size_t size)
     if (!size)
         return 0;
 
-    if (!mud->window) {
+    if (mud->window < 1500) {
         errno = EAGAIN;
         return -1;
     }

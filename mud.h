@@ -61,8 +61,7 @@ struct mud_path {
         uint64_t rx_max_rate;
         uint64_t msg_timeout;
     } conf;
-    uint64_t window;
-    uint64_t window_time;
+    unsigned char ok;
     struct mud_pubkey pk;
 };
 
