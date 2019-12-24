@@ -1143,8 +1143,7 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
     mud_write48(msg->rx_total, path->rx.total);
     mud_write48(msg->fwd_bytes, fwd_bytes);
     mud_write48(msg->fwd_total, fwd_total);
-    mud_write48(msg->tx_max_rate, path->conf.tx_max_rate);
-
+    mud_write48(msg->tx_max_rate, path->conf.rx_max_rate);
     msg->loss = (unsigned char)path->tx.loss;
 
     const struct mud_crypto_opt opt = {
