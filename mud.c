@@ -132,7 +132,6 @@ struct mud_msg {
     unsigned char tx_total[MUD_U48_SIZE];
     unsigned char rx_bytes[MUD_U48_SIZE];
     unsigned char rx_total[MUD_U48_SIZE];
- // unsigned char delay[MUD_U48_SIZE];
     unsigned char tx_max_rate[MUD_U48_SIZE];
     unsigned char loss;
 };
@@ -1236,8 +1235,14 @@ mud_update_window(struct mud *mud, struct mud_path *path, uint64_t now,
 static void
 mud_update_mtu(struct mud_path *path, size_t size)
 {
-    if (!path->mtu.probe)
+    if (!path->mtu.probe) {
+        if (!path->mtu.ok) {
+            path->mtu.min = MUD_MTU_MIN;
+            path->mtu.max = MUD_MTU_MAX;
+            path->mtu.probe = MUD_MTU_MAX;
+        }
         return;
+    }
 
     if (size) {
         if (path->mtu.min > size || path->mtu.max < size)
@@ -1337,13 +1342,7 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
         path->msg.sent = 0;
 
         if (mud->peer.set) {
-            if (!path->mtu.ok && !path->mtu.probe) {
-                path->mtu.min = MUD_MTU_MIN;
-                path->mtu.max = MUD_MTU_MAX;
-                path->mtu.probe = MUD_MTU_MAX;
-            } else {
-                mud_update_mtu(path, size);
-            }
+            mud_update_mtu(path, size);
         } else {
             return;
         }
