@@ -68,7 +68,7 @@
 
 #define MUD_MSG(X)       ((X) & UINT64_C(1))
 #define MUD_MSG_MARK(X)  ((X) | UINT64_C(1))
-#define MUD_MSG_SENT_MAX (3)
+#define MUD_MSG_SENT_MAX (5)
 #define MUD_MSG_TIMEOUT  (100 * MUD_ONE_MSEC)
 
 #define MUD_PKT_MIN_SIZE (MUD_U48_SIZE + MUD_MAC_SIZE)
