@@ -1466,6 +1466,9 @@ mud_update(struct mud *mud)
     for (unsigned i = 0; i < mud->count; i++) {
         struct mud_path *path = &mud->paths[i];
 
+        if (path->state < MUD_DOWN)
+            continue;
+
         if ((path->state == MUD_DOWN || !mud->peer.set) &&
             (mud_timeout(now, path->rx.time, 10 * MUD_ONE_SEC))) {
             mud_remove_path(path);
@@ -1475,6 +1478,8 @@ mud_update(struct mud *mud)
         if (path->state <= MUD_DOWN)
             continue;
 
+        path->ok = 0;
+
         if (path->msg.sent >= MUD_MSG_SENT_MAX) {
             if (path->mtu.probe) {
                 mud_update_mtu(path, 0);
@@ -1482,16 +1487,13 @@ mud_update(struct mud *mud)
             } else {
                 path->msg.sent = MUD_MSG_SENT_MAX;
             }
-        }
-
-        if ((path->mtu.ok && !path->mtu.probe) &&
-            (path->msg.sent < MUD_MSG_SENT_MAX)) {
+        } else if (!path->mtu.probe && path->mtu.ok && (mud->peer.set ||
+                   !mud_timeout(mud->last_recv_time, path->rx.time,
+                                MUD_MSG_SENT_MAX * MUD_MSG_TIMEOUT))) {
             if (!mtu || mtu > path->mtu.ok)
                 mtu = path->mtu.ok;
-            path->ok = 1;
             rate += path->tx.rate;
-        } else {
-            path->ok = 0;
+            path->ok = 1;
         }
 
         if (mud->peer.set) {
