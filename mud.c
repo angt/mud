@@ -86,9 +86,7 @@
 #define MUD_TIME_TOLERANCE     ( 10 * MUD_ONE_MIN)
 
 #define MUD_TC (192) // CS6
-
-#define MUD_LOSS_LIMIT (20)
-#define MUD_LOSS_COUNT (1000)
+#define MUD_LOSS_LIMIT (25)
 
 #define MUD_CTRL_SIZE (CMSG_SPACE(MUD_PKTINFO_SIZE) + \
                        CMSG_SPACE(sizeof(struct in6_pktinfo)) + \
@@ -747,12 +745,12 @@ mud_set_tc(struct mud *mud, int tc)
 int
 mud_set_loss_limit(struct mud *mud, unsigned loss)
 {
-    if (loss > 100) {
+    if (loss > 100U) {
         errno = EINVAL;
         return -1;
     }
 
-    mud->loss_limit = loss;
+    mud->loss_limit = loss * 255U / 100U;
 
     return 0;
 }
@@ -1215,9 +1213,9 @@ mud_update_window(struct mud *mud, struct mud_path *path, uint64_t now,
         uint64_t tx_acc = path->msg.tx.acc + tx_pkt;
         uint64_t rx_acc = path->msg.rx.acc + rx_pkt;
 
-        if (tx_acc > MUD_LOSS_COUNT) {
+        if (tx_acc > 10 * MUD_LOSS_LIMIT) {
             if (tx_acc >= rx_acc) {
-                uint64_t loss = (tx_acc - rx_acc) * 100 / tx_acc;
+                uint64_t loss = (tx_acc - rx_acc) * 255U / tx_acc;
                 path->tx.loss = (6 * path->tx.loss + 2 * loss) / 8;
             }
             path->msg.tx.acc = 0;
