@@ -1507,11 +1507,11 @@ mud_update(struct mud *mud)
         count++;
     }
 
-    if ((rate && mud->window < 1500)) {
+    if (rate && mud->window < 1500) {
         uint64_t elapsed = MUD_TIME_MASK(now - mud->window_time);
-        if (elapsed >= MUD_WINDOW_TIMEOUT) {
-            if (elapsed > MUD_MSG_TIMEOUT)
-                elapsed = MUD_MSG_TIMEOUT;
+        if (elapsed > MUD_WINDOW_TIMEOUT) {
+            if (elapsed > 20 * MUD_WINDOW_TIMEOUT)
+                elapsed = 20 * MUD_WINDOW_TIMEOUT;
             mud->window += rate * elapsed / MUD_ONE_SEC;
             mud->window_time = now;
         }
