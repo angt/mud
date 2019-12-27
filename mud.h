@@ -16,11 +16,6 @@ enum mud_state {
     MUD_UP,
 };
 
-struct mud_pubkey {
-    unsigned char remote[MUD_PUBKEY_SIZE];
-    unsigned char local[MUD_PUBKEY_SIZE];
-};
-
 struct mud_stat {
     uint64_t val;
     uint64_t var;
@@ -62,7 +57,6 @@ struct mud_path {
         uint64_t msg_timeout;
     } conf;
     unsigned char ok;
-    struct mud_pubkey pk;
 };
 
 struct mud_bad {
