@@ -352,7 +352,7 @@ mud_unmapv4(struct sockaddr_storage *addr)
 }
 
 static struct mud_path *
-mud_select_path(struct mud *mud, unsigned cursor)
+mud_select_path(struct mud *mud, uint16_t cursor)
 {
     uint64_t k = (cursor * mud->rate) >> 16;
 
@@ -1545,9 +1545,8 @@ mud_send(struct mud *mud, const void *data, size_t size)
         return -1;
     }
 
-    const unsigned a = packet[packet_size - 1];
-    const unsigned b = packet[packet_size - 2];
-    const unsigned k = (a << 8) | b;
+    uint16_t k;
+    memcpy(&k, &packet[packet_size - sizeof(k)], sizeof(k));
 
     return mud_send_path(mud, mud_select_path(mud, k),
                          now, packet, (size_t)packet_size, 0);
