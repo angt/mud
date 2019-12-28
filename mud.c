@@ -401,10 +401,10 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
                              CMSG_SPACE(sizeof(int));
 
         struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+
         cmsg->cmsg_level = IPPROTO_IP;
         cmsg->cmsg_type = MUD_PKTINFO;
         cmsg->cmsg_len = CMSG_LEN(MUD_PKTINFO_SIZE);
-
         memcpy(MUD_PKTINFO_DST(CMSG_DATA(cmsg)),
                &((struct sockaddr_in *)&path->local_addr)->sin_addr,
                sizeof(struct in_addr));
@@ -415,20 +415,18 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
         cmsg->cmsg_level = IPPROTO_IP;
         cmsg->cmsg_type = IP_TOS;
         cmsg->cmsg_len = CMSG_LEN(sizeof(int));
-
         memcpy(CMSG_DATA(cmsg), &mud->tc, sizeof(int));
-    }
 
-    if (path->addr.ss_family == AF_INET6) {
+    } else if (path->addr.ss_family == AF_INET6) {
         msg.msg_namelen = sizeof(struct sockaddr_in6);
         msg.msg_controllen = CMSG_SPACE(sizeof(struct in6_pktinfo)) +
                              CMSG_SPACE(sizeof(int));
 
         struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+
         cmsg->cmsg_level = IPPROTO_IPV6;
         cmsg->cmsg_type = IPV6_PKTINFO;
         cmsg->cmsg_len = CMSG_LEN(sizeof(struct in6_pktinfo));
-
         memcpy(&((struct in6_pktinfo *)CMSG_DATA(cmsg))->ipi6_addr,
                &((struct sockaddr_in6 *)&path->local_addr)->sin6_addr,
                sizeof(struct in6_addr));
@@ -439,8 +437,10 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
         cmsg->cmsg_level = IPPROTO_IPV6;
         cmsg->cmsg_type = IPV6_TCLASS;
         cmsg->cmsg_len = CMSG_LEN(sizeof(int));
-
         memcpy(CMSG_DATA(cmsg), &mud->tc, sizeof(int));
+    } else {
+        errno = EAFNOSUPPORT;
+        return -1;
     }
 
     ssize_t ret = sendmsg(mud->fd, &msg, flags);
@@ -658,7 +658,7 @@ mud_ss_from_sa(struct sockaddr_storage *ss, struct sockaddr *sa)
         mud_unmapv4(ss);
         break;
     default:
-        errno = EINVAL;
+        errno = EAFNOSUPPORT;
         return -1;
     }
 
@@ -1097,7 +1097,7 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
         memcpy(msg->addr.port,
                &((struct sockaddr_in6 *)&path->addr)->sin6_port, 2);
     } else {
-        errno = EINVAL;
+        errno = EAFNOSUPPORT;
         return -1;
     }
 
