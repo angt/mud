@@ -1448,6 +1448,7 @@ mud_update(struct mud *mud)
                 path->msg.sent++;
                 path->msg.time = now;
                 mud_send_msg(mud, path, now, 0, 0, 0, path->mtu.probe);
+                now = mud_now(mud);
             }
         }
 
