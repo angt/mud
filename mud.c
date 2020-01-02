@@ -571,13 +571,6 @@ mud_reset_path(struct mud_path *path)
     path->mtu.probe = 0;
 }
 
-static void
-mud_remove_path(struct mud_path *path)
-{
-    memset(path, 0, sizeof(struct mud_path));
-    path->state = MUD_EMPTY;
-}
-
 static struct mud_path *
 mud_get_path(struct mud *mud, struct sockaddr_storage *local_addr,
              struct sockaddr_storage *addr, int create)
@@ -1398,6 +1391,23 @@ mud_recv(struct mud *mud, void *data, size_t size)
 }
 
 static int
+mud_cleanup_path(struct mud *mud, uint64_t now, struct mud_path *path)
+{
+    if (path->state < MUD_DOWN)
+        return 1;
+
+    if (mud->peer.set && path->state > MUD_DOWN)
+        return 0;
+
+    if (mud_timeout(now, path->rx.time, MUD_ONE_MIN)) {
+        memset(path, 0, sizeof(struct mud_path));
+        path->state = MUD_EMPTY;
+    }
+
+    return path->state <= MUD_DOWN;
+}
+
+static int
 mud_update(struct mud *mud)
 {
     int count = 0;
@@ -1413,16 +1423,7 @@ mud_update(struct mud *mud)
     for (unsigned i = 0; i < mud->count; i++) {
         struct mud_path *path = &mud->paths[i];
 
-        if (path->state < MUD_DOWN)
-            continue;
-
-        if ((path->state == MUD_DOWN || !mud->peer.set) &&
-            (mud_timeout(now, path->rx.time, 10 * MUD_ONE_SEC))) {
-            mud_remove_path(path);
-            continue;
-        }
-
-        if (path->state <= MUD_DOWN)
+        if (mud_cleanup_path(mud, now, path))
             continue;
 
         path->ok = 0;
