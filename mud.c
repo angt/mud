@@ -123,6 +123,7 @@ struct mud_msg {
     unsigned char rx_bytes[MUD_U48_SIZE];
     unsigned char rx_total[MUD_U48_SIZE];
     unsigned char tx_max_rate[MUD_U48_SIZE];
+    unsigned char msg_timeout[MUD_U48_SIZE];
     unsigned char loss;
 };
 
@@ -1100,6 +1101,7 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
     mud_write48(msg->fwd_bytes, fwd_bytes);
     mud_write48(msg->fwd_total, fwd_total);
     mud_write48(msg->tx_max_rate, path->conf.rx_max_rate);
+    mud_write48(msg->msg_timeout, path->conf.msg_timeout);
     msg->loss = (unsigned char)path->tx.loss;
 
     const struct mud_crypto_opt opt = {
@@ -1270,6 +1272,7 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
     } else {
         path->state = (enum mud_state)msg->state;
         path->mtu.ok = mud_read48(msg->mtu);
+        path->conf.msg_timeout = mud_read48(msg->msg_timeout);
 
         const uint64_t tx_max_rate = mud_read48(msg->tx_max_rate);
 
@@ -1421,7 +1424,7 @@ mud_update(struct mud *mud)
             }
         } else if (!path->mtu.probe && path->mtu.ok && (mud->peer.set ||
                    !mud_timeout(mud->last_recv_time, path->rx.time,
-                                MUD_MSG_SENT_MAX * MUD_MSG_TIMEOUT))) {
+                                MUD_MSG_SENT_MAX * path->conf.msg_timeout))) {
             if (!mtu || mtu > path->mtu.ok)
                 mtu = path->mtu.ok;
             rate += path->tx.rate;
