@@ -140,6 +140,7 @@ struct mud_keyx {
 
 struct mud {
     int fd;
+    int backup;
     uint64_t time_tolerance;
     unsigned loss_limit;
     struct sockaddr_storage addr;
@@ -1415,6 +1416,9 @@ mud_update(struct mud *mud)
 
         path->ok = 0;
 
+        if (!mud->backup && path->state == MUD_BACKUP)
+            continue;
+
         if (path->msg.sent >= MUD_MSG_SENT_MAX) {
             if (path->mtu.probe) {
                 mud_update_mtu(path, 0);
@@ -1427,6 +1431,8 @@ mud_update(struct mud *mud)
                                 MUD_MSG_SENT_MAX * path->conf.msg_timeout))) {
             if (!mtu || mtu > path->mtu.ok)
                 mtu = path->mtu.ok;
+            if (path->state != MUD_BACKUP)
+                mud->backup = 0;
             rate += path->tx.rate;
             path->ok = 1;
         }
@@ -1443,7 +1449,9 @@ mud_update(struct mud *mud)
         count++;
     }
 
-    if (rate && mud->window < 1500) {
+    if (!rate) {
+        mud->backup = 1;
+    } else if (mud->window < 1500) {
         uint64_t elapsed = MUD_TIME_MASK(now - mud->window_time);
         if (elapsed > MUD_ONE_MSEC) {
             if (elapsed > 20 * MUD_ONE_MSEC)
