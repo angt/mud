@@ -80,13 +80,6 @@
 #define MUD_TIME_BITS    (48)
 #define MUD_TIME_MASK(X) ((X) & ((UINT64_C(1) << MUD_TIME_BITS) - 2))
 
-#define MUD_WINDOW_TIMEOUT (MUD_ONE_MSEC)
-#define MUD_KEYX_TIMEOUT   ( 60 * MUD_ONE_MIN)
-#define MUD_TIME_TOLERANCE ( 10 * MUD_ONE_MIN)
-
-#define MUD_TC (192) // CS6
-#define MUD_LOSS_LIMIT (25)
-
 #define MUD_CTRL_SIZE (CMSG_SPACE(MUD_PKTINFO_SIZE) + \
                        CMSG_SPACE(sizeof(struct in6_pktinfo)) + \
                        CMSG_SPACE(sizeof(int)))
@@ -381,14 +374,12 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
 
     unsigned char ctrl[MUD_CTRL_SIZE];
 
-    struct iovec iov = {
-        .iov_base = data,
-        .iov_len = size,
-    };
-
     struct msghdr msg = {
         .msg_name = &path->addr,
-        .msg_iov = &iov,
+        .msg_iov = &(struct iovec) {
+            .iov_base = data,
+            .iov_len = size,
+        },
         .msg_iovlen = 1,
         .msg_control = ctrl,
     };
@@ -927,10 +918,10 @@ mud_create(struct sockaddr *addr)
         return NULL;
     }
 
-    mud->time_tolerance = MUD_TIME_TOLERANCE;
-    mud->keyx.timeout = MUD_KEYX_TIMEOUT;
-    mud->tc = MUD_TC;
-    mud->loss_limit = MUD_LOSS_LIMIT;
+    mud->time_tolerance = 10 * MUD_ONE_MIN;
+    mud->keyx.timeout   = 60 * MUD_ONE_MIN;
+    mud->tc             = 192; // CS6
+    mud->loss_limit     = 25;
 
     memcpy(&mud->addr, addr, addrlen);
 
@@ -1184,7 +1175,7 @@ mud_update_window(struct mud *mud, struct mud_path *path, uint64_t now,
         uint64_t tx_acc = path->msg.tx.acc + tx_pkt;
         uint64_t rx_acc = path->msg.rx.acc + rx_pkt;
 
-        if (tx_acc > 10 * MUD_LOSS_LIMIT) {
+        if (tx_acc > 10 * mud->loss_limit) {
             if (tx_acc >= rx_acc) {
                 uint64_t loss = (tx_acc - rx_acc) * 255U / tx_acc;
                 path->tx.loss = (6 * path->tx.loss + 2 * loss) / 8;
@@ -1313,20 +1304,17 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
 int
 mud_recv(struct mud *mud, void *data, size_t size)
 {
-    unsigned char packet[MUD_PKT_MAX_SIZE];
-
-    struct iovec iov = {
-        .iov_base = packet,
-        .iov_len = sizeof(packet),
-    };
-
     struct sockaddr_storage addr;
     unsigned char ctrl[MUD_CTRL_SIZE];
+    unsigned char packet[MUD_PKT_MAX_SIZE];
 
     struct msghdr msg = {
         .msg_name = &addr,
         .msg_namelen = sizeof(addr),
-        .msg_iov = &iov,
+        .msg_iov = &(struct iovec) {
+            .iov_base = packet,
+            .iov_len = sizeof(packet),
+        },
         .msg_iovlen = 1,
         .msg_control = ctrl,
         .msg_controllen = sizeof(ctrl),
@@ -1372,10 +1360,7 @@ mud_recv(struct mud *mud, void *data, size_t size)
 
     struct mud_path *path = mud_get_path(mud, &local_addr, &addr, 1);
 
-    if (!path)
-        return 0;
-
-    if (path->state <= MUD_DOWN)
+    if (!path || path->state <= MUD_DOWN)
         return 0;
 
     if (MUD_MSG(sent_time))
@@ -1411,7 +1396,6 @@ static int
 mud_update(struct mud *mud)
 {
     int count = 0;
-    uint64_t window = 0;
     uint64_t rate = 0;
     size_t mtu = 0;
 
@@ -1458,9 +1442,9 @@ mud_update(struct mud *mud)
 
     if (rate && mud->window < 1500) {
         uint64_t elapsed = MUD_TIME_MASK(now - mud->window_time);
-        if (elapsed > MUD_WINDOW_TIMEOUT) {
-            if (elapsed > 20 * MUD_WINDOW_TIMEOUT)
-                elapsed = 20 * MUD_WINDOW_TIMEOUT;
+        if (elapsed > MUD_ONE_MSEC) {
+            if (elapsed > 20 * MUD_ONE_MSEC)
+                elapsed = 20 * MUD_ONE_MSEC;
             mud->window += rate * elapsed / MUD_ONE_SEC;
             mud->window_time = now;
         }
