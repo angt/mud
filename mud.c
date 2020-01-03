@@ -1434,6 +1434,7 @@ mud_update(struct mud *mud)
             continue;
 
         path->ok = 0;
+        count++;
 
         if (!mud->backup && path->state == MUD_BACKUP)
             continue;
@@ -1464,8 +1465,6 @@ mud_update(struct mud *mud)
                 now = mud_now(mud);
             }
         }
-
-        count++;
     }
 
     if (!rate) {
