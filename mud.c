@@ -62,7 +62,10 @@
 #define MUD_ONE_SEC  (1000 * MUD_ONE_MSEC)
 #define MUD_ONE_MIN  (60 * MUD_ONE_SEC)
 
-#define MUD_U48_SIZE (6U)
+#define MUD_TIME_SIZE    (6U)
+#define MUD_TIME_BITS    (MUD_TIME_SIZE * 8U)
+#define MUD_TIME_MASK(X) ((X) & ((UINT64_C(1) << MUD_TIME_BITS) - 2))
+
 #define MUD_KEY_SIZE (32U)
 #define MUD_MAC_SIZE (16U)
 
@@ -71,18 +74,18 @@
 #define MUD_MSG_SENT_MAX (5)
 #define MUD_MSG_TIMEOUT  (100 * MUD_ONE_MSEC)
 
-#define MUD_PKT_MIN_SIZE (MUD_U48_SIZE + MUD_MAC_SIZE)
+#define MUD_PKT_MIN_SIZE (MUD_TIME_SIZE + MUD_MAC_SIZE)
 #define MUD_PKT_MAX_SIZE (1500U)
 
 #define MUD_MTU_MIN (1280U + MUD_PKT_MIN_SIZE)
 #define MUD_MTU_MAX (1450U + MUD_PKT_MIN_SIZE)
 
-#define MUD_TIME_BITS    (48)
-#define MUD_TIME_MASK(X) ((X) & ((UINT64_C(1) << MUD_TIME_BITS) - 2))
-
 #define MUD_CTRL_SIZE (CMSG_SPACE(MUD_PKTINFO_SIZE) + \
                        CMSG_SPACE(sizeof(struct in6_pktinfo)) + \
                        CMSG_SPACE(sizeof(int)))
+
+#define MUD_STORE_MSG(D,S) mud_store((D),(S),sizeof(D))
+#define MUD_LOAD_MSG(S)    mud_load((S),sizeof(S))
 
 struct mud_crypto_opt {
     unsigned char *dst;
@@ -110,21 +113,19 @@ struct mud_addr {
 };
 
 struct mud_msg {
-    unsigned char sent_time[MUD_U48_SIZE];
+    unsigned char sent_time[MUD_TIME_SIZE];
     unsigned char state;
-    struct mud_addr addr;
-    unsigned char pkey[MUD_PUBKEY_SIZE];
     unsigned char aes;
-    unsigned char mtu[MUD_U48_SIZE];
-    unsigned char fwd_total[MUD_U48_SIZE];
-    unsigned char fwd_bytes[MUD_U48_SIZE];
-    unsigned char tx_bytes[MUD_U48_SIZE];
-    unsigned char tx_total[MUD_U48_SIZE];
-    unsigned char rx_bytes[MUD_U48_SIZE];
-    unsigned char rx_total[MUD_U48_SIZE];
-    unsigned char tx_max_rate[MUD_U48_SIZE];
-    unsigned char msg_timeout[MUD_U48_SIZE];
+    unsigned char pkey[MUD_PUBKEY_SIZE];
+    struct {
+        unsigned char bytes[sizeof(uint64_t)];
+        unsigned char total[sizeof(uint64_t)];
+    } tx, rx, fw;
+    unsigned char max_rate[sizeof(uint64_t)];
+    unsigned char timeout[MUD_TIME_SIZE];
+    unsigned char mtu[2];
     unsigned char loss;
+    struct mud_addr addr;
 };
 
 struct mud_keyx {
@@ -179,32 +180,32 @@ mud_encrypt_opt(const struct mud_crypto_key *k,
     if (k->aes) {
         unsigned char npub[AEGIS256_NPUBBYTES];
 
-        memcpy(npub, c->dst, MUD_U48_SIZE);
-        memset(npub + MUD_U48_SIZE, 0, sizeof(npub) - MUD_U48_SIZE);
+        memcpy(npub, c->dst, MUD_TIME_SIZE);
+        memset(npub + MUD_TIME_SIZE, 0, sizeof(npub) - MUD_TIME_SIZE);
 
         return aegis256_encrypt(
-            c->dst + MUD_U48_SIZE,
+            c->dst + MUD_TIME_SIZE,
             NULL,
             c->src,
             c->size,
             c->dst,
-            MUD_U48_SIZE,
+            MUD_TIME_SIZE,
             npub,
             k->encrypt.key
         );
     } else {
         unsigned char npub[crypto_aead_chacha20poly1305_NPUBBYTES];
 
-        memcpy(npub, c->dst, MUD_U48_SIZE);
-        memset(npub + MUD_U48_SIZE, 0, sizeof(npub) - MUD_U48_SIZE);
+        memcpy(npub, c->dst, MUD_TIME_SIZE);
+        memset(npub + MUD_TIME_SIZE, 0, sizeof(npub) - MUD_TIME_SIZE);
 
         return crypto_aead_chacha20poly1305_encrypt(
-            c->dst + MUD_U48_SIZE,
+            c->dst + MUD_TIME_SIZE,
             NULL,
             c->src,
             c->size,
             c->dst,
-            MUD_U48_SIZE,
+            MUD_TIME_SIZE,
             NULL,
             npub,
             k->encrypt.key
@@ -219,31 +220,31 @@ mud_decrypt_opt(const struct mud_crypto_key *k,
     if (k->aes) {
         unsigned char npub[AEGIS256_NPUBBYTES];
 
-        memcpy(npub, c->src, MUD_U48_SIZE);
-        memset(npub + MUD_U48_SIZE, 0, sizeof(npub) - MUD_U48_SIZE);
+        memcpy(npub, c->src, MUD_TIME_SIZE);
+        memset(npub + MUD_TIME_SIZE, 0, sizeof(npub) - MUD_TIME_SIZE);
 
         return aegis256_decrypt(
             c->dst,
             NULL,
-            c->src + MUD_U48_SIZE,
-            c->size - MUD_U48_SIZE,
-            c->src, MUD_U48_SIZE,
+            c->src + MUD_TIME_SIZE,
+            c->size - MUD_TIME_SIZE,
+            c->src, MUD_TIME_SIZE,
             npub,
             k->decrypt.key
         );
     } else {
         unsigned char npub[crypto_aead_chacha20poly1305_NPUBBYTES];
 
-        memcpy(npub, c->src, MUD_U48_SIZE);
-        memset(npub + MUD_U48_SIZE, 0, sizeof(npub) - MUD_U48_SIZE);
+        memcpy(npub, c->src, MUD_TIME_SIZE);
+        memset(npub + MUD_TIME_SIZE, 0, sizeof(npub) - MUD_TIME_SIZE);
 
         return crypto_aead_chacha20poly1305_decrypt(
             c->dst,
             NULL,
             NULL,
-            c->src + MUD_U48_SIZE,
-            c->size - MUD_U48_SIZE,
-            c->src, MUD_U48_SIZE,
+            c->src + MUD_TIME_SIZE,
+            c->size - MUD_TIME_SIZE,
+            c->src, MUD_TIME_SIZE,
             npub,
             k->decrypt.key
         );
@@ -251,25 +252,42 @@ mud_decrypt_opt(const struct mud_crypto_key *k,
 }
 
 static void
-mud_write48(unsigned char *dst, uint64_t src)
+mud_store(unsigned char *dst, uint64_t src, size_t size)
 {
-    dst[0] = (unsigned char)(UINT64_C(255) & (src));
-    dst[1] = (unsigned char)(UINT64_C(255) & (src >> 8));
-    dst[2] = (unsigned char)(UINT64_C(255) & (src >> 16));
-    dst[3] = (unsigned char)(UINT64_C(255) & (src >> 24));
-    dst[4] = (unsigned char)(UINT64_C(255) & (src >> 32));
-    dst[5] = (unsigned char)(UINT64_C(255) & (src >> 40));
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    memcpy(dst, &src, size);
+#else
+    dst[0] = (unsigned char)(src);
+    dst[1] = (unsigned char)(src >> 8);
+    if (size < 48) return;
+    dst[2] = (unsigned char)(src >> 16);
+    dst[3] = (unsigned char)(src >> 24);
+    dst[4] = (unsigned char)(src >> 32);
+    dst[5] = (unsigned char)(src >> 40);
+    if (size < 64) return;
+    dst[6] = (unsigned char)(src >> 48);
+    dst[7] = (unsigned char)(src >> 56);
+#endif
 }
 
 static uint64_t
-mud_read48(const unsigned char *src)
+mud_load(const unsigned char *src, size_t size)
 {
-    uint64_t ret = src[0];
+    uint64_t ret = 0;
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    memcpy(&ret, src, size);
+#else
+    ret = src[0];
     ret |= ((uint64_t)src[1]) << 8;
+    if (size < 48) return ret;
     ret |= ((uint64_t)src[2]) << 16;
     ret |= ((uint64_t)src[3]) << 24;
     ret |= ((uint64_t)src[4]) << 32;
     ret |= ((uint64_t)src[5]) << 40;
+    if (size < 64) return ret;
+    ret |= ((uint64_t)src[6]) << 48;
+    ret |= ((uint64_t)src[7]) << 56;
+#endif
     return ret;
 }
 
@@ -976,7 +994,7 @@ mud_encrypt(struct mud *mud, uint64_t now,
         .size = src_size,
     };
 
-    mud_write48(dst, now);
+    mud_store(dst, now, MUD_TIME_SIZE);
 
     if (mud->keyx.use_next) {
         mud_encrypt_opt(&mud->keyx.next, &opt);
@@ -1055,7 +1073,7 @@ mud_localaddr(struct sockaddr_storage *addr, struct msghdr *msg)
 
 static int
 mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
-             uint64_t sent_time, uint64_t fwd_bytes, uint64_t fwd_total,
+             uint64_t sent_time, uint64_t fw_bytes, uint64_t fw_total,
              size_t size)
 {
     unsigned char dst[MUD_PKT_MAX_SIZE];
@@ -1067,8 +1085,8 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
     if (size < MUD_PKT_MIN_SIZE + sizeof(struct mud_msg))
         size = MUD_PKT_MIN_SIZE + sizeof(struct mud_msg);
 
-    mud_write48(dst, MUD_MSG_MARK(now));
-    mud_write48(msg->sent_time, sent_time);
+    mud_store(dst, MUD_MSG_MARK(now), MUD_TIME_SIZE);
+    MUD_STORE_MSG(msg->sent_time, sent_time);
 
     if (path->addr.ss_family == AF_INET) {
         msg->addr.ff[0] = 0xFF;
@@ -1093,16 +1111,17 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
     msg->aes = (unsigned char)mud->keyx.aes;
 
     if (!path->mtu.probe)
-        mud_write48(msg->mtu, path->mtu.ok);
+        MUD_STORE_MSG(msg->mtu, path->mtu.ok);
 
-    mud_write48(msg->tx_bytes, path->tx.bytes);
-    mud_write48(msg->rx_bytes, path->rx.bytes);
-    mud_write48(msg->tx_total, path->tx.total);
-    mud_write48(msg->rx_total, path->rx.total);
-    mud_write48(msg->fwd_bytes, fwd_bytes);
-    mud_write48(msg->fwd_total, fwd_total);
-    mud_write48(msg->tx_max_rate, path->conf.rx_max_rate);
-    mud_write48(msg->msg_timeout, path->conf.msg_timeout);
+    MUD_STORE_MSG(msg->tx.bytes, path->tx.bytes);
+    MUD_STORE_MSG(msg->rx.bytes, path->rx.bytes);
+    MUD_STORE_MSG(msg->tx.total, path->tx.total);
+    MUD_STORE_MSG(msg->rx.total, path->rx.total);
+    MUD_STORE_MSG(msg->fw.bytes, fw_bytes);
+    MUD_STORE_MSG(msg->fw.total, fw_total);
+    MUD_STORE_MSG(msg->max_rate, path->conf.rx_max_rate);
+    MUD_STORE_MSG(msg->timeout, path->conf.msg_timeout);
+
     msg->loss = (unsigned char)path->tx.loss;
 
     const struct mud_crypto_opt opt = {
@@ -1231,15 +1250,15 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
 
     mud_ss_from_packet(&path->r_addr, msg);
 
-    const uint64_t tx_time = mud_read48(msg->sent_time);
+    const uint64_t tx_time = MUD_LOAD_MSG(msg->sent_time);
 
     if (tx_time) {
         mud_update_stat(&path->rtt, MUD_TIME_MASK(now - tx_time));
 
-        const uint64_t tx_bytes = mud_read48(msg->fwd_bytes);
-        const uint64_t tx_total = mud_read48(msg->fwd_total);
-        const uint64_t rx_bytes = mud_read48(msg->rx_bytes);
-        const uint64_t rx_total = mud_read48(msg->rx_total);
+        const uint64_t tx_bytes = MUD_LOAD_MSG(msg->fw.bytes);
+        const uint64_t tx_total = MUD_LOAD_MSG(msg->fw.total);
+        const uint64_t rx_bytes = MUD_LOAD_MSG(msg->rx.bytes);
+        const uint64_t rx_total = MUD_LOAD_MSG(msg->rx.total);
         const uint64_t rx_time  = sent_time;
 
         if ((tx_time > path->msg.tx.time) && (tx_bytes > path->msg.tx.bytes) &&
@@ -1272,14 +1291,14 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
         }
     } else {
         path->state = (enum mud_state)msg->state;
-        path->mtu.ok = mud_read48(msg->mtu);
-        path->conf.msg_timeout = mud_read48(msg->msg_timeout);
+        path->mtu.ok = MUD_LOAD_MSG(msg->mtu);
+        path->conf.msg_timeout = MUD_LOAD_MSG(msg->timeout);
 
-        const uint64_t tx_max_rate = mud_read48(msg->tx_max_rate);
+        const uint64_t max_rate = MUD_LOAD_MSG(msg->max_rate);
 
-        if (path->conf.tx_max_rate != tx_max_rate) {
-            path->conf.tx_max_rate = tx_max_rate;
-            path->tx.rate = tx_max_rate;
+        if (path->conf.tx_max_rate != max_rate) {
+            path->conf.tx_max_rate = max_rate;
+            path->tx.rate = max_rate;
         }
 
         path->msg.sent++;
@@ -1300,8 +1319,8 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
     }
 
     mud_send_msg(mud, path, now, sent_time,
-                 mud_read48(msg->tx_bytes),
-                 mud_read48(msg->tx_total),
+                 MUD_LOAD_MSG(msg->tx.bytes),
+                 MUD_LOAD_MSG(msg->tx.total),
                  size);
 }
 
@@ -1334,7 +1353,7 @@ mud_recv(struct mud *mud, void *data, size_t size)
         return 0;
 
     const uint64_t now = mud_now(mud);
-    const uint64_t sent_time = mud_read48(packet);
+    const uint64_t sent_time = mud_load(packet, MUD_TIME_SIZE);
 
     mud_unmapv4(&addr);
 
