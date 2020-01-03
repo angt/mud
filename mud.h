@@ -70,14 +70,15 @@ struct mud_bad {
 struct mud *mud_create (struct sockaddr *);
 void        mud_delete (struct mud *);
 
+int mud_update    (struct mud *);
+int mud_send_wait (struct mud *);
+
 int    mud_get_fd  (struct mud *);
 size_t mud_get_mtu (struct mud *);
 int    mud_get_bad (struct mud *, struct mud_bad *);
 
 int mud_set_key (struct mud *, unsigned char *, size_t);
 int mud_get_key (struct mud *, unsigned char *, size_t *);
-
-long mud_send_wait (struct mud *);
 
 int mud_set_time_tolerance (struct mud *, unsigned long);
 int mud_set_keyx_timeout   (struct mud *, unsigned long);

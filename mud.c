@@ -1415,10 +1415,11 @@ mud_cleanup_path(struct mud *mud, uint64_t now, struct mud_path *path)
     return path->state <= MUD_DOWN;
 }
 
-static int
+int
 mud_update(struct mud *mud)
 {
     int count = 0;
+    int mtu_probe = 0;
     uint64_t rate = 0;
     size_t mtu = 0;
 
@@ -1435,6 +1436,9 @@ mud_update(struct mud *mud)
 
         path->ok = 0;
         count++;
+
+        if (path->mtu.probe)
+            mtu_probe = 1;
 
         if (!mud->backup && path->state == MUD_BACKUP)
             continue;
@@ -1482,7 +1486,10 @@ mud_update(struct mud *mud)
     mud->rate = rate;
     mud->mtu = mtu;
 
-    return count;
+    if (!count)
+        return -1;
+
+    return (mtu_probe << 1) | (mud->window < 1500);
 }
 
 int
@@ -1526,12 +1533,9 @@ mud_set_state(struct mud *mud, struct sockaddr *addr,
     return 0;
 }
 
-long
+int
 mud_send_wait(struct mud *mud)
 {
-    if (!mud_update(mud))
-        return -1;
-
     return mud->window < 1500;
 }
 

@@ -62,7 +62,7 @@ main(int argc, char **argv)
 
     for (;;) {
         // mandatory, mud have lot of work to do.
-        if (mud_send_wait(mud))
+        if (mud_update(mud))
             usleep(100000); // don't use all the cpu
 
         if (client) {
