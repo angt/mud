@@ -1465,7 +1465,9 @@ mud_update(struct mud *mud)
         }
 
         if (mud->peer.set) {
-            if (mud_timeout(now, path->msg.time, path->conf.msg_timeout)) {
+            uint64_t timeout = path->msg.sent >= MUD_MSG_SENT_MAX
+                             ? MUD_ONE_SEC : path->conf.msg_timeout;
+            if (mud_timeout(now, path->msg.time, timeout)) {
                 path->msg.sent++;
                 path->msg.time = now;
                 mud_send_msg(mud, path, now, 0, 0, 0, path->mtu.probe);
