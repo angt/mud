@@ -1419,7 +1419,7 @@ int
 mud_update(struct mud *mud)
 {
     int count = 0;
-    int mtu_probe = 0;
+    int probe = 0;
     uint64_t rate = 0;
     size_t mtu = 0;
 
@@ -1437,11 +1437,16 @@ mud_update(struct mud *mud)
         path->ok = 0;
         count++;
 
-        if (path->mtu.probe)
-            mtu_probe = 1;
+        int mtu_ok = path->mtu.ok && !path->mtu.probe;
 
-        if (!mud->backup && path->state == MUD_BACKUP)
-            continue;
+        if (mtu_ok) {
+            if (!mtu || mtu > path->mtu.ok)
+                mtu = path->mtu.ok;
+            if (!mud->backup && path->state == MUD_BACKUP)
+                continue;
+        } else {
+            probe = 1;
+        }
 
         if (path->msg.sent >= MUD_MSG_SENT_MAX) {
             if (path->mtu.probe) {
@@ -1450,11 +1455,9 @@ mud_update(struct mud *mud)
             } else {
                 path->msg.sent = MUD_MSG_SENT_MAX;
             }
-        } else if (!path->mtu.probe && path->mtu.ok && (mud->peer.set ||
+        } else if (mtu_ok && (mud->peer.set ||
                    !mud_timeout(mud->last_recv_time, path->rx.time,
                                 MUD_MSG_SENT_MAX * path->conf.msg_timeout))) {
-            if (!mtu || mtu > path->mtu.ok)
-                mtu = path->mtu.ok;
             if (path->state != MUD_BACKUP)
                 mud->backup = 0;
             rate += path->tx.rate;
@@ -1489,7 +1492,7 @@ mud_update(struct mud *mud)
     if (!count)
         return -1;
 
-    return (mtu_probe << 1) | (mud->window < 1500);
+    return (probe << 1) | (mud->window < 1500);
 }
 
 int
