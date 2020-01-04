@@ -49,6 +49,7 @@ struct mud_path {
         size_t min;
         size_t max;
         size_t probe;
+        size_t last;
         size_t ok;
     } mtu;
     struct {

@@ -580,6 +580,7 @@ mud_reset_path(struct mud_path *path)
 {
     path->mtu.ok = 0;
     path->mtu.probe = 0;
+    path->mtu.last = 0;
 }
 
 static struct mud_path *
@@ -1111,7 +1112,7 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
     msg->aes = (unsigned char)mud->keyx.aes;
 
     if (!path->mtu.probe)
-        MUD_STORE_MSG(msg->mtu, path->mtu.ok);
+        MUD_STORE_MSG(msg->mtu, path->mtu.last);
 
     MUD_STORE_MSG(msg->tx.bytes, path->tx.bytes);
     MUD_STORE_MSG(msg->rx.bytes, path->rx.bytes);
@@ -1217,7 +1218,7 @@ static void
 mud_update_mtu(struct mud_path *path, size_t size)
 {
     if (!path->mtu.probe) {
-        if (!path->mtu.ok) {
+        if (!path->mtu.last) {
             path->mtu.min = MUD_MTU_MIN;
             path->mtu.max = MUD_MTU_MAX;
             path->mtu.probe = MUD_MTU_MAX;
@@ -1229,7 +1230,7 @@ mud_update_mtu(struct mud_path *path, size_t size)
         if (path->mtu.min > size || path->mtu.max < size)
             return;
         path->mtu.min = size + 1;
-        path->mtu.ok = size;
+        path->mtu.last = size;
     } else {
         path->mtu.max = path->mtu.probe - 1;
     }
@@ -1286,14 +1287,18 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
         path->rx.loss = (uint64_t)msg->loss;
         path->msg.sent = 0;
 
+
         if (mud->peer.set) {
             mud_update_mtu(path, size);
+            if (path->mtu.last && path->mtu.last == MUD_LOAD_MSG(msg->mtu))
+                path->mtu.ok = path->mtu.last;
         } else {
             return;
         }
     } else {
         path->state = (enum mud_state)msg->state;
-        path->mtu.ok = MUD_LOAD_MSG(msg->mtu);
+        path->mtu.last = MUD_LOAD_MSG(msg->mtu);
+        path->mtu.ok = path->mtu.last;
         path->conf.msg_timeout = MUD_LOAD_MSG(msg->timeout);
 
         const uint64_t max_rate = MUD_LOAD_MSG(msg->max_rate);
@@ -1438,9 +1443,7 @@ mud_update(struct mud *mud)
         path->ok = 0;
         count++;
 
-        int mtu_ok = path->mtu.ok && !path->mtu.probe;
-
-        if (mtu_ok) {
+        if (path->mtu.ok) {
             if (!mtu || mtu > path->mtu.ok)
                 mtu = path->mtu.ok;
             if (!mud->backup && path->state == MUD_BACKUP)
@@ -1454,7 +1457,7 @@ mud_update(struct mud *mud)
             } else {
                 path->msg.sent = MUD_MSG_SENT_MAX;
             }
-        } else if (mtu_ok && (mud->peer.set ||
+        } else if (path->mtu.ok && (mud->peer.set ||
                    !mud_timeout(mud->last_recv_time, path->rx.time,
                                 MUD_MSG_SENT_MAX * path->conf.msg_timeout))) {
             if (path->state != MUD_BACKUP)
