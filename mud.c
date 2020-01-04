@@ -1421,7 +1421,6 @@ int
 mud_update(struct mud *mud)
 {
     int count = 0;
-    int probe = 0;
     uint64_t rate = 0;
     size_t mtu = 0;
 
@@ -1446,8 +1445,6 @@ mud_update(struct mud *mud)
                 mtu = path->mtu.ok;
             if (!mud->backup && path->state == MUD_BACKUP)
                 continue;
-        } else {
-            probe = 1;
         }
 
         if (path->msg.sent >= MUD_MSG_SENT_MAX) {
@@ -1496,7 +1493,7 @@ mud_update(struct mud *mud)
     if (!count)
         return -1;
 
-    return (probe << 1) | (mud->window < 1500);
+    return mud->window < 1500;
 }
 
 int
