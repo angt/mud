@@ -1193,6 +1193,8 @@ mud_update_window(struct mud *mud, struct mud_path *path, uint64_t now,
 {
     if (rx_dt && rx_dt > tx_dt + (tx_dt >> 3)) {
         path->tx.rate = 1 + ((rx_bytes * MUD_ONE_SEC) - 1) / rx_dt;
+        if (path->tx.rate > path->conf.tx_max_rate)
+            path->tx.rate = path->conf.tx_max_rate;
     } else {
         uint64_t tx_acc = path->msg.tx.acc + tx_pkt;
         uint64_t rx_acc = path->msg.rx.acc + rx_pkt;
