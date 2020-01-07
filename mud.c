@@ -1287,7 +1287,6 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
         path->rx.loss = (uint64_t)msg->loss;
         path->msg.sent = 0;
 
-
         if (mud->peer.set) {
             mud_update_mtu(path, size);
             if (path->mtu.last && path->mtu.last == MUD_LOAD_MSG(msg->mtu))
