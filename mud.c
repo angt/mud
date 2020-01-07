@@ -643,6 +643,7 @@ mud_get_path(struct mud *mud, struct sockaddr_storage *local_addr,
 
     path->state = MUD_UP;
     path->conf.msg_timeout = MUD_MSG_TIMEOUT;
+    path->conf.fixed_rate = 1;
 
     return path;
 }
