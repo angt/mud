@@ -979,7 +979,7 @@ mud_delete(struct mud *mud)
     sodium_free(mud);
 }
 
-static int
+static size_t
 mud_encrypt(struct mud *mud, uint64_t now,
             unsigned char *dst, size_t dst_size,
             const unsigned char *src, size_t src_size)
@@ -1003,10 +1003,10 @@ mud_encrypt(struct mud *mud, uint64_t now,
         mud_encrypt_opt(&mud->keyx.current, &opt);
     }
 
-    return (int)size;
+    return size;
 }
 
-static int
+static size_t
 mud_decrypt(struct mud *mud,
             unsigned char *dst, size_t dst_size,
             const unsigned char *src, size_t src_size)
@@ -1030,11 +1030,11 @@ mud_decrypt(struct mud *mud,
         } else {
             if (mud_decrypt_opt(&mud->keyx.last, &opt) &&
                 mud_decrypt_opt(&mud->keyx.private, &opt))
-                return -1;
+                return 0;
         }
     }
 
-    return (int)size;
+    return size;
 }
 
 static int
@@ -1137,7 +1137,7 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
                          sent_time ? MSG_CONFIRM : 0);
 }
 
-static int
+static size_t
 mud_decrypt_msg(struct mud *mud,
                 unsigned char *dst, size_t dst_size,
                 const unsigned char *src, size_t src_size)
@@ -1154,9 +1154,9 @@ mud_decrypt_msg(struct mud *mud,
     };
 
     if (mud_decrypt_opt(&mud->keyx.private, &opt))
-        return -1;
+        return 0;
 
-    return (int)size;
+    return size;
 }
 
 static void
@@ -1372,11 +1372,11 @@ mud_recv(struct mud *mud, void *data, size_t size)
         return 0;
     }
 
-    const int ret = MUD_MSG(sent_time)
-                  ? mud_decrypt_msg(mud, data, size, packet, (size_t)packet_size)
-                  : mud_decrypt(mud, data, size, packet, (size_t)packet_size);
+    const size_t ret = MUD_MSG(sent_time)
+                     ? mud_decrypt_msg(mud, data, size, packet, (size_t)packet_size)
+                     : mud_decrypt(mud, data, size, packet, (size_t)packet_size);
 
-    if (ret <= 0) {
+    if (!ret) {
         mud->bad.decrypt.addr = addr;
         mud->bad.decrypt.time = now;
         mud->bad.decrypt.count++;
@@ -1402,7 +1402,7 @@ mud_recv(struct mud *mud, void *data, size_t size)
 
     mud->last_recv_time = now;
 
-    return MUD_MSG(sent_time) ? 0 : ret;
+    return MUD_MSG(sent_time) ? 0 : (int)ret;
 }
 
 static int
@@ -1559,9 +1559,9 @@ mud_send(struct mud *mud, const void *data, size_t size)
 
     unsigned char packet[MUD_PKT_MAX_SIZE];
     const uint64_t now = mud_now(mud);
-    const int packet_size = mud_encrypt(mud, now,
-                                        packet, sizeof(packet),
-                                        data, size);
+    const size_t packet_size = mud_encrypt(mud, now,
+                                           packet, sizeof(packet),
+                                           data, size);
     if (!packet_size) {
         errno = EMSGSIZE;
         return -1;
@@ -1571,5 +1571,5 @@ mud_send(struct mud *mud, const void *data, size_t size)
     memcpy(&k, &packet[packet_size - sizeof(k)], sizeof(k));
 
     return mud_send_path(mud, mud_select_path(mud, k),
-                         now, packet, (size_t)packet_size, 0);
+                         now, packet, packet_size, 0);
 }
