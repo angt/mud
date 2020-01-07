@@ -1144,7 +1144,7 @@ mud_decrypt_msg(struct mud *mud,
 {
     const size_t size = src_size - MUD_PKT_MIN_SIZE;
 
-    if (size < sizeof(struct mud_msg))
+    if (size < sizeof(struct mud_msg) || size > dst_size)
         return 0;
 
     const struct mud_crypto_opt opt = {
