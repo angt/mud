@@ -125,6 +125,7 @@ struct mud_msg {
     unsigned char timeout[MUD_TIME_SIZE];
     unsigned char mtu[2];
     unsigned char loss;
+    unsigned char fixed_rate;
     struct mud_addr addr;
 };
 
@@ -1124,6 +1125,7 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
     MUD_STORE_MSG(msg->timeout, path->conf.msg_timeout);
 
     msg->loss = (unsigned char)path->tx.loss;
+    msg->fixed_rate = path->conf.fixed_rate;
 
     const struct mud_crypto_opt opt = {
         .dst = dst,
@@ -1193,9 +1195,11 @@ mud_update_window(struct mud *mud, struct mud_path *path, uint64_t now,
                   uint64_t rx_dt, uint64_t rx_bytes, uint64_t rx_pkt)
 {
     if (rx_dt && rx_dt > tx_dt + (tx_dt >> 3)) {
-        path->tx.rate = 1 + ((rx_bytes * MUD_ONE_SEC) - 1) / rx_dt;
-        if (path->tx.rate > path->conf.tx_max_rate)
-            path->tx.rate = path->conf.tx_max_rate;
+        if (!path->conf.fixed_rate) {
+            path->tx.rate = 1 + ((rx_bytes * MUD_ONE_SEC) - 1) / rx_dt;
+            if (path->tx.rate > path->conf.tx_max_rate)
+                path->tx.rate = path->conf.tx_max_rate;
+        }
     } else {
         uint64_t tx_acc = path->msg.tx.acc + tx_pkt;
         uint64_t rx_acc = path->msg.rx.acc + rx_pkt;
@@ -1302,10 +1306,11 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
 
         const uint64_t max_rate = MUD_LOAD_MSG(msg->max_rate);
 
-        if (path->conf.tx_max_rate != max_rate) {
-            path->conf.tx_max_rate = max_rate;
+        if (path->conf.tx_max_rate != max_rate || msg->fixed_rate)
             path->tx.rate = max_rate;
-        }
+
+        path->conf.tx_max_rate = max_rate;
+        path->conf.fixed_rate = msg->fixed_rate;
 
         path->msg.sent++;
         path->msg.time = now;
@@ -1503,7 +1508,8 @@ mud_set_state(struct mud *mud, struct sockaddr *addr,
               enum mud_state state,
               unsigned long tx_max_rate,
               unsigned long rx_max_rate,
-              unsigned long msg_timeout)
+              unsigned long msg_timeout,
+              unsigned char fixed_rate)
 {
     if (!mud->peer.set || state > MUD_UP) {
         errno = EINVAL;
@@ -1529,6 +1535,9 @@ mud_set_state(struct mud *mud, struct sockaddr *addr,
 
     if (msg_timeout)
         path->conf.msg_timeout = msg_timeout;
+
+    if (fixed_rate)
+        path->conf.fixed_rate = fixed_rate >> 1;
 
     if (state && path->state != state) {
         path->state = state;

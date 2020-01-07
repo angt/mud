@@ -56,6 +56,7 @@ struct mud_path {
         uint64_t tx_max_rate;
         uint64_t rx_max_rate;
         uint64_t msg_timeout;
+        unsigned char fixed_rate;
     } conf;
     unsigned char ok;
 };
@@ -88,7 +89,7 @@ int mud_set_tc             (struct mud *, int);
 int mud_set_aes            (struct mud *);
 
 int mud_set_state (struct mud *, struct sockaddr *, enum mud_state,
-                   unsigned long, unsigned long, unsigned long);
+                   unsigned long, unsigned long, unsigned long, unsigned char);
 
 int mud_peer (struct mud *, struct sockaddr *);
 

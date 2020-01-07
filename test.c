@@ -52,7 +52,7 @@ main(int argc, char **argv)
 
         // ...from loopback at 1MBps (not 1Mbps)
         if (mud_set_state(mud, (struct sockaddr *)&local,
-                    MUD_UP, 1000 * 1000, 1000 * 1000, 0)) {
+                    MUD_UP, 1000 * 1000, 1000 * 1000, 0, 0)) {
             perror("mud_set_state");
             return -1;
         }
