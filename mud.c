@@ -1458,12 +1458,16 @@ mud_update(struct mud *mud)
             if (path->mtu.probe) {
                 mud_update_mtu(path, 0);
                 path->msg.sent = 0;
+                path->msg.tx.acc = 0;
+                path->msg.rx.acc = 0;
             } else {
                 path->msg.sent = MUD_MSG_SENT_MAX;
             }
-        } else if (path->mtu.ok && (mud->peer.set ||
-                   !mud_timeout(mud->last_recv_time, path->rx.time,
-                                MUD_MSG_SENT_MAX * path->conf.msg_timeout))) {
+        } else if (path->mtu.ok &&
+                   (path->tx.loss <= mud->loss_limit) &&
+                   (mud->peer.set ||
+                    !mud_timeout(mud->last_recv_time, path->rx.time,
+                                 MUD_MSG_SENT_MAX * path->conf.msg_timeout))) {
             if (path->state != MUD_BACKUP)
                 mud->backup = 0;
             rate += path->tx.rate;
