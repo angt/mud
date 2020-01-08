@@ -1205,13 +1205,12 @@ mud_update_window(struct mud *mud, struct mud_path *path, uint64_t now,
         uint64_t tx_acc = path->msg.tx.acc + tx_pkt;
         uint64_t rx_acc = path->msg.rx.acc + rx_pkt;
 
-        if (tx_acc > 10 * mud->loss_limit) {
-            if (tx_acc >= rx_acc) {
-                uint64_t loss = (tx_acc - rx_acc) * 255U / tx_acc;
-                path->tx.loss = (6 * path->tx.loss + 2 * loss) / 8;
-            }
-            path->msg.tx.acc = 0;
-            path->msg.rx.acc = 0;
+        if (tx_acc >= rx_acc)
+            path->tx.loss = (tx_acc - rx_acc) * 255U / tx_acc;
+
+        if (tx_acc > 10000) {
+            path->msg.tx.acc = tx_acc - (tx_acc >> 3);
+            path->msg.rx.acc = rx_acc - (tx_acc >> 3);
         } else {
             path->msg.tx.acc = tx_acc;
             path->msg.rx.acc = rx_acc;
