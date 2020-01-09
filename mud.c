@@ -144,7 +144,7 @@ struct mud {
     int fd;
     int backup;
     uint64_t time_tolerance;
-    unsigned loss_limit;
+    uint64_t loss_limit;
     struct sockaddr_storage addr;
     struct mud_path *paths;
     unsigned count;
@@ -1270,7 +1270,7 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
 
         if ((tx_time > path->msg.tx.time) && (tx_bytes > path->msg.tx.bytes) &&
             (rx_time > path->msg.rx.time) && (rx_bytes > path->msg.rx.bytes)) {
-            if (path->msg.set) {
+            if (path->msg.set && path->mtu.ok) {
                 mud_update_window(mud, path, now,
                         MUD_TIME_MASK(tx_time - path->msg.tx.time),
                         tx_bytes - path->msg.tx.bytes,
@@ -1458,8 +1458,6 @@ mud_update(struct mud *mud)
             if (path->mtu.probe) {
                 mud_update_mtu(path, 0);
                 path->msg.sent = 0;
-                path->msg.tx.acc = 0;
-                path->msg.rx.acc = 0;
             } else {
                 path->msg.sent = MUD_MSG_SENT_MAX;
             }
