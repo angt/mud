@@ -1210,7 +1210,7 @@ mud_update_window(struct mud *mud, struct mud_path *path, uint64_t now,
 
         if (tx_acc > 10000) {
             path->msg.tx.acc = tx_acc - (tx_acc >> 3);
-            path->msg.rx.acc = rx_acc - (tx_acc >> 3);
+            path->msg.rx.acc = rx_acc - (rx_acc >> 3);
         } else {
             path->msg.tx.acc = tx_acc;
             path->msg.rx.acc = rx_acc;
