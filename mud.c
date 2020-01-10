@@ -1426,6 +1426,22 @@ mud_cleanup_path(struct mud *mud, uint64_t now, struct mud_path *path)
     return path->state <= MUD_DOWN;
 }
 
+static int
+mud_path_is_ok(struct mud *mud, struct mud_path *path)
+{
+    if (!path->mtu.ok)
+        return 0;
+
+    if (path->tx.loss > mud->loss_limit)
+        return 0;
+
+    if (mud->peer.set)
+        return 1;
+
+    return !mud_timeout(mud->last_recv_time, path->rx.time,
+                        MUD_MSG_SENT_MAX * path->conf.msg_timeout);
+}
+
 int
 mud_update(struct mud *mud)
 {
@@ -1461,11 +1477,7 @@ mud_update(struct mud *mud)
             } else {
                 path->msg.sent = MUD_MSG_SENT_MAX;
             }
-        } else if (path->mtu.ok &&
-                   (path->tx.loss <= mud->loss_limit) &&
-                   (mud->peer.set ||
-                    !mud_timeout(mud->last_recv_time, path->rx.time,
-                                 MUD_MSG_SENT_MAX * path->conf.msg_timeout))) {
+        } else if (mud_path_is_ok(mud, path)) {
             if (path->state != MUD_BACKUP)
                 mud->backup = 0;
             rate += path->tx.rate;
