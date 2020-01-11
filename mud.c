@@ -143,6 +143,7 @@ struct mud_keyx {
 struct mud {
     int fd;
     int backup;
+    uint64_t keepalive;
     uint64_t time_tolerance;
     uint64_t loss_limit;
     struct sockaddr_storage addr;
@@ -644,6 +645,7 @@ mud_get_path(struct mud *mud, struct sockaddr_storage *local_addr,
     path->state = MUD_UP;
     path->conf.msg_timeout = MUD_MSG_TIMEOUT;
     path->conf.fixed_rate = 1;
+    path->idle = mud_now(mud);
 
     return path;
 }
@@ -782,6 +784,12 @@ mud_set_msec(uint64_t *dst, unsigned long msec)
     *dst = x;
 
     return 0;
+}
+
+int
+mud_set_keepalive(struct mud *mud, unsigned long msec)
+{
+    return mud_set_msec(&mud->keepalive, msec);
 }
 
 int
@@ -941,6 +949,7 @@ mud_create(struct sockaddr *addr)
         return NULL;
     }
 
+    mud->keepalive      = 25 * MUD_ONE_SEC;
     mud->time_tolerance = 10 * MUD_ONE_MIN;
     mud->keyx.timeout   = 60 * MUD_ONE_MIN;
     mud->tc             = 192; // CS6
@@ -1397,8 +1406,11 @@ mud_recv(struct mud *mud, void *data, size_t size)
     if (!path || path->state <= MUD_DOWN)
         return 0;
 
-    if (MUD_MSG(sent_time))
+    if (MUD_MSG(sent_time)) {
         mud_recv_msg(mud, path, now, sent_time, data, (size_t)packet_size);
+    } else {
+        path->idle = now;
+    }
 
     path->rx.total++;
     path->rx.time = now;
@@ -1460,6 +1472,7 @@ mud_update(struct mud *mud)
         if (mud_cleanup_path(mud, now, path))
             continue;
 
+        const int ok = path->ok;
         path->ok = 0;
         count++;
 
@@ -1480,13 +1493,21 @@ mud_update(struct mud *mud)
         } else if (mud_path_is_ok(mud, path)) {
             if (path->state != MUD_BACKUP)
                 mud->backup = 0;
+            if (!ok)
+                path->idle = now;
             rate += path->tx.rate;
             path->ok = 1;
         }
 
         if (mud->peer.set) {
-            uint64_t timeout = path->msg.sent >= MUD_MSG_SENT_MAX
-                             ? MUD_ONE_SEC : path->conf.msg_timeout;
+            uint64_t timeout = path->conf.msg_timeout;
+
+            if (path->msg.sent >= MUD_MSG_SENT_MAX) {
+                timeout = MUD_ONE_SEC;
+            } else if (path->ok && mud_timeout(now, path->idle, MUD_ONE_SEC)) {
+                timeout = mud->keepalive;
+            }
+
             if (mud_timeout(now, path->msg.time, timeout)) {
                 path->msg.sent++;
                 path->msg.time = now;
@@ -1592,6 +1613,14 @@ mud_send(struct mud *mud, const void *data, size_t size)
     uint16_t k;
     memcpy(&k, &packet[packet_size - sizeof(k)], sizeof(k));
 
-    return mud_send_path(mud, mud_select_path(mud, k),
-                         now, packet, packet_size, 0);
+    struct mud_path *path = mud_select_path(mud, k);
+
+    if (!path) {
+        errno = EAGAIN;
+        return -1;
+    }
+
+    path->idle = now;
+
+    return mud_send_path(mud, path, now, packet, packet_size, 0);
 }

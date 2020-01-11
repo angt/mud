@@ -58,6 +58,7 @@ struct mud_path {
         uint64_t msg_timeout;
         unsigned char fixed_rate;
     } conf;
+    uint64_t idle;
     unsigned char ok;
 };
 
@@ -82,6 +83,7 @@ int    mud_get_bad (struct mud *, struct mud_bad *);
 int mud_set_key (struct mud *, unsigned char *, size_t);
 int mud_get_key (struct mud *, unsigned char *, size_t *);
 
+int mud_set_keepalive      (struct mud *, unsigned long);
 int mud_set_time_tolerance (struct mud *, unsigned long);
 int mud_set_keyx_timeout   (struct mud *, unsigned long);
 int mud_set_loss_limit     (struct mud *, unsigned);
