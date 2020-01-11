@@ -55,7 +55,7 @@ struct mud_path {
     struct {
         uint64_t tx_max_rate;
         uint64_t rx_max_rate;
-        uint64_t msg_timeout;
+        uint64_t beat;
         unsigned char fixed_rate;
     } conf;
     uint64_t idle;

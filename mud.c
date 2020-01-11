@@ -72,7 +72,6 @@
 #define MUD_MSG(X)       ((X) & UINT64_C(1))
 #define MUD_MSG_MARK(X)  ((X) | UINT64_C(1))
 #define MUD_MSG_SENT_MAX (5)
-#define MUD_MSG_TIMEOUT  (100 * MUD_ONE_MSEC)
 
 #define MUD_PKT_MIN_SIZE (MUD_TIME_SIZE + MUD_MAC_SIZE)
 #define MUD_PKT_MAX_SIZE (1500U)
@@ -122,7 +121,7 @@ struct mud_msg {
         unsigned char total[sizeof(uint64_t)];
     } tx, rx, fw;
     unsigned char max_rate[sizeof(uint64_t)];
-    unsigned char timeout[MUD_TIME_SIZE];
+    unsigned char beat[MUD_TIME_SIZE];
     unsigned char mtu[2];
     unsigned char loss;
     unsigned char fixed_rate;
@@ -642,10 +641,10 @@ mud_get_path(struct mud *mud, struct sockaddr_storage *local_addr,
     memcpy(&path->local_addr, local_addr, sizeof(*local_addr));
     memcpy(&path->addr, addr, sizeof(*addr));
 
-    path->state = MUD_UP;
-    path->conf.msg_timeout = MUD_MSG_TIMEOUT;
+    path->state           = MUD_UP;
+    path->conf.beat       = 100 * MUD_ONE_MSEC;
     path->conf.fixed_rate = 1;
-    path->idle = mud_now(mud);
+    path->idle            = mud_now(mud);
 
     return path;
 }
@@ -1132,7 +1131,7 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
     MUD_STORE_MSG(msg->fw.bytes, fw_bytes);
     MUD_STORE_MSG(msg->fw.total, fw_total);
     MUD_STORE_MSG(msg->max_rate, path->conf.rx_max_rate);
-    MUD_STORE_MSG(msg->timeout, path->conf.msg_timeout);
+    MUD_STORE_MSG(msg->beat, path->conf.beat);
 
     msg->loss = (unsigned char)path->tx.loss;
     msg->fixed_rate = path->conf.fixed_rate;
@@ -1311,7 +1310,7 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
         path->state = (enum mud_state)msg->state;
         path->mtu.last = MUD_LOAD_MSG(msg->mtu);
         path->mtu.ok = path->mtu.last;
-        path->conf.msg_timeout = MUD_LOAD_MSG(msg->timeout);
+        path->conf.beat = MUD_LOAD_MSG(msg->beat);
 
         const uint64_t max_rate = MUD_LOAD_MSG(msg->max_rate);
 
@@ -1451,7 +1450,7 @@ mud_path_is_ok(struct mud *mud, struct mud_path *path)
         return 1;
 
     return !mud_timeout(mud->last_recv_time, path->rx.time,
-                        MUD_MSG_SENT_MAX * path->conf.msg_timeout);
+                        MUD_MSG_SENT_MAX * path->conf.beat);
 }
 
 int
@@ -1500,10 +1499,10 @@ mud_update(struct mud *mud)
         }
 
         if (mud->peer.set) {
-            uint64_t timeout = path->conf.msg_timeout;
+            uint64_t timeout = path->conf.beat;
 
             if (path->msg.sent >= MUD_MSG_SENT_MAX) {
-                timeout = MUD_ONE_SEC;
+                timeout = 2 * MUD_MSG_SENT_MAX * timeout;
             } else if (path->ok && mud_timeout(now, path->idle, MUD_ONE_SEC)) {
                 timeout = mud->keepalive;
             }
@@ -1543,7 +1542,7 @@ mud_set_state(struct mud *mud, struct sockaddr *addr,
               enum mud_state state,
               unsigned long tx_max_rate,
               unsigned long rx_max_rate,
-              unsigned long msg_timeout,
+              unsigned long beat,
               unsigned char fixed_rate)
 {
     if (!mud->peer.set || state > MUD_UP) {
@@ -1568,8 +1567,8 @@ mud_set_state(struct mud *mud, struct sockaddr *addr,
     if (rx_max_rate)
         path->conf.rx_max_rate = path->rx.rate = rx_max_rate;
 
-    if (msg_timeout)
-        path->conf.msg_timeout = msg_timeout;
+    if (beat)
+        path->conf.beat = beat;
 
     if (fixed_rate)
         path->conf.fixed_rate = fixed_rate >> 1;
