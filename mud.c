@@ -738,39 +738,11 @@ mud_set_key(struct mud *mud, unsigned char *key, size_t size)
     return 0;
 }
 
-int
-mud_set_tc(struct mud *mud, int tc)
-{
-    if (tc != (tc & 255)) {
-        errno = EINVAL;
-        return -1;
-    }
-
-    mud->tc = tc;
-
-    return 0;
-}
-
-int
-mud_set_loss_limit(struct mud *mud, unsigned loss)
-{
-    if (loss > 100U) {
-        errno = EINVAL;
-        return -1;
-    }
-
-    mud->loss_limit = loss * 255U / 100U;
-
-    return 0;
-}
-
 static int
 mud_set_msec(uint64_t *dst, unsigned long msec)
 {
-    if (!msec) {
-        errno = EINVAL;
-        return -1;
-    }
+    if (!msec)
+        return 0;
 
     const uint64_t x = msec * MUD_ONE_MSEC;
 
@@ -786,21 +758,49 @@ mud_set_msec(uint64_t *dst, unsigned long msec)
 }
 
 int
-mud_set_keepalive(struct mud *mud, unsigned long msec)
+mud_set_conf(struct mud *mud, struct mud_conf *conf)
 {
-    return mud_set_msec(&mud->keepalive, msec);
-}
+    uint64_t keepalive     = mud->keepalive;
+    uint64_t timetolerance = mud->time_tolerance;
+    uint64_t kxtimeout     = mud->keyx.timeout;
+    uint64_t losslimit     = mud->loss_limit;
+    int      tc            = mud->tc;
 
-int
-mud_set_time_tolerance(struct mud *mud, unsigned long msec)
-{
-    return mud_set_msec(&mud->time_tolerance, msec);
-}
+    if (mud_set_msec(&keepalive, conf->keepalive))
+        return -1;
 
-int
-mud_set_keyx_timeout(struct mud *mud, unsigned long msec)
-{
-    return mud_set_msec(&mud->keyx.timeout, msec);
+    if (mud_set_msec(&timetolerance, conf->timetolerance))
+        return -2;
+
+    if (mud_set_msec(&kxtimeout, conf->kxtimeout))
+        return -3;
+
+    if (conf->losslimit) {
+        if (conf->losslimit > 100) {
+            errno = ERANGE;
+            return -4;
+        }
+        losslimit = conf->losslimit * 255U / 100U;
+    }
+
+    if (conf->tc & 1) {
+        tc = conf->tc >> 1;
+        if (tc < 0 || tc > 255) {
+            errno = ERANGE;
+            return -5;
+        }
+    } else if (conf->tc) {
+        errno = EINVAL;
+        return -5;
+    }
+
+    mud->keepalive      = keepalive;
+    mud->time_tolerance = timetolerance;
+    mud->keyx.timeout   = kxtimeout;
+    mud->loss_limit     = losslimit;
+    mud->tc             = tc;
+
+    return 0;
 }
 
 size_t

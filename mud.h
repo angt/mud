@@ -22,6 +22,14 @@ struct mud_stat {
     int setup;
 };
 
+struct mud_conf {
+    unsigned long keepalive;
+    unsigned long timetolerance;
+    unsigned long kxtimeout;
+    unsigned losslimit;
+    int tc;
+};
+
 struct mud_path {
     enum mud_state state;
     struct sockaddr_storage local_addr, addr, r_addr;
@@ -83,12 +91,8 @@ int    mud_get_bad (struct mud *, struct mud_bad *);
 int mud_set_key (struct mud *, unsigned char *, size_t);
 int mud_get_key (struct mud *, unsigned char *, size_t *);
 
-int mud_set_keepalive      (struct mud *, unsigned long);
-int mud_set_time_tolerance (struct mud *, unsigned long);
-int mud_set_keyx_timeout   (struct mud *, unsigned long);
-int mud_set_loss_limit     (struct mud *, unsigned);
-int mud_set_tc             (struct mud *, int);
-int mud_set_aes            (struct mud *);
+int mud_set_aes  (struct mud *);
+int mud_set_conf (struct mud *, struct mud_conf *);
 
 int mud_set_state (struct mud *, struct sockaddr *, enum mud_state,
                    unsigned long, unsigned long, unsigned long, unsigned char);
