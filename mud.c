@@ -1570,7 +1570,7 @@ mud_set_state(struct mud *mud, struct sockaddr *addr,
         path->conf.rx_max_rate = path->rx.rate = rx_max_rate;
 
     if (beat)
-        path->conf.beat = beat;
+        path->conf.beat = beat * MUD_ONE_MSEC;
 
     if (fixed_rate)
         path->conf.fixed_rate = fixed_rate >> 1;
