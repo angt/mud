@@ -125,6 +125,7 @@ struct mud_msg {
     unsigned char mtu[2];
     unsigned char loss;
     unsigned char fixed_rate;
+    unsigned char loss_limit;
     struct mud_addr addr;
 };
 
@@ -144,7 +145,6 @@ struct mud {
     int backup;
     uint64_t keepalive;
     uint64_t time_tolerance;
-    uint64_t loss_limit;
     struct sockaddr_storage addr;
     struct mud_path *paths;
     unsigned count;
@@ -644,6 +644,7 @@ mud_get_path(struct mud *mud, struct sockaddr_storage *local_addr,
     path->state           = MUD_UP;
     path->conf.beat       = 100 * MUD_ONE_MSEC;
     path->conf.fixed_rate = 1;
+    path->conf.loss_limit = 255;
     path->idle            = mud_now(mud);
 
     return path;
@@ -763,7 +764,6 @@ mud_set_conf(struct mud *mud, struct mud_conf *conf)
     uint64_t keepalive     = mud->keepalive;
     uint64_t timetolerance = mud->time_tolerance;
     uint64_t kxtimeout     = mud->keyx.timeout;
-    uint64_t losslimit     = mud->loss_limit;
     int      tc            = mud->tc;
 
     if (mud_set_msec(&keepalive, conf->keepalive))
@@ -774,14 +774,6 @@ mud_set_conf(struct mud *mud, struct mud_conf *conf)
 
     if (mud_set_msec(&kxtimeout, conf->kxtimeout))
         return -3;
-
-    if (conf->losslimit) {
-        if (conf->losslimit > 100) {
-            errno = ERANGE;
-            return -4;
-        }
-        losslimit = conf->losslimit * 255U / 100U;
-    }
 
     if (conf->tc & 1) {
         tc = conf->tc >> 1;
@@ -797,7 +789,6 @@ mud_set_conf(struct mud *mud, struct mud_conf *conf)
     mud->keepalive      = keepalive;
     mud->time_tolerance = timetolerance;
     mud->keyx.timeout   = kxtimeout;
-    mud->loss_limit     = losslimit;
     mud->tc             = tc;
 
     return 0;
@@ -952,7 +943,6 @@ mud_create(struct sockaddr *addr)
     mud->time_tolerance = 10 * MUD_ONE_MIN;
     mud->keyx.timeout   = 60 * MUD_ONE_MIN;
     mud->tc             = 192; // CS6
-    mud->loss_limit     = 25;
 
     memcpy(&mud->addr, addr, addrlen);
 
@@ -1135,6 +1125,7 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
 
     msg->loss = (unsigned char)path->tx.loss;
     msg->fixed_rate = path->conf.fixed_rate;
+    msg->loss_limit = path->conf.loss_limit;
 
     const struct mud_crypto_opt opt = {
         .dst = dst,
@@ -1322,6 +1313,7 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
 
         path->conf.tx_max_rate = max_rate;
         path->conf.fixed_rate = msg->fixed_rate;
+        path->conf.loss_limit = msg->loss_limit;
 
         path->msg.sent++;
         path->msg.time = now;
@@ -1446,7 +1438,7 @@ mud_path_is_ok(struct mud *mud, struct mud_path *path)
     if (!path->mtu.ok)
         return 0;
 
-    if (path->tx.loss > mud->loss_limit)
+    if (path->tx.loss > path->conf.loss_limit)
         return 0;
 
     if (mud->peer.set)
@@ -1546,7 +1538,8 @@ mud_set_state(struct mud *mud, struct sockaddr *addr,
               unsigned long tx_max_rate,
               unsigned long rx_max_rate,
               unsigned long beat,
-              unsigned char fixed_rate)
+              unsigned char fixed_rate,
+              unsigned char loss_limit)
 {
     if (!mud->peer.set || state > MUD_UP) {
         errno = EINVAL;
@@ -1575,6 +1568,9 @@ mud_set_state(struct mud *mud, struct sockaddr *addr,
 
     if (fixed_rate)
         path->conf.fixed_rate = fixed_rate >> 1;
+
+    if (loss_limit)
+        path->conf.loss_limit = loss_limit;
 
     if (state && path->state != state) {
         path->state = state;
