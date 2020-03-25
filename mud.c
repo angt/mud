@@ -252,43 +252,35 @@ mud_decrypt_opt(const struct mud_crypto_key *k,
     }
 }
 
-static void
+static inline void
 mud_store(unsigned char *dst, uint64_t src, size_t size)
 {
-#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-    memcpy(dst, &src, size);
-#else
     dst[0] = (unsigned char)(src);
     dst[1] = (unsigned char)(src >> 8);
-    if (size < 48) return;
+    if (size <= 2) return;
     dst[2] = (unsigned char)(src >> 16);
     dst[3] = (unsigned char)(src >> 24);
     dst[4] = (unsigned char)(src >> 32);
     dst[5] = (unsigned char)(src >> 40);
-    if (size < 64) return;
+    if (size <= 6) return;
     dst[6] = (unsigned char)(src >> 48);
     dst[7] = (unsigned char)(src >> 56);
-#endif
 }
 
-static uint64_t
+static inline uint64_t
 mud_load(const unsigned char *src, size_t size)
 {
     uint64_t ret = 0;
-#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-    memcpy(&ret, src, size);
-#else
     ret = src[0];
     ret |= ((uint64_t)src[1]) << 8;
-    if (size < 48) return ret;
+    if (size <= 2) return ret;
     ret |= ((uint64_t)src[2]) << 16;
     ret |= ((uint64_t)src[3]) << 24;
     ret |= ((uint64_t)src[4]) << 32;
     ret |= ((uint64_t)src[5]) << 40;
-    if (size < 64) return ret;
+    if (size <= 6) return ret;
     ret |= ((uint64_t)src[6]) << 48;
     ret |= ((uint64_t)src[7]) << 56;
-#endif
     return ret;
 }
 
