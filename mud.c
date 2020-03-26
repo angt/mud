@@ -161,6 +161,9 @@ struct mud {
     uint64_t window;
     uint64_t window_time;
     uint64_t base_time;
+#if defined __APPLE__
+    mach_timebase_info_data_t mtid;
+#endif
 };
 
 static int
@@ -306,11 +309,8 @@ static uint64_t
 mud_now(struct mud *mud)
 {
 #if defined __APPLE__
-    static mach_timebase_info_data_t mtid;
-    if (!mtid.denom)
-        mach_timebase_info(&mtid);
     return MUD_TIME_MASK(mud->base_time
-            + (mach_absolute_time() * mtid.numer / mtid.denom)
+            + (mach_absolute_time() * mud->mtid.numer / mud->mtid.denom)
             / 1000ULL);
 #elif defined CLOCK_MONOTONIC
     struct timespec tv;
@@ -937,6 +937,10 @@ mud_create(struct sockaddr *addr)
     mud->tc             = 192; // CS6
 
     memcpy(&mud->addr, addr, addrlen);
+
+#if defined __APPLE__
+    mach_timebase_info(&mud->mtid);
+#endif
 
     uint64_t now = mud_now(mud);
     uint64_t base_time = mud_time();
