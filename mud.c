@@ -468,35 +468,6 @@ mud_sso_int(int fd, int level, int optname, int opt)
     return setsockopt(fd, level, optname, &opt, sizeof(opt));
 }
 
-static int
-mud_cmp_addr(struct sockaddr_storage *a, struct sockaddr_storage *b)
-{
-    if (a->ss_family != b->ss_family)
-        return 1;
-
-    if (a->ss_family == AF_INET) {
-        struct sockaddr_in *_a = (struct sockaddr_in *)a;
-        struct sockaddr_in *_b = (struct sockaddr_in *)b;
-
-        return ((memcmp(&_a->sin_port, &_b->sin_port,
-                        sizeof(_a->sin_port))) ||
-                (memcmp(&_a->sin_addr, &_b->sin_addr,
-                        sizeof(_a->sin_addr))));
-    }
-
-    if (a->ss_family == AF_INET6) {
-        struct sockaddr_in6 *_a = (struct sockaddr_in6 *)a;
-        struct sockaddr_in6 *_b = (struct sockaddr_in6 *)b;
-
-        return ((memcmp(&_a->sin6_port, &_b->sin6_port,
-                        sizeof(_a->sin6_port))) ||
-                (memcmp(&_a->sin6_addr, &_b->sin6_addr,
-                        sizeof(_a->sin6_addr))));
-    }
-
-    return 1;
-}
-
 struct mud_path *
 mud_get_paths(struct mud *mud, unsigned *ret_count)
 {
@@ -541,39 +512,53 @@ mud_get_paths(struct mud *mud, unsigned *ret_count)
 }
 
 static void
-mud_copy_port(struct sockaddr_storage *d, struct sockaddr_storage *s)
-{
-    void *port;
-
-    switch (s->ss_family) {
-    case AF_INET:
-        port = &((struct sockaddr_in *)s)->sin_port;
-        break;
-    case AF_INET6:
-        port = &((struct sockaddr_in6 *)s)->sin6_port;
-        break;
-    default:
-        return;
-    }
-
-    switch (d->ss_family) {
-    case AF_INET:
-        memcpy(&((struct sockaddr_in *)d)->sin_port,
-               port, sizeof(in_port_t));
-        break;
-    case AF_INET6:
-        memcpy(&((struct sockaddr_in6 *)d)->sin6_port,
-               port, sizeof(in_port_t));
-        break;
-    }
-}
-
-static void
 mud_reset_path(struct mud_path *path)
 {
     path->mtu.ok = 0;
     path->mtu.probe = 0;
     path->mtu.last = 0;
+}
+
+static inline int
+mud_cmp_addr(struct sockaddr_storage *a, struct sockaddr_storage *b)
+{
+    if (a->ss_family != b->ss_family)
+        return 1;
+
+    if (a->ss_family == AF_INET) {
+        struct sockaddr_in *_a = (struct sockaddr_in *)a;
+        struct sockaddr_in *_b = (struct sockaddr_in *)b;
+        return memcmp(&_a->sin_addr, &_b->sin_addr, sizeof(_a->sin_addr));
+    }
+
+    if (a->ss_family == AF_INET6) {
+        struct sockaddr_in6 *_a = (struct sockaddr_in6 *)a;
+        struct sockaddr_in6 *_b = (struct sockaddr_in6 *)b;
+        return memcmp(&_a->sin6_addr, &_b->sin6_addr, sizeof(_a->sin6_addr));
+    }
+
+    return 1;
+}
+
+static inline int
+mud_cmp_port(struct sockaddr_storage *a, struct sockaddr_storage *b)
+{
+    if (a->ss_family != b->ss_family)
+        return 1;
+
+    if (a->ss_family == AF_INET) {
+        struct sockaddr_in *_a = (struct sockaddr_in *)a;
+        struct sockaddr_in *_b = (struct sockaddr_in *)b;
+        return memcmp(&_a->sin_port, &_b->sin_port, sizeof(_a->sin_port));
+    }
+
+    if (a->ss_family == AF_INET6) {
+        struct sockaddr_in6 *_a = (struct sockaddr_in6 *)a;
+        struct sockaddr_in6 *_b = (struct sockaddr_in6 *)b;
+        return memcmp(&_a->sin6_port, &_b->sin6_port, sizeof(_a->sin6_port));
+    }
+
+    return 1;
 }
 
 static struct mud_path *
@@ -585,15 +570,18 @@ mud_get_path(struct mud *mud, struct sockaddr_storage *local_addr,
         return NULL;
     }
 
-    mud_copy_port(local_addr, &mud->addr);
-
     for (unsigned i = 0; i < mud->count; i++) {
         struct mud_path *path = &mud->paths[i];
 
-        if ((path->state != MUD_EMPTY) &&
-            (!mud_cmp_addr(local_addr, &path->local_addr)) &&
-            (!mud_cmp_addr(addr, &path->addr)))
-            return path;
+        if (path->state == MUD_EMPTY)
+            continue;
+
+        if (mud_cmp_addr(local_addr, &path->local_addr) ||
+            mud_cmp_addr(addr, &path->addr)             ||
+            mud_cmp_port(addr, &path->addr))
+            continue;
+
+        return path;
     }
 
     if (!create) {
@@ -1040,32 +1028,25 @@ mud_localaddr(struct sockaddr_storage *addr, struct msghdr *msg)
 
     for (; cmsg; cmsg = CMSG_NXTHDR(msg, cmsg)) {
         if ((cmsg->cmsg_level == IPPROTO_IP) &&
-            (cmsg->cmsg_type == MUD_PKTINFO))
-            break;
+            (cmsg->cmsg_type == MUD_PKTINFO)) {
+            addr->ss_family = AF_INET;
+            memcpy(&((struct sockaddr_in *)addr)->sin_addr,
+                   MUD_PKTINFO_SRC(CMSG_DATA(cmsg)),
+                   sizeof(struct in_addr));
+            return 0;
+        }
         if ((cmsg->cmsg_level == IPPROTO_IPV6) &&
-            (cmsg->cmsg_type == IPV6_PKTINFO))
-            break;
+            (cmsg->cmsg_type == IPV6_PKTINFO)) {
+            addr->ss_family = AF_INET6;
+            memcpy(&((struct sockaddr_in6 *)addr)->sin6_addr,
+                   &((struct in6_pktinfo *)CMSG_DATA(cmsg))->ipi6_addr,
+                   sizeof(struct in6_addr));
+            mud_unmapv4(addr);
+            return 0;
+        }
     }
 
-    if (!cmsg)
-        return 1;
-
-    memset(addr, 0, sizeof(struct sockaddr_storage));
-
-    if (cmsg->cmsg_level == IPPROTO_IP) {
-        addr->ss_family = AF_INET;
-        memcpy(&((struct sockaddr_in *)addr)->sin_addr,
-               MUD_PKTINFO_SRC(CMSG_DATA(cmsg)),
-               sizeof(struct in_addr));
-    } else {
-        addr->ss_family = AF_INET6;
-        memcpy(&((struct sockaddr_in6 *)addr)->sin6_addr,
-               &((struct in6_pktinfo *)CMSG_DATA(cmsg))->ipi6_addr,
-               sizeof(struct in6_addr));
-        mud_unmapv4(addr);
-    }
-
-    return 0;
+    return 1;
 }
 
 static int
