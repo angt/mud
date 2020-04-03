@@ -166,18 +166,7 @@ struct mud {
 #endif
 };
 
-static int
-mud_addr_is_v6(struct mud_addr *addr)
-{
-    static const unsigned char v4mapped[] = {
-        [10] = 255,
-        [11] = 255,
-    };
-
-    return memcmp(addr->v6, v4mapped, sizeof(v4mapped));
-}
-
-static int
+static inline int
 mud_encrypt_opt(const struct mud_crypto_key *k,
                 const struct mud_crypto_opt *c)
 {
@@ -217,7 +206,7 @@ mud_encrypt_opt(const struct mud_crypto_key *k,
     }
 }
 
-static int
+static inline int
 mud_decrypt_opt(const struct mud_crypto_key *k,
                 const struct mud_crypto_opt *c)
 {
@@ -287,7 +276,7 @@ mud_load(const unsigned char *src, size_t size)
     return ret;
 }
 
-static uint64_t
+static inline uint64_t
 mud_time(void)
 {
 #if defined CLOCK_REALTIME
@@ -305,7 +294,7 @@ mud_time(void)
 #endif
 }
 
-static uint64_t
+static inline uint64_t
 mud_now(struct mud *mud)
 {
 #if defined __APPLE__
@@ -323,19 +312,19 @@ mud_now(struct mud *mud)
 #endif
 }
 
-static uint64_t
+static inline uint64_t
 mud_abs_diff(uint64_t a, uint64_t b)
 {
     return (a >= b) ? a - b : b - a;
 }
 
-static int
+static inline int
 mud_timeout(uint64_t now, uint64_t last, uint64_t timeout)
 {
     return (!last) || (MUD_TIME_MASK(now - last) >= timeout);
 }
 
-static void
+static inline void
 mud_unmapv4(struct sockaddr_storage *addr)
 {
     if (addr->ss_family != AF_INET6)
@@ -1139,34 +1128,6 @@ mud_decrypt_msg(struct mud *mud,
 }
 
 static void
-mud_update_stat(struct mud_stat *stat, const uint64_t val)
-{
-    if (stat->setup) {
-        const uint64_t var = mud_abs_diff(stat->val, val);
-        stat->var = ((stat->var << 1) + stat->var + var) >> 2;
-        stat->val = ((stat->val << 3) - stat->val + val) >> 3;
-    } else {
-        stat->setup = 1;
-        stat->var = val >> 1;
-        stat->val = val;
-    }
-}
-
-static void
-mud_ss_from_packet(struct sockaddr_storage *ss, struct mud_msg *pkt)
-{
-    if (mud_addr_is_v6(&pkt->addr)) {
-        ss->ss_family = AF_INET6;
-        memcpy(&((struct sockaddr_in6 *)ss)->sin6_addr, pkt->addr.v6, 16);
-        memcpy(&((struct sockaddr_in6 *)ss)->sin6_port, pkt->addr.port, 2);
-    } else {
-        ss->ss_family = AF_INET;
-        memcpy(&((struct sockaddr_in *)ss)->sin_addr, pkt->addr.v4, 4);
-        memcpy(&((struct sockaddr_in *)ss)->sin_port, pkt->addr.port, 2);
-    }
-}
-
-static void
 mud_update_window(struct mud *mud, struct mud_path *path, uint64_t now,
                   uint64_t tx_dt, uint64_t tx_bytes, uint64_t tx_pkt,
                   uint64_t rx_dt, uint64_t rx_bytes, uint64_t rx_pkt)
@@ -1223,6 +1184,45 @@ mud_update_mtu(struct mud_path *path, size_t size)
         path->mtu.probe = 0;
     } else {
         path->mtu.probe = probe;
+    }
+}
+
+static void
+mud_update_stat(struct mud_stat *stat, const uint64_t val)
+{
+    if (stat->setup) {
+        const uint64_t var = mud_abs_diff(stat->val, val);
+        stat->var = ((stat->var << 1) + stat->var + var) >> 2;
+        stat->val = ((stat->val << 3) - stat->val + val) >> 3;
+    } else {
+        stat->setup = 1;
+        stat->var = val >> 1;
+        stat->val = val;
+    }
+}
+
+static int
+mud_addr_is_v6(struct mud_addr *addr)
+{
+    static const unsigned char v4mapped[] = {
+        [10] = 255,
+        [11] = 255,
+    };
+
+    return memcmp(addr->v6, v4mapped, sizeof(v4mapped));
+}
+
+static void
+mud_ss_from_packet(struct sockaddr_storage *ss, struct mud_msg *pkt)
+{
+    if (mud_addr_is_v6(&pkt->addr)) {
+        ss->ss_family = AF_INET6;
+        memcpy(&((struct sockaddr_in6 *)ss)->sin6_addr, pkt->addr.v6, 16);
+        memcpy(&((struct sockaddr_in6 *)ss)->sin6_port, pkt->addr.port, 2);
+    } else {
+        ss->ss_family = AF_INET;
+        memcpy(&((struct sockaddr_in *)ss)->sin_addr, pkt->addr.v4, 4);
+        memcpy(&((struct sockaddr_in *)ss)->sin_port, pkt->addr.port, 2);
     }
 }
 
