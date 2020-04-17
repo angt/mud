@@ -131,7 +131,6 @@ struct mud_msg {
 
 struct mud_keyx {
     uint64_t time;
-    uint64_t timeout;
     unsigned char secret[crypto_scalarmult_SCALARBYTES];
     unsigned char remote[MUD_PUBKEY_SIZE];
     unsigned char local[MUD_PUBKEY_SIZE];
@@ -143,15 +142,13 @@ struct mud_keyx {
 struct mud {
     int fd;
     int backup;
-    uint64_t keepalive;
-    uint64_t time_tolerance;
+    struct mud_conf conf;
     struct sockaddr_storage addr;
     struct mud_path *paths;
     unsigned count;
     struct mud_keyx keyx;
     uint64_t last_recv_time;
     size_t mtu;
-    int tc;
     struct {
         int set;
         struct sockaddr_storage addr;
@@ -408,7 +405,7 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
         cmsg->cmsg_level = IPPROTO_IP;
         cmsg->cmsg_type = IP_TOS;
         cmsg->cmsg_len = CMSG_LEN(sizeof(int));
-        memcpy(CMSG_DATA(cmsg), &mud->tc, sizeof(int));
+        memcpy(CMSG_DATA(cmsg), &mud->conf.tc, sizeof(int));
 
     } else if (path->addr.ss_family == AF_INET6) {
         msg.msg_namelen = sizeof(struct sockaddr_in6);
@@ -430,7 +427,7 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
         cmsg->cmsg_level = IPPROTO_IPV6;
         cmsg->cmsg_type = IPV6_TCLASS;
         cmsg->cmsg_len = CMSG_LEN(sizeof(int));
-        memcpy(CMSG_DATA(cmsg), &mud->tc, sizeof(int));
+        memcpy(CMSG_DATA(cmsg), &mud->conf.tc, sizeof(int));
     } else {
         errno = EAFNOSUPPORT;
         return -1;
@@ -708,59 +705,36 @@ mud_set_key(struct mud *mud, unsigned char *key, size_t size)
     return 0;
 }
 
-static int
-mud_set_msec(uint64_t *dst, unsigned long msec)
-{
-    if (!msec)
-        return 0;
-
-    const uint64_t x = msec * MUD_ONE_MSEC;
-
-    if ((x >> MUD_TIME_BITS) ||
-        ((uint64_t)msec != x / MUD_ONE_MSEC)) {
-        errno = ERANGE;
-        return -1;
-    }
-
-    *dst = x;
-
-    return 0;
-}
-
 int
 mud_set_conf(struct mud *mud, struct mud_conf *conf)
 {
-    uint64_t keepalive     = mud->keepalive;
-    uint64_t timetolerance = mud->time_tolerance;
-    uint64_t kxtimeout     = mud->keyx.timeout;
-    int      tc            = mud->tc;
+    struct mud_conf c = mud->conf;
+    int ret = 0;
 
-    if (mud_set_msec(&keepalive, conf->keepalive))
-        return -1;
+    if (conf->keepalive)
+        c.keepalive = conf->keepalive;
 
-    if (mud_set_msec(&timetolerance, conf->timetolerance))
-        return -2;
+    if (conf->timetolerance)
+        c.timetolerance = conf->timetolerance;
 
-    if (mud_set_msec(&kxtimeout, conf->kxtimeout))
-        return -3;
+    if (conf->kxtimeout)
+        c.kxtimeout = conf->kxtimeout;
 
     if (conf->tc & 1) {
-        tc = conf->tc >> 1;
+        int tc = conf->tc >> 1;
         if (tc < 0 || tc > 255) {
             errno = ERANGE;
-            return -5;
+            ret = -1;
         }
+        c.tc = tc;
     } else if (conf->tc) {
         errno = EINVAL;
-        return -5;
+        ret = -1;
     }
 
-    mud->keepalive      = keepalive;
-    mud->time_tolerance = timetolerance;
-    mud->keyx.timeout   = kxtimeout;
-    mud->tc             = tc;
+    *conf = mud->conf = c;
 
-    return 0;
+    return ret;
 }
 
 size_t
@@ -829,9 +803,11 @@ mud_keyx(struct mud_keyx *kx, unsigned char *remote, int aes)
 }
 
 static int
-mud_keyx_init(struct mud_keyx *kx, uint64_t now)
+mud_keyx_init(struct mud *mud, uint64_t now)
 {
-    if (!mud_timeout(now, kx->time, kx->timeout))
+    struct mud_keyx *kx = &mud->keyx;
+
+    if (!mud_timeout(now, kx->time, mud->conf.kxtimeout))
         return 1;
 
     static const unsigned char test[crypto_scalarmult_BYTES] = {
@@ -908,10 +884,10 @@ mud_create(struct sockaddr *addr)
         return NULL;
     }
 
-    mud->keepalive      = 25 * MUD_ONE_SEC;
-    mud->time_tolerance = 10 * MUD_ONE_MIN;
-    mud->keyx.timeout   = 60 * MUD_ONE_MIN;
-    mud->tc             = 192; // CS6
+    mud->conf.keepalive     = 25 * MUD_ONE_SEC;
+    mud->conf.timetolerance = 10 * MUD_ONE_MIN;
+    mud->conf.kxtimeout     = 60 * MUD_ONE_MIN;
+    mud->conf.tc            = 192; // CS6
 
     memcpy(&mud->addr, addr, addrlen);
 
@@ -1297,7 +1273,7 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
 
     if (memcmp(msg->pkey, mud->keyx.remote, MUD_PUBKEY_SIZE)) {
         if (!mud->peer.set)
-            mud_keyx_init(&mud->keyx, now);
+            mud_keyx_init(mud, now);
         if (mud_keyx(&mud->keyx, msg->pkey, msg->aes)) {
             mud->bad.keyx.addr = path->addr;
             mud->bad.keyx.time = now;
@@ -1347,8 +1323,8 @@ mud_recv(struct mud *mud, void *data, size_t size)
 
     mud_unmapv4(&addr);
 
-    if ((MUD_TIME_MASK(now - sent_time) > mud->time_tolerance) &&
-        (MUD_TIME_MASK(sent_time - now) > mud->time_tolerance)) {
+    if ((MUD_TIME_MASK(now - sent_time) > mud->conf.timetolerance) &&
+        (MUD_TIME_MASK(sent_time - now) > mud->conf.timetolerance)) {
         mud->bad.difftime.addr = addr;
         mud->bad.difftime.time = now;
         mud->bad.difftime.count++;
@@ -1433,7 +1409,7 @@ mud_update(struct mud *mud)
 
     uint64_t now = mud_now(mud);
 
-    if (mud->peer.set && !mud_keyx_init(&mud->keyx, now))
+    if (mud->peer.set && !mud_keyx_init(mud, now))
         now = mud_now(mud);
 
     for (unsigned i = 0; i < mud->count; i++) {
@@ -1475,7 +1451,7 @@ mud_update(struct mud *mud)
             if (path->msg.sent >= MUD_MSG_SENT_MAX) {
                 timeout = 2 * MUD_MSG_SENT_MAX * timeout;
             } else if (path->ok && mud_timeout(now, path->idle, MUD_ONE_SEC)) {
-                timeout = mud->keepalive;
+                timeout = mud->conf.keepalive;
             }
 
             if (mud_timeout(now, path->msg.time, timeout)) {
