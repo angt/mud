@@ -78,7 +78,7 @@ struct mud_bad {
     } decrypt, difftime, keyx;
 };
 
-struct mud *mud_create (struct sockaddr *);
+struct mud *mud_create (struct sockaddr *, int master);
 void        mud_delete (struct mud *);
 
 int mud_update    (struct mud *);
@@ -94,11 +94,9 @@ int mud_get_key (struct mud *, unsigned char *, size_t *);
 int mud_set_aes  (struct mud *);
 int mud_set_conf (struct mud *, struct mud_conf *);
 
-int mud_set_state (struct mud *, struct sockaddr *, enum mud_state,
-                   unsigned long, unsigned long, unsigned long,
-                   unsigned char, unsigned char);
-
-int mud_peer (struct mud *, struct sockaddr *);
+int mud_set_state (struct mud *, struct sockaddr *, struct sockaddr *,
+                   enum mud_state, unsigned long, unsigned long,
+                   unsigned long, unsigned char, unsigned char);
 
 int mud_recv (struct mud *, void *, size_t);
 int mud_send (struct mud *, const void *, size_t);

@@ -141,6 +141,7 @@ struct mud_keyx {
 
 struct mud {
     int fd;
+    int master;
     int backup;
     struct mud_conf conf;
     struct sockaddr_storage addr;
@@ -149,10 +150,6 @@ struct mud {
     struct mud_keyx keyx;
     uint64_t last_recv_time;
     size_t mtu;
-    struct {
-        int set;
-        struct sockaddr_storage addr;
-    } peer;
     struct mud_bad bad;
     uint64_t rate;
     uint64_t window;
@@ -641,17 +638,6 @@ mud_ss_from_sa(struct sockaddr_storage *ss, struct sockaddr *sa)
 }
 
 int
-mud_peer(struct mud *mud, struct sockaddr *peer)
-{
-    if (mud_ss_from_sa(&mud->peer.addr, peer))
-        return -1;
-
-    mud->peer.set = 1;
-
-    return 0;
-}
-
-int
 mud_get_bad(struct mud *mud, struct mud_bad *bad)
 {
     if (!bad) {
@@ -843,7 +829,7 @@ mud_set_aes(struct mud *mud)
 }
 
 struct mud *
-mud_create(struct sockaddr *addr)
+mud_create(struct sockaddr *addr, int master)
 {
     if (!addr)
         return NULL;
@@ -883,6 +869,8 @@ mud_create(struct sockaddr *addr)
         mud_delete(mud);
         return NULL;
     }
+
+    mud->master = master;
 
     mud->conf.keepalive     = 25 * MUD_ONE_SEC;
     mud->conf.timetolerance = 10 * MUD_ONE_MIN;
@@ -1245,7 +1233,7 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
         path->rx.loss = (uint64_t)msg->loss;
         path->msg.sent = 0;
 
-        if (mud->peer.set) {
+        if (mud->master) {
             mud_update_mtu(path, size);
             if (path->mtu.last && path->mtu.last == MUD_LOAD_MSG(msg->mtu))
                 path->mtu.ok = path->mtu.last;
@@ -1272,7 +1260,7 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
     }
 
     if (memcmp(msg->pkey, mud->keyx.remote, MUD_PUBKEY_SIZE)) {
-        if (!mud->peer.set)
+        if (!mud->master)
             mud_keyx_init(mud, now);
         if (mud_keyx(&mud->keyx, msg->pkey, msg->aes)) {
             mud->bad.keyx.addr = path->addr;
@@ -1280,7 +1268,7 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
             mud->bad.keyx.count++;
             return;
         }
-    } else if (mud->peer.set) {
+    } else if (mud->master) {
         mud->keyx.use_next = 1;
     }
 
@@ -1373,7 +1361,7 @@ mud_cleanup_path(struct mud *mud, uint64_t now, struct mud_path *path)
     if (path->state < MUD_DOWN)
         return 1;
 
-    if (mud->peer.set && path->state > MUD_DOWN)
+    if (mud->master && path->state > MUD_DOWN)
         return 0;
 
     if (mud_timeout(now, path->rx.time, MUD_ONE_MIN)) {
@@ -1393,7 +1381,7 @@ mud_path_is_ok(struct mud *mud, struct mud_path *path)
     if (path->tx.loss > path->conf.loss_limit)
         return 0;
 
-    if (mud->peer.set)
+    if (mud->master)
         return 1;
 
     return !mud_timeout(mud->last_recv_time, path->rx.time,
@@ -1409,7 +1397,7 @@ mud_update(struct mud *mud)
 
     uint64_t now = mud_now(mud);
 
-    if (mud->peer.set && !mud_keyx_init(mud, now))
+    if (mud->master && !mud_keyx_init(mud, now))
         now = mud_now(mud);
 
     for (unsigned i = 0; i < mud->count; i++) {
@@ -1445,7 +1433,7 @@ mud_update(struct mud *mud)
             path->ok = 1;
         }
 
-        if (mud->peer.set) {
+        if (mud->master) {
             uint64_t timeout = path->conf.beat;
 
             if (path->msg.sent >= MUD_MSG_SENT_MAX) {
@@ -1486,6 +1474,7 @@ mud_update(struct mud *mud)
 
 int
 mud_set_state(struct mud *mud, struct sockaddr *addr,
+              struct sockaddr *peer,
               enum mud_state state,
               unsigned long tx_max_rate,
               unsigned long rx_max_rate,
@@ -1493,7 +1482,7 @@ mud_set_state(struct mud *mud, struct sockaddr *addr,
               unsigned char fixed_rate,
               unsigned char loss_limit)
 {
-    if (!mud->peer.set || state > MUD_UP) {
+    if (!mud->master || state > MUD_UP) {
         errno = EINVAL;
         return -1;
     }
@@ -1503,8 +1492,13 @@ mud_set_state(struct mud *mud, struct sockaddr *addr,
     if (mud_ss_from_sa(&local_addr, addr))
         return -1;
 
+    struct sockaddr_storage peer_addr;
+
+    if (mud_ss_from_sa(&peer_addr, peer))
+        return -1;
+
     struct mud_path *path = mud_get_path(mud,
-            &local_addr, &mud->peer.addr, state > MUD_DOWN);
+            &local_addr, &peer_addr, state > MUD_DOWN);
 
     if (!path)
         return -1;
