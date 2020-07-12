@@ -78,7 +78,7 @@ struct mud_bad {
     } decrypt, difftime, keyx;
 };
 
-struct mud *mud_create (struct sockaddr *, int master);
+struct mud *mud_create (struct sockaddr *, int);
 void        mud_delete (struct mud *);
 
 int mud_update    (struct mud *);
