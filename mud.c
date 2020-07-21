@@ -146,7 +146,7 @@ struct mud {
     struct mud_conf conf;
     struct sockaddr_storage addr;
     struct mud_path *paths;
-    unsigned count;
+    unsigned capacity;
     struct mud_keyx keyx;
     uint64_t last_recv_time;
     size_t mtu;
@@ -346,7 +346,7 @@ mud_select_path(struct mud *mud, uint16_t cursor)
 {
     uint64_t k = (cursor * mud->rate) >> 16;
 
-    for (unsigned i = 0; i < mud->count; i++) {
+    for (unsigned i = 0; i < mud->capacity; i++) {
         struct mud_path *path = &mud->paths[i];
 
         if (!path->ok)
@@ -459,16 +459,7 @@ mud_get_paths(struct mud *mud, unsigned *ret_count)
         return NULL;
     }
 
-    unsigned count = 0;
-
-    for (unsigned i = 0; i < mud->count; i++) {
-        struct mud_path *path = &mud->paths[i];
-
-        if (path->state != MUD_EMPTY)
-            count++;
-    }
-
-    size_t size = count * sizeof(struct mud_path);
+    size_t size = mud->capacity * sizeof(struct mud_path);
 
     if (!size) {
         errno = 0;
@@ -480,9 +471,9 @@ mud_get_paths(struct mud *mud, unsigned *ret_count)
     if (!paths)
         return NULL;
 
-    count = 0;
+    unsigned count = 0;
 
-    for (unsigned i = 0; i < mud->count; i++) {
+    for (unsigned i = 0; i < mud->capacity; i++) {
         struct mud_path *path = &mud->paths[i];
 
         if (path->state != MUD_EMPTY)
@@ -553,7 +544,7 @@ mud_get_path(struct mud *mud, struct sockaddr_storage *local_addr,
         return NULL;
     }
 
-    for (unsigned i = 0; i < mud->count; i++) {
+    for (unsigned i = 0; i < mud->capacity; i++) {
         struct mud_path *path = &mud->paths[i];
 
         if (path->state == MUD_EMPTY)
@@ -574,7 +565,7 @@ mud_get_path(struct mud *mud, struct sockaddr_storage *local_addr,
 
     struct mud_path *path = NULL;
 
-    for (unsigned i = 0; i < mud->count; i++) {
+    for (unsigned i = 0; i < mud->capacity; i++) {
         if (mud->paths[i].state == MUD_EMPTY) {
             path = &mud->paths[i];
             break;
@@ -582,20 +573,20 @@ mud_get_path(struct mud *mud, struct sockaddr_storage *local_addr,
     }
 
     if (!path) {
-        if (mud->count == MUD_PATH_MAX) {
+        if (mud->capacity == MUD_PATH_MAX) {
             errno = ENOMEM;
             return NULL;
         }
 
         struct mud_path *paths = realloc(mud->paths,
-                (mud->count + 1) * sizeof(struct mud_path));
+                (mud->capacity + 1) * sizeof(struct mud_path));
 
         if (!paths)
             return NULL;
 
-        path = &paths[mud->count];
+        path = &paths[mud->capacity];
 
-        mud->count++;
+        mud->capacity++;
         mud->paths = paths;
     }
 
@@ -1391,7 +1382,7 @@ mud_path_is_ok(struct mud *mud, struct mud_path *path)
 int
 mud_update(struct mud *mud)
 {
-    int count = 0;
+    unsigned count = 0;
     uint64_t rate = 0;
     size_t mtu = 0;
 
@@ -1400,7 +1391,7 @@ mud_update(struct mud *mud)
     if (mud->active && !mud_keyx_init(mud, now))
         now = mud_now(mud);
 
-    for (unsigned i = 0; i < mud->count; i++) {
+    for (unsigned i = 0; i < mud->capacity; i++) {
         struct mud_path *path = &mud->paths[i];
 
         if (mud_cleanup_path(mud, now, path))
