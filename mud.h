@@ -14,6 +14,7 @@ enum mud_state {
     MUD_DOWN,
     MUD_BACKUP,
     MUD_UP,
+    MUD_LAST,
 };
 
 struct mud_stat {

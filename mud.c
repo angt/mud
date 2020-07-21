@@ -1464,8 +1464,9 @@ mud_update(struct mud *mud)
 }
 
 int
-mud_set_state(struct mud *mud, struct sockaddr *addr,
-              struct sockaddr *peer,
+mud_set_state(struct mud *mud,
+              struct sockaddr *sa_local_addr,
+              struct sockaddr *sa_addr,
               enum mud_state state,
               unsigned long tx_max_rate,
               unsigned long rx_max_rate,
@@ -1473,23 +1474,19 @@ mud_set_state(struct mud *mud, struct sockaddr *addr,
               unsigned char fixed_rate,
               unsigned char loss_limit)
 {
-    if (!mud->active || state > MUD_UP) {
+    if (!mud->active || state >= MUD_LAST) {
         errno = EINVAL;
         return -1;
     }
 
-    struct sockaddr_storage local_addr;
+    struct sockaddr_storage local_addr, addr;
 
-    if (mud_ss_from_sa(&local_addr, addr))
-        return -1;
-
-    struct sockaddr_storage peer_addr;
-
-    if (mud_ss_from_sa(&peer_addr, peer))
+    if (mud_ss_from_sa(&local_addr, sa_local_addr) ||
+        mud_ss_from_sa(&addr, sa_addr))
         return -1;
 
     struct mud_path *path = mud_get_path(mud,
-            &local_addr, &peer_addr, state > MUD_DOWN);
+            &local_addr, &addr, state > MUD_DOWN);
 
     if (!path)
         return -1;
