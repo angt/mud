@@ -67,6 +67,7 @@ struct mud_path {
         unsigned char fixed_rate;
         unsigned char loss_limit;
     } conf;
+    int passive;
     uint64_t idle;
     unsigned char ok;
 };
@@ -79,7 +80,7 @@ struct mud_bad {
     } decrypt, difftime, keyx;
 };
 
-struct mud *mud_create (struct sockaddr *, int);
+struct mud *mud_create (struct sockaddr *);
 void        mud_delete (struct mud *);
 
 int mud_update    (struct mud *);

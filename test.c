@@ -44,15 +44,13 @@ main(int argc, char **argv)
             },
         };
 
-        // we are going to connect to remote...
-        if (mud_peer(mud, (struct sockaddr *)&remote)) {
-            perror("mud_peer");
-            return -1;
-        }
-
-        // ...from loopback at 1MBps (not 1Mbps)
+        // we are going to connect from local to remote
         if (mud_set_state(mud, (struct sockaddr *)&local,
-                    MUD_UP, 1000 * 1000, 1000 * 1000, 0, 0, 0)) {
+                               (struct sockaddr *)&remote,
+                                MUD_UP, // add path
+                                1000 * 1000, // set max tx rate
+                                1000 * 1000, // set max rx rate
+                                0, 0, 0)) {  // don't touch beat, fixed_rate, loss_limit
             perror("mud_set_state");
             return -1;
         }

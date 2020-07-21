@@ -141,7 +141,6 @@ struct mud_keyx {
 
 struct mud {
     int fd;
-    int active;
     int backup;
     struct mud_conf conf;
     struct sockaddr_storage addr;
@@ -595,6 +594,7 @@ mud_get_path(struct mud *mud, struct sockaddr_storage *local_addr,
     memcpy(&path->local_addr, local_addr, sizeof(*local_addr));
     memcpy(&path->addr, addr, sizeof(*addr));
 
+    path->passive         = create >> 1;
     path->state           = MUD_UP;
     path->conf.beat       = 100 * MUD_ONE_MSEC;
     path->conf.fixed_rate = 1;
@@ -820,7 +820,7 @@ mud_set_aes(struct mud *mud)
 }
 
 struct mud *
-mud_create(struct sockaddr *addr, int active)
+mud_create(struct sockaddr *addr)
 {
     if (!addr)
         return NULL;
@@ -860,8 +860,6 @@ mud_create(struct sockaddr *addr, int active)
         mud_delete(mud);
         return NULL;
     }
-
-    mud->active = active;
 
     mud->conf.keepalive     = 25 * MUD_ONE_SEC;
     mud->conf.timetolerance = 10 * MUD_ONE_MIN;
@@ -1224,13 +1222,13 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
         path->rx.loss = (uint64_t)msg->loss;
         path->msg.sent = 0;
 
-        if (mud->active) {
-            mud_update_mtu(path, size);
-            if (path->mtu.last && path->mtu.last == MUD_LOAD_MSG(msg->mtu))
-                path->mtu.ok = path->mtu.last;
-        } else {
+        if (path->passive)
             return;
-        }
+
+        mud_update_mtu(path, size);
+
+        if (path->mtu.last && path->mtu.last == MUD_LOAD_MSG(msg->mtu))
+            path->mtu.ok = path->mtu.last;
     } else {
         path->state = (enum mud_state)msg->state;
         path->mtu.last = MUD_LOAD_MSG(msg->mtu);
@@ -1251,7 +1249,7 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
     }
 
     if (memcmp(msg->pkey, mud->keyx.remote, MUD_PUBKEY_SIZE)) {
-        if (!mud->active)
+        if (path->passive)
             mud_keyx_init(mud, now);
         if (mud_keyx(&mud->keyx, msg->pkey, msg->aes)) {
             mud->bad.keyx.addr = path->addr;
@@ -1259,7 +1257,7 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
             mud->bad.keyx.count++;
             return;
         }
-    } else if (mud->active) {
+    } else if (!path->passive) {
         mud->keyx.use_next = 1;
     }
 
@@ -1326,7 +1324,7 @@ mud_recv(struct mud *mud, void *data, size_t size)
     if (mud_localaddr(&local_addr, &msg))
         return 0;
 
-    struct mud_path *path = mud_get_path(mud, &local_addr, &addr, 1);
+    struct mud_path *path = mud_get_path(mud, &local_addr, &addr, 3);
 
     if (!path || path->state <= MUD_DOWN)
         return 0;
@@ -1352,7 +1350,7 @@ mud_cleanup_path(struct mud *mud, uint64_t now, struct mud_path *path)
     if (path->state < MUD_DOWN)
         return 1;
 
-    if (mud->active && path->state > MUD_DOWN)
+    if (!path->passive && path->state > MUD_DOWN)
         return 0;
 
     if (mud_timeout(now, path->rx.time, MUD_ONE_MIN)) {
@@ -1372,7 +1370,7 @@ mud_path_is_ok(struct mud *mud, struct mud_path *path)
     if (path->tx.loss > path->conf.loss_limit)
         return 0;
 
-    if (mud->active)
+    if (!path->passive)
         return 1;
 
     return !mud_timeout(mud->last_recv_time, path->rx.time,
@@ -1388,7 +1386,7 @@ mud_update(struct mud *mud)
 
     uint64_t now = mud_now(mud);
 
-    if (mud->active && !mud_keyx_init(mud, now))
+    if (!mud_keyx_init(mud, now))
         now = mud_now(mud);
 
     for (unsigned i = 0; i < mud->capacity; i++) {
@@ -1424,21 +1422,22 @@ mud_update(struct mud *mud)
             path->ok = 1;
         }
 
-        if (mud->active) {
-            uint64_t timeout = path->conf.beat;
+        if (path->passive)
+            continue;
 
-            if (path->msg.sent >= MUD_MSG_SENT_MAX) {
-                timeout = 2 * MUD_MSG_SENT_MAX * timeout;
-            } else if (path->ok && mud_timeout(now, path->idle, MUD_ONE_SEC)) {
-                timeout = mud->conf.keepalive;
-            }
+        uint64_t timeout = path->conf.beat;
 
-            if (mud_timeout(now, path->msg.time, timeout)) {
-                path->msg.sent++;
-                path->msg.time = now;
-                mud_send_msg(mud, path, now, 0, 0, 0, path->mtu.probe);
-                now = mud_now(mud);
-            }
+        if (path->msg.sent >= MUD_MSG_SENT_MAX) {
+            timeout = 2 * MUD_MSG_SENT_MAX * timeout;
+        } else if (path->ok && mud_timeout(now, path->idle, MUD_ONE_SEC)) {
+            timeout = mud->conf.keepalive;
+        }
+
+        if (mud_timeout(now, path->msg.time, timeout)) {
+            path->msg.sent++;
+            path->msg.time = now;
+            mud_send_msg(mud, path, now, 0, 0, 0, path->mtu.probe);
+            now = mud_now(mud);
         }
     }
 
@@ -1474,7 +1473,7 @@ mud_set_state(struct mud *mud,
               unsigned char fixed_rate,
               unsigned char loss_limit)
 {
-    if (!mud->active || state >= MUD_LAST) {
+    if (state < MUD_EMPTY || state >= MUD_LAST) {
         errno = EINVAL;
         return -1;
     }
