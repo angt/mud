@@ -1249,8 +1249,6 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
     }
 
     if (memcmp(msg->pkey, mud->keyx.remote, MUD_PUBKEY_SIZE)) {
-        if (path->passive)
-            mud_keyx_init(mud, now);
         if (mud_keyx(&mud->keyx, msg->pkey, msg->aes)) {
             mud->bad.keyx.addr = path->addr;
             mud->bad.keyx.time = now;
