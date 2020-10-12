@@ -44,14 +44,17 @@ main(int argc, char **argv)
             },
         };
 
+        struct mud_path_conf path_conf = {
+            .state = MUD_UP,
+            .tx_max_rate = 1000 * 1000,
+            .rx_max_rate = 1000 * 1000,
+        }; // use default beat, fixed_rate, loss_limit
+
         // we are going to connect from local to remote
-        if (mud_set_state(mud, (struct sockaddr *)&local,
-                               (struct sockaddr *)&remote,
-                                MUD_UP, // add path
-                                1000 * 1000, // set max tx rate
-                                1000 * 1000, // set max rx rate
-                                0, 0, 0)) {  // don't touch beat, fixed_rate, loss_limit
-            perror("mud_set_state");
+        if (mud_set_path(mud, (struct sockaddr *)&local,
+                              (struct sockaddr *)&remote,
+                              &path_conf)) {
+            perror("mud_set_path");
             return -1;
         }
     }

@@ -30,8 +30,17 @@ struct mud_conf {
     int tc;
 };
 
-struct mud_path {
+struct mud_path_conf {
     enum mud_state state;
+    uint64_t tx_max_rate;
+    uint64_t rx_max_rate;
+    uint64_t beat;
+    unsigned char fixed_rate;
+    unsigned char loss_limit;
+};
+
+struct mud_path {
+    struct mud_path_conf conf;
     struct sockaddr_storage local_addr, addr, r_addr;
     struct mud_stat rtt;
     struct {
@@ -60,13 +69,6 @@ struct mud_path {
         size_t last;
         size_t ok;
     } mtu;
-    struct {
-        uint64_t tx_max_rate;
-        uint64_t rx_max_rate;
-        uint64_t beat;
-        unsigned char fixed_rate;
-        unsigned char loss_limit;
-    } conf;
     int passive;
     uint64_t idle;
     unsigned char ok;
@@ -90,13 +92,10 @@ int    mud_get_fd  (struct mud *);
 size_t mud_get_mtu (struct mud *);
 int    mud_get_bad (struct mud *, struct mud_bad *);
 
+int mud_set      (struct mud *, struct mud_conf *);
 int mud_set_key  (struct mud *, unsigned char *, size_t);
 int mud_set_aes  (struct mud *);
-int mud_set_conf (struct mud *, struct mud_conf *);
-
-int mud_set_state (struct mud *, struct sockaddr *, struct sockaddr *,
-                   enum mud_state, unsigned long, unsigned long,
-                   unsigned long, unsigned char, unsigned char);
+int mud_set_path (struct mud *, struct sockaddr *, struct sockaddr *, struct mud_path_conf *);
 
 int mud_recv (struct mud *, void *, size_t);
 int mud_send (struct mud *, const void *, size_t);
