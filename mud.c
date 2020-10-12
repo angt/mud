@@ -642,38 +642,16 @@ mud_get_bad(struct mud *mud, struct mud_bad *bad)
 }
 
 int
-mud_get_key(struct mud *mud, unsigned char *key, size_t *size)
-{
-    if (!key || !size || (*size < MUD_KEY_SIZE)) {
-        errno = EINVAL;
-        return -1;
-    }
-
-    memcpy(key, mud->keyx.private.encrypt.key, MUD_KEY_SIZE);
-    *size = MUD_KEY_SIZE;
-
-    return 0;
-}
-
-int
 mud_set_key(struct mud *mud, unsigned char *key, size_t size)
 {
-    if (key && (size < MUD_KEY_SIZE)) {
+    if (!key || size < MUD_KEY_SIZE) {
         errno = EINVAL;
         return -1;
     }
 
-    unsigned char *enc = mud->keyx.private.encrypt.key;
-    unsigned char *dec = mud->keyx.private.decrypt.key;
-
-    if (key) {
-        memcpy(enc, key, MUD_KEY_SIZE);
-        sodium_memzero(key, size);
-    } else {
-        randombytes_buf(enc, MUD_KEY_SIZE);
-    }
-
-    memcpy(dec, enc, MUD_KEY_SIZE);
+    memcpy(mud->keyx.private.encrypt.key, key, MUD_KEY_SIZE);
+    memcpy(mud->keyx.private.decrypt.key, key, MUD_KEY_SIZE);
+    sodium_memzero(key, size);
 
     mud->keyx.current = mud->keyx.private;
     mud->keyx.next = mud->keyx.private;

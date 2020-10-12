@@ -90,9 +90,7 @@ int    mud_get_fd  (struct mud *);
 size_t mud_get_mtu (struct mud *);
 int    mud_get_bad (struct mud *, struct mud_bad *);
 
-int mud_set_key (struct mud *, unsigned char *, size_t);
-int mud_get_key (struct mud *, unsigned char *, size_t *);
-
+int mud_set_key  (struct mud *, unsigned char *, size_t);
 int mud_set_aes  (struct mud *);
 int mud_set_conf (struct mud *, struct mud_conf *);
 
