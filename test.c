@@ -20,17 +20,12 @@ main(int argc, char **argv)
         },
     };
 
-    struct mud *mud = mud_create((struct sockaddr *)&local);
+    unsigned char key[] = "0123456789ABCDEF0123456789ABCDEF";
+    int aes = 1;
+    struct mud *mud = mud_create((struct sockaddr *)&local, key, &aes);
 
     if (!mud) {
         perror("mud_create");
-        return -1;
-    }
-
-    unsigned char key[] = "0123456789ABCDEF0123456789ABCDEF";
-
-    if (mud_set_key(mud, key, sizeof(key))) {
-        perror("mud_set_key");
         return -1;
     }
 

@@ -642,25 +642,6 @@ mud_get_bad(struct mud *mud, struct mud_bad *bad)
 }
 
 int
-mud_set_key(struct mud *mud, unsigned char *key, size_t size)
-{
-    if (!key || size < MUD_KEY_SIZE) {
-        errno = EINVAL;
-        return -1;
-    }
-
-    memcpy(mud->keyx.private.encrypt.key, key, MUD_KEY_SIZE);
-    memcpy(mud->keyx.private.decrypt.key, key, MUD_KEY_SIZE);
-    sodium_memzero(key, size);
-
-    mud->keyx.current = mud->keyx.private;
-    mud->keyx.next = mud->keyx.private;
-    mud->keyx.last = mud->keyx.private;
-
-    return 0;
-}
-
-int
 mud_set(struct mud *mud, struct mud_conf *conf)
 {
     struct mud_conf c = mud->conf;
@@ -784,23 +765,10 @@ mud_keyx_init(struct mud *mud, uint64_t now)
     return 0;
 }
 
-int
-mud_set_aes(struct mud *mud)
-{
-    if (!aegis256_is_available()) {
-        errno = ENOTSUP;
-        return -1;
-    }
-
-    mud->keyx.aes = 1;
-
-    return 0;
-}
-
 struct mud *
-mud_create(struct sockaddr *addr)
+mud_create(struct sockaddr *addr, unsigned char *key, int *aes)
 {
-    if (!addr)
+    if (!addr || !key || !aes)
         return NULL;
 
     int v4, v6;
@@ -855,6 +823,19 @@ mud_create(struct sockaddr *addr)
 
     if (base_time > now)
         mud->base_time = base_time - now;
+
+    memcpy(mud->keyx.private.encrypt.key, key, MUD_KEY_SIZE);
+    memcpy(mud->keyx.private.decrypt.key, key, MUD_KEY_SIZE);
+    sodium_memzero(key, MUD_KEY_SIZE);
+
+    mud->keyx.current = mud->keyx.private;
+    mud->keyx.next = mud->keyx.private;
+    mud->keyx.last = mud->keyx.private;
+
+    if (*aes && !aegis256_is_available())
+        *aes = 0;
+
+    mud->keyx.aes = *aes;
 
     return mud;
 }
