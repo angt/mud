@@ -12,7 +12,6 @@ struct mud;
 enum mud_state {
     MUD_EMPTY = 0,
     MUD_DOWN,
-    MUD_BACKUP,
     MUD_UP,
     MUD_LAST,
 };
@@ -35,6 +34,7 @@ struct mud_path_conf {
     uint64_t tx_max_rate;
     uint64_t rx_max_rate;
     uint64_t beat;
+    unsigned char pref;
     unsigned char fixed_rate;
     unsigned char loss_limit;
 };

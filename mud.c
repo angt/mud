@@ -123,6 +123,7 @@ struct mud_msg {
     unsigned char max_rate[sizeof(uint64_t)];
     unsigned char beat[MUD_TIME_SIZE];
     unsigned char mtu[2];
+    unsigned char pref;
     unsigned char loss;
     unsigned char fixed_rate;
     unsigned char loss_limit;
@@ -141,10 +142,10 @@ struct mud_keyx {
 
 struct mud {
     int fd;
-    int backup;
     struct mud_conf conf;
     struct sockaddr_storage addr;
     struct mud_path *paths;
+    unsigned pref;
     unsigned capacity;
     struct mud_keyx keyx;
     uint64_t last_recv_time;
@@ -1002,6 +1003,7 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
     MUD_STORE_MSG(msg->beat, path->conf.beat);
 
     msg->loss = (unsigned char)path->tx.loss;
+    msg->pref = path->conf.pref;
     msg->fixed_rate = path->conf.fixed_rate;
     msg->loss_limit = path->conf.loss_limit;
 
@@ -1198,6 +1200,7 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
             path->tx.rate = max_rate;
 
         path->conf.tx_max_rate = max_rate;
+        path->conf.pref = msg->pref;
         path->conf.fixed_rate = msg->fixed_rate;
         path->conf.loss_limit = msg->loss_limit;
 
@@ -1339,6 +1342,8 @@ int
 mud_update(struct mud *mud)
 {
     unsigned count = 0;
+    unsigned pref = 255;
+    unsigned next_pref = 255;
     uint64_t rate = 0;
     size_t mtu = 0;
 
@@ -1357,10 +1362,13 @@ mud_update(struct mud *mud)
         path->ok = 0;
         count++;
 
+        if (next_pref > path->conf.pref && path->conf.pref > mud->pref)
+            next_pref = path->conf.pref;
+
         if (path->mtu.ok) {
             if (!mtu || mtu > path->mtu.ok)
                 mtu = path->mtu.ok;
-            if (!mud->backup && path->conf.state == MUD_BACKUP)
+            if (path->conf.pref > mud->pref)
                 continue;
         }
 
@@ -1372,8 +1380,8 @@ mud_update(struct mud *mud)
                 path->msg.sent = MUD_MSG_SENT_MAX;
             }
         } else if (mud_path_is_ok(mud, path)) {
-            if (path->conf.state != MUD_BACKUP)
-                mud->backup = 0;
+            if (pref > path->conf.pref)
+                pref = path->conf.pref;
             if (!ok)
                 path->idle = now;
             rate += path->tx.rate;
@@ -1400,7 +1408,7 @@ mud_update(struct mud *mud)
     }
 
     if (!rate) {
-        mud->backup = 1;
+        pref = next_pref;
     } else if (mud->window < 1500) {
         uint64_t elapsed = MUD_TIME_MASK(now - mud->window_time);
         if (elapsed > MUD_ONE_MSEC) {
@@ -1411,6 +1419,7 @@ mud_update(struct mud *mud)
         }
     }
 
+    mud->pref = pref;
     mud->rate = rate;
     mud->mtu = mtu;
 
@@ -1451,6 +1460,9 @@ mud_set_path(struct mud *mud,
 
     if (conf->beat)
         path->conf.beat = conf->beat * MUD_ONE_MSEC;
+
+    if (conf->pref)
+        path->conf.pref = conf->pref >> 1;
 
     if (conf->fixed_rate)
         path->conf.fixed_rate = conf->fixed_rate >> 1;
