@@ -26,7 +26,6 @@ struct mud_conf {
     uint64_t keepalive;
     uint64_t timetolerance;
     uint64_t kxtimeout;
-    int tc;
 };
 
 struct mud_path_conf {

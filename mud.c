@@ -384,11 +384,9 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
 
     if (path->addr.ss_family == AF_INET) {
         msg.msg_namelen = sizeof(struct sockaddr_in);
-        msg.msg_controllen = CMSG_SPACE(MUD_PKTINFO_SIZE) +
-                             CMSG_SPACE(sizeof(int));
+        msg.msg_controllen = CMSG_SPACE(MUD_PKTINFO_SIZE);
 
         struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
-
         cmsg->cmsg_level = IPPROTO_IP;
         cmsg->cmsg_type = MUD_PKTINFO;
         cmsg->cmsg_len = CMSG_LEN(MUD_PKTINFO_SIZE);
@@ -396,35 +394,17 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
                &((struct sockaddr_in *)&path->local_addr)->sin_addr,
                sizeof(struct in_addr));
 
-        cmsg = (struct cmsghdr *)((unsigned char *)cmsg +
-                                  CMSG_SPACE(MUD_PKTINFO_SIZE));
-
-        cmsg->cmsg_level = IPPROTO_IP;
-        cmsg->cmsg_type = IP_TOS;
-        cmsg->cmsg_len = CMSG_LEN(sizeof(int));
-        memcpy(CMSG_DATA(cmsg), &mud->conf.tc, sizeof(int));
-
     } else if (path->addr.ss_family == AF_INET6) {
         msg.msg_namelen = sizeof(struct sockaddr_in6);
-        msg.msg_controllen = CMSG_SPACE(sizeof(struct in6_pktinfo)) +
-                             CMSG_SPACE(sizeof(int));
+        msg.msg_controllen = CMSG_SPACE(sizeof(struct in6_pktinfo));
 
         struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
-
         cmsg->cmsg_level = IPPROTO_IPV6;
         cmsg->cmsg_type = IPV6_PKTINFO;
         cmsg->cmsg_len = CMSG_LEN(sizeof(struct in6_pktinfo));
         memcpy(&((struct in6_pktinfo *)CMSG_DATA(cmsg))->ipi6_addr,
                &((struct sockaddr_in6 *)&path->local_addr)->sin6_addr,
                sizeof(struct in6_addr));
-
-        cmsg = (struct cmsghdr *)((unsigned char *)cmsg +
-                                  CMSG_SPACE(sizeof(struct in6_pktinfo)));
-
-        cmsg->cmsg_level = IPPROTO_IPV6;
-        cmsg->cmsg_type = IPV6_TCLASS;
-        cmsg->cmsg_len = CMSG_LEN(sizeof(int));
-        memcpy(CMSG_DATA(cmsg), &mud->conf.tc, sizeof(int));
     } else {
         errno = EAFNOSUPPORT;
         return -1;
@@ -646,7 +626,6 @@ int
 mud_set(struct mud *mud, struct mud_conf *conf)
 {
     struct mud_conf c = mud->conf;
-    int ret = 0;
 
     if (conf->keepalive)
         c.keepalive = conf->keepalive;
@@ -657,21 +636,9 @@ mud_set(struct mud *mud, struct mud_conf *conf)
     if (conf->kxtimeout)
         c.kxtimeout = conf->kxtimeout;
 
-    if (conf->tc & 1) {
-        int tc = conf->tc >> 1;
-        if (tc < 0 || tc > 255) {
-            errno = ERANGE;
-            ret = -1;
-        }
-        c.tc = tc;
-    } else if (conf->tc) {
-        errno = EINVAL;
-        ret = -1;
-    }
-
     *conf = mud->conf = c;
 
-    return ret;
+    return 0;
 }
 
 size_t
@@ -811,7 +778,6 @@ mud_create(struct sockaddr *addr, unsigned char *key, int *aes)
     mud->conf.keepalive     = 25 * MUD_ONE_SEC;
     mud->conf.timetolerance = 10 * MUD_ONE_MIN;
     mud->conf.kxtimeout     = 60 * MUD_ONE_MIN;
-    mud->conf.tc            = 192; // CS6
 
     memcpy(&mud->addr, addr, addrlen);
 
