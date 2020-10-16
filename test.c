@@ -12,17 +12,17 @@ main(int argc, char **argv)
 
     int client = argc == 2;
 
-    struct sockaddr_in local = {
-        .sin_family = AF_INET,
-        .sin_port = htons(client + 20000),
-        .sin_addr = {
-            .s_addr = htonl(INADDR_LOOPBACK),
+    union mud_sockaddr local = {
+        .sin = {
+            .sin_family = AF_INET,
+            .sin_port = htons(client + 20000),
+            .sin_addr.s_addr = htonl(INADDR_LOOPBACK),
         },
     };
 
     unsigned char key[] = "0123456789ABCDEF0123456789ABCDEF";
     int aes = 1;
-    struct mud *mud = mud_create((struct sockaddr *)&local, key, &aes);
+    struct mud *mud = mud_create(&local, key, &aes);
 
     if (!mud) {
         perror("mud_create");
@@ -31,24 +31,24 @@ main(int argc, char **argv)
 
     // client is little harder to setup
     if (client) {
-        struct sockaddr_in remote = {
-            .sin_family = AF_INET,
-            .sin_port = htons(20000),
-            .sin_addr = {
-                .s_addr = htonl(INADDR_LOOPBACK),
+        union mud_sockaddr remote = {
+            .sin = {
+                .sin_family = AF_INET,
+                .sin_port = htons(20000),
+                .sin_addr.s_addr = htonl(INADDR_LOOPBACK),
             },
         };
 
         struct mud_path_conf path_conf = {
+            .local = local,
+            .remote = remote,
             .state = MUD_UP,
             .tx_max_rate = 1000 * 1000,
             .rx_max_rate = 1000 * 1000,
         }; // use default beat, fixed_rate, loss_limit
 
         // we are going to connect from local to remote
-        if (mud_set_path(mud, (struct sockaddr *)&local,
-                              (struct sockaddr *)&remote,
-                              &path_conf)) {
+        if (mud_set_path(mud, &path_conf)) {
             perror("mud_set_path");
             return -1;
         }

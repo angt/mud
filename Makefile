@@ -1,8 +1,11 @@
-CFLAGS=-march=native -O2
-LDLIBS=-lsodium
+CC     = cc
+CFLAGS = -Wall -O2
+LDLIBS = -lsodium
 
 test:
+	$(CC) $(CFLAGS) -o test test.c $(LDLIBS)
 
-.PHONY: clean
 clean:
 	rm -f test
+
+.PHONY: test clean

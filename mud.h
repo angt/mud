@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <inttypes.h>
 #include <sys/socket.h>
+#include <netinet/in.h>
 
 #define MUD_PATH_MAX    (32U)
 #define MUD_PUBKEY_SIZE (32U)
@@ -28,8 +29,16 @@ struct mud_conf {
     uint64_t kxtimeout;
 };
 
+union mud_sockaddr {
+    struct sockaddr sa;
+    struct sockaddr_in sin;
+    struct sockaddr_in6 sin6;
+};
+
 struct mud_path_conf {
     enum mud_state state;
+    union mud_sockaddr local;
+    union mud_sockaddr remote;
     uint64_t tx_max_rate;
     uint64_t rx_max_rate;
     uint64_t beat;
@@ -40,7 +49,7 @@ struct mud_path_conf {
 
 struct mud_path {
     struct mud_path_conf conf;
-    struct sockaddr_storage local_addr, addr, r_addr;
+    union mud_sockaddr remote;
     struct mud_stat rtt;
     struct {
         uint64_t total;
@@ -75,17 +84,17 @@ struct mud_path {
 
 struct mud_bad {
     struct {
-        struct sockaddr_storage addr;
+        union mud_sockaddr addr;
         uint64_t time;
         uint64_t count;
     } decrypt, difftime, keyx;
 };
 
-struct mud *mud_create (struct sockaddr *, unsigned char *, int *);
+struct mud *mud_create (union mud_sockaddr *, unsigned char *, int *);
 void        mud_delete (struct mud *);
 
 int mud_set      (struct mud *, struct mud_conf *);
-int mud_set_path (struct mud *, struct sockaddr *, struct sockaddr *, struct mud_path_conf *);
+int mud_set_path (struct mud *, struct mud_path_conf *);
 
 int mud_update    (struct mud *);
 int mud_send_wait (struct mud *);

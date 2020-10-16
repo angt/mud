@@ -19,7 +19,6 @@
 
 #include <arpa/inet.h>
 #include <net/if.h>
-#include <netinet/in.h>
 
 #include <sodium.h>
 #include "aegis256/aegis256.h"
@@ -143,7 +142,6 @@ struct mud_keyx {
 struct mud {
     int fd;
     struct mud_conf conf;
-    struct sockaddr_storage addr;
     struct mud_path *paths;
     unsigned pref;
     unsigned capacity;
@@ -319,26 +317,24 @@ mud_timeout(uint64_t now, uint64_t last, uint64_t timeout)
 }
 
 static inline void
-mud_unmapv4(struct sockaddr_storage *addr)
+mud_unmapv4(union mud_sockaddr *addr)
 {
-    if (addr->ss_family != AF_INET6)
+    if (addr->sa.sa_family != AF_INET6)
         return;
 
-    struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)addr;
-
-    if (!IN6_IS_ADDR_V4MAPPED(&sin6->sin6_addr))
+    if (!IN6_IS_ADDR_V4MAPPED(&addr->sin6.sin6_addr))
         return;
 
     struct sockaddr_in sin = {
         .sin_family = AF_INET,
-        .sin_port = sin6->sin6_port,
+        .sin_port = addr->sin6.sin6_port,
     };
 
     memcpy(&sin.sin_addr.s_addr,
-           &sin6->sin6_addr.s6_addr[12],
+           &addr->sin6.sin6_addr.s6_addr[12],
            sizeof(sin.sin_addr.s_addr));
 
-    memcpy(addr, &sin, sizeof(sin));
+    addr->sin = sin;
 }
 
 static struct mud_path *
@@ -371,7 +367,6 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
     unsigned char ctrl[MUD_CTRL_SIZE];
 
     struct msghdr msg = {
-        .msg_name = &path->addr,
         .msg_iov = &(struct iovec) {
             .iov_base = data,
             .iov_len = size,
@@ -382,7 +377,8 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
 
     memset(ctrl, 0, sizeof(ctrl));
 
-    if (path->addr.ss_family == AF_INET) {
+    if (path->conf.remote.sa.sa_family == AF_INET) {
+        msg.msg_name = &path->conf.remote.sin;
         msg.msg_namelen = sizeof(struct sockaddr_in);
         msg.msg_controllen = CMSG_SPACE(MUD_PKTINFO_SIZE);
 
@@ -391,10 +387,11 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
         cmsg->cmsg_type = MUD_PKTINFO;
         cmsg->cmsg_len = CMSG_LEN(MUD_PKTINFO_SIZE);
         memcpy(MUD_PKTINFO_DST(CMSG_DATA(cmsg)),
-               &((struct sockaddr_in *)&path->local_addr)->sin_addr,
+               &path->conf.local.sin.sin_addr,
                sizeof(struct in_addr));
 
-    } else if (path->addr.ss_family == AF_INET6) {
+    } else if (path->conf.remote.sa.sa_family == AF_INET6) {
+        msg.msg_name = &path->conf.remote.sin6;
         msg.msg_namelen = sizeof(struct sockaddr_in6);
         msg.msg_controllen = CMSG_SPACE(sizeof(struct in6_pktinfo));
 
@@ -403,8 +400,7 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
         cmsg->cmsg_type = IPV6_PKTINFO;
         cmsg->cmsg_len = CMSG_LEN(sizeof(struct in6_pktinfo));
         memcpy(&((struct in6_pktinfo *)CMSG_DATA(cmsg))->ipi6_addr,
-               &((struct sockaddr_in6 *)&path->local_addr)->sin6_addr,
-               sizeof(struct in6_addr));
+               &path->conf.local.sin6.sin6_addr, sizeof(struct in6_addr));
     } else {
         errno = EAFNOSUPPORT;
         return -1;
@@ -465,61 +461,47 @@ mud_get_paths(struct mud *mud, unsigned *ret_count)
     return paths;
 }
 
-static void
-mud_reset_path(struct mud_path *path)
-{
-    path->mtu.ok = 0;
-    path->mtu.probe = 0;
-    path->mtu.last = 0;
-}
-
 static inline int
-mud_cmp_addr(struct sockaddr_storage *a, struct sockaddr_storage *b)
+mud_cmp_addr(union mud_sockaddr *a, union mud_sockaddr *b)
 {
-    if (a->ss_family != b->ss_family)
+    if (a->sa.sa_family != b->sa.sa_family)
         return 1;
 
-    if (a->ss_family == AF_INET) {
-        struct sockaddr_in *_a = (struct sockaddr_in *)a;
-        struct sockaddr_in *_b = (struct sockaddr_in *)b;
-        return memcmp(&_a->sin_addr, &_b->sin_addr, sizeof(_a->sin_addr));
-    }
+    if (a->sa.sa_family == AF_INET)
+        return memcmp(&a->sin.sin_addr, &b->sin.sin_addr,
+                      sizeof(a->sin.sin_addr));
 
-    if (a->ss_family == AF_INET6) {
-        struct sockaddr_in6 *_a = (struct sockaddr_in6 *)a;
-        struct sockaddr_in6 *_b = (struct sockaddr_in6 *)b;
-        return memcmp(&_a->sin6_addr, &_b->sin6_addr, sizeof(_a->sin6_addr));
-    }
+    if (a->sa.sa_family == AF_INET6)
+        return memcmp(&a->sin6.sin6_addr, &b->sin6.sin6_addr,
+                      sizeof(a->sin6.sin6_addr));
 
     return 1;
 }
 
 static inline int
-mud_cmp_port(struct sockaddr_storage *a, struct sockaddr_storage *b)
+mud_cmp_port(union mud_sockaddr *a, union mud_sockaddr *b)
 {
-    if (a->ss_family != b->ss_family)
+    if (a->sa.sa_family != b->sa.sa_family)
         return 1;
 
-    if (a->ss_family == AF_INET) {
-        struct sockaddr_in *_a = (struct sockaddr_in *)a;
-        struct sockaddr_in *_b = (struct sockaddr_in *)b;
-        return memcmp(&_a->sin_port, &_b->sin_port, sizeof(_a->sin_port));
-    }
+    if (a->sa.sa_family == AF_INET)
+        return memcmp(&a->sin.sin_port, &b->sin.sin_port,
+                      sizeof(a->sin.sin_port));
 
-    if (a->ss_family == AF_INET6) {
-        struct sockaddr_in6 *_a = (struct sockaddr_in6 *)a;
-        struct sockaddr_in6 *_b = (struct sockaddr_in6 *)b;
-        return memcmp(&_a->sin6_port, &_b->sin6_port, sizeof(_a->sin6_port));
-    }
+    if (a->sa.sa_family == AF_INET6)
+        return memcmp(&a->sin6.sin6_port, &b->sin6.sin6_port,
+                      sizeof(a->sin6.sin6_port));
 
     return 1;
 }
 
 static struct mud_path *
-mud_get_path(struct mud *mud, struct sockaddr_storage *local_addr,
-             struct sockaddr_storage *addr, int create)
+mud_get_path(struct mud *mud,
+             union mud_sockaddr *local,
+             union mud_sockaddr *remote,
+             int create)
 {
-    if (local_addr->ss_family != addr->ss_family) {
+    if (local->sa.sa_family != remote->sa.sa_family) {
         errno = EINVAL;
         return NULL;
     }
@@ -530,9 +512,9 @@ mud_get_path(struct mud *mud, struct sockaddr_storage *local_addr,
         if (path->conf.state == MUD_EMPTY)
             continue;
 
-        if (mud_cmp_addr(local_addr, &path->local_addr) ||
-            mud_cmp_addr(addr, &path->addr)             ||
-            mud_cmp_port(addr, &path->addr))
+        if (mud_cmp_addr(local, &path->conf.local)   ||
+            mud_cmp_addr(remote, &path->conf.remote) ||
+            mud_cmp_port(remote, &path->conf.remote))
             continue;
 
         return path;
@@ -571,9 +553,8 @@ mud_get_path(struct mud *mud, struct sockaddr_storage *local_addr,
     }
 
     memset(path, 0, sizeof(struct mud_path));
-
-    memcpy(&path->local_addr, local_addr, sizeof(*local_addr));
-    memcpy(&path->addr, addr, sizeof(*addr));
+    memcpy(&path->conf.local, local, sizeof(*local));
+    memcpy(&path->conf.remote, remote, sizeof(*remote));
 
     path->passive         = create >> 1;
     path->conf.state      = MUD_UP;
@@ -583,30 +564,6 @@ mud_get_path(struct mud *mud, struct sockaddr_storage *local_addr,
     path->idle            = mud_now(mud);
 
     return path;
-}
-
-static int
-mud_ss_from_sa(struct sockaddr_storage *ss, struct sockaddr *sa)
-{
-    if (!ss || !sa) {
-        errno = EINVAL;
-        return -1;
-    }
-
-    switch (sa->sa_family) {
-    case AF_INET:
-        memcpy(ss, sa, sizeof(struct sockaddr_in));
-        break;
-    case AF_INET6:
-        memcpy(ss, sa, sizeof(struct sockaddr_in6));
-        mud_unmapv4(ss);
-        break;
-    default:
-        errno = EAFNOSUPPORT;
-        return -1;
-    }
-
-    return 0;
 }
 
 int
@@ -627,14 +584,9 @@ mud_set(struct mud *mud, struct mud_conf *conf)
 {
     struct mud_conf c = mud->conf;
 
-    if (conf->keepalive)
-        c.keepalive = conf->keepalive;
-
-    if (conf->timetolerance)
-        c.timetolerance = conf->timetolerance;
-
-    if (conf->kxtimeout)
-        c.kxtimeout = conf->kxtimeout;
+    if (conf->keepalive)     c.keepalive     = conf->keepalive;
+    if (conf->timetolerance) c.timetolerance = conf->timetolerance;
+    if (conf->kxtimeout)     c.kxtimeout     = conf->kxtimeout;
 
     *conf = mud->conf = c;
 
@@ -734,7 +686,7 @@ mud_keyx_init(struct mud *mud, uint64_t now)
 }
 
 struct mud *
-mud_create(struct sockaddr *addr, unsigned char *key, int *aes)
+mud_create(union mud_sockaddr *addr, unsigned char *key, int *aes)
 {
     if (!addr || !key || !aes)
         return NULL;
@@ -742,7 +694,7 @@ mud_create(struct sockaddr *addr, unsigned char *key, int *aes)
     int v4, v6;
     socklen_t addrlen = 0;
 
-    switch (addr->sa_family) {
+    switch (addr->sa.sa_family) {
     case AF_INET:
         addrlen = sizeof(struct sockaddr_in);
         v4 = 1;
@@ -766,11 +718,11 @@ mud_create(struct sockaddr *addr, unsigned char *key, int *aes)
         return NULL;
 
     memset(mud, 0, sizeof(struct mud));
-    mud->fd = socket(addr->sa_family, SOCK_DGRAM, IPPROTO_UDP);
+    mud->fd = socket(addr->sa.sa_family, SOCK_DGRAM, IPPROTO_UDP);
 
     if ((mud->fd == -1) ||
         (mud_setup_socket(mud->fd, v4, v6)) ||
-        (bind(mud->fd, addr, addrlen))) {
+        (bind(mud->fd, &addr->sa, addrlen))) {
         mud_delete(mud);
         return NULL;
     }
@@ -778,8 +730,6 @@ mud_create(struct sockaddr *addr, unsigned char *key, int *aes)
     mud->conf.keepalive     = 25 * MUD_ONE_SEC;
     mud->conf.timetolerance = 10 * MUD_ONE_MIN;
     mud->conf.kxtimeout     = 60 * MUD_ONE_MIN;
-
-    memcpy(&mud->addr, addr, addrlen);
 
 #if defined __APPLE__
     mach_timebase_info(&mud->mtid);
@@ -890,23 +840,23 @@ mud_decrypt(struct mud *mud,
 }
 
 static int
-mud_localaddr(struct sockaddr_storage *addr, struct msghdr *msg)
+mud_localaddr(union mud_sockaddr *addr, struct msghdr *msg)
 {
     struct cmsghdr *cmsg = CMSG_FIRSTHDR(msg);
 
     for (; cmsg; cmsg = CMSG_NXTHDR(msg, cmsg)) {
         if ((cmsg->cmsg_level == IPPROTO_IP) &&
             (cmsg->cmsg_type == MUD_PKTINFO)) {
-            addr->ss_family = AF_INET;
-            memcpy(&((struct sockaddr_in *)addr)->sin_addr,
+            addr->sa.sa_family = AF_INET;
+            memcpy(&addr->sin.sin_addr,
                    MUD_PKTINFO_SRC(CMSG_DATA(cmsg)),
                    sizeof(struct in_addr));
             return 0;
         }
         if ((cmsg->cmsg_level == IPPROTO_IPV6) &&
             (cmsg->cmsg_type == IPV6_PKTINFO)) {
-            addr->ss_family = AF_INET6;
-            memcpy(&((struct sockaddr_in6 *)addr)->sin6_addr,
+            addr->sa.sa_family = AF_INET6;
+            memcpy(&addr->sin6.sin6_addr,
                    &((struct in6_pktinfo *)CMSG_DATA(cmsg))->ipi6_addr,
                    sizeof(struct in6_addr));
             mud_unmapv4(addr);
@@ -915,6 +865,49 @@ mud_localaddr(struct sockaddr_storage *addr, struct msghdr *msg)
     }
 
     return 1;
+}
+
+static int
+mud_addr_is_v6(struct mud_addr *addr)
+{
+    static const unsigned char v4mapped[] = {
+        [10] = 255,
+        [11] = 255,
+    };
+
+    return memcmp(addr->v6, v4mapped, sizeof(v4mapped));
+}
+
+static int
+mud_addr_from_sock(struct mud_addr *addr, union mud_sockaddr *sock)
+{
+    if (sock->sa.sa_family == AF_INET) {
+        memset(addr->zero, 0, sizeof(addr->zero));
+        memset(addr->ff, 0xFF, sizeof(addr->ff));
+        memcpy(addr->v4, &sock->sin.sin_addr, 4);
+        memcpy(addr->port, &sock->sin.sin_port, 2);
+    } else if (sock->sa.sa_family == AF_INET6) {
+        memcpy(addr->v6, &sock->sin6.sin6_addr, 16);
+        memcpy(addr->port, &sock->sin6.sin6_port, 2);
+    } else {
+        errno = EAFNOSUPPORT;
+        return -1;
+    }
+    return 0;
+}
+
+static void
+mud_sock_from_addr(union mud_sockaddr *sock, struct mud_addr *addr)
+{
+    if (mud_addr_is_v6(addr)) {
+        sock->sin6.sin6_family = AF_INET6;
+        memcpy(&sock->sin6.sin6_addr, addr->v6, 16);
+        memcpy(&sock->sin6.sin6_port, addr->port, 2);
+    } else {
+        sock->sin.sin_family = AF_INET;
+        memcpy(&sock->sin.sin_addr, addr->v4, 4);
+        memcpy(&sock->sin.sin_port, addr->port, 2);
+    }
 }
 
 static int
@@ -934,22 +927,8 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
     mud_store(dst, MUD_MSG_MARK(now), MUD_TIME_SIZE);
     MUD_STORE_MSG(msg->sent_time, sent_time);
 
-    if (path->addr.ss_family == AF_INET) {
-        msg->addr.ff[0] = 0xFF;
-        msg->addr.ff[1] = 0xFF;
-        memcpy(msg->addr.v4,
-               &((struct sockaddr_in *)&path->addr)->sin_addr, 4);
-        memcpy(msg->addr.port,
-               &((struct sockaddr_in *)&path->addr)->sin_port, 2);
-    } else if (path->addr.ss_family == AF_INET6) {
-        memcpy(msg->addr.v6,
-               &((struct sockaddr_in6 *)&path->addr)->sin6_addr, 16);
-        memcpy(msg->addr.port,
-               &((struct sockaddr_in6 *)&path->addr)->sin6_port, 2);
-    } else {
-        errno = EAFNOSUPPORT;
+    if (mud_addr_from_sock(&msg->addr, &path->conf.remote))
         return -1;
-    }
 
     msg->state = (unsigned char)path->conf.state;
 
@@ -1081,31 +1060,6 @@ mud_update_stat(struct mud_stat *stat, const uint64_t val)
     }
 }
 
-static int
-mud_addr_is_v6(struct mud_addr *addr)
-{
-    static const unsigned char v4mapped[] = {
-        [10] = 255,
-        [11] = 255,
-    };
-
-    return memcmp(addr->v6, v4mapped, sizeof(v4mapped));
-}
-
-static void
-mud_ss_from_packet(struct sockaddr_storage *ss, struct mud_msg *pkt)
-{
-    if (mud_addr_is_v6(&pkt->addr)) {
-        ss->ss_family = AF_INET6;
-        memcpy(&((struct sockaddr_in6 *)ss)->sin6_addr, pkt->addr.v6, 16);
-        memcpy(&((struct sockaddr_in6 *)ss)->sin6_port, pkt->addr.port, 2);
-    } else {
-        ss->ss_family = AF_INET;
-        memcpy(&((struct sockaddr_in *)ss)->sin_addr, pkt->addr.v4, 4);
-        memcpy(&((struct sockaddr_in *)ss)->sin_port, pkt->addr.port, 2);
-    }
-}
-
 static void
 mud_recv_msg(struct mud *mud, struct mud_path *path,
              uint64_t now, uint64_t sent_time,
@@ -1113,7 +1067,7 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
 {
     struct mud_msg *msg = (struct mud_msg *)data;
 
-    mud_ss_from_packet(&path->r_addr, msg);
+    mud_sock_from_addr(&path->remote, &msg->addr);
 
     const uint64_t tx_time = MUD_LOAD_MSG(msg->sent_time);
 
@@ -1179,7 +1133,7 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
 
     if (memcmp(msg->pkey, mud->keyx.remote, MUD_PUBKEY_SIZE)) {
         if (mud_keyx(&mud->keyx, msg->pkey, msg->aes)) {
-            mud->bad.keyx.addr = path->addr;
+            mud->bad.keyx.addr = path->conf.remote;
             mud->bad.keyx.time = now;
             mud->bad.keyx.count++;
             return;
@@ -1197,13 +1151,13 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
 int
 mud_recv(struct mud *mud, void *data, size_t size)
 {
-    struct sockaddr_storage addr;
+    union mud_sockaddr remote;
     unsigned char ctrl[MUD_CTRL_SIZE];
     unsigned char packet[MUD_PKT_MAX_SIZE];
 
     struct msghdr msg = {
-        .msg_name = &addr,
-        .msg_namelen = sizeof(addr),
+        .msg_name = &remote,
+        .msg_namelen = sizeof(remote),
         .msg_iov = &(struct iovec) {
             .iov_base = packet,
             .iov_len = sizeof(packet),
@@ -1225,11 +1179,11 @@ mud_recv(struct mud *mud, void *data, size_t size)
     const uint64_t now = mud_now(mud);
     const uint64_t sent_time = mud_load(packet, MUD_TIME_SIZE);
 
-    mud_unmapv4(&addr);
+    mud_unmapv4(&remote);
 
     if ((MUD_TIME_MASK(now - sent_time) > mud->conf.timetolerance) &&
         (MUD_TIME_MASK(sent_time - now) > mud->conf.timetolerance)) {
-        mud->bad.difftime.addr = addr;
+        mud->bad.difftime.addr = remote;
         mud->bad.difftime.time = now;
         mud->bad.difftime.count++;
         return 0;
@@ -1240,18 +1194,18 @@ mud_recv(struct mud *mud, void *data, size_t size)
                      : mud_decrypt(mud, data, size, packet, (size_t)packet_size);
 
     if (!ret) {
-        mud->bad.decrypt.addr = addr;
+        mud->bad.decrypt.addr = remote;
         mud->bad.decrypt.time = now;
         mud->bad.decrypt.count++;
         return 0;
     }
 
-    struct sockaddr_storage local_addr;
+    union mud_sockaddr local;
 
-    if (mud_localaddr(&local_addr, &msg))
+    if (mud_localaddr(&local, &msg))
         return 0;
 
-    struct mud_path *path = mud_get_path(mud, &local_addr, &addr, 3);
+    struct mud_path *path = mud_get_path(mud, &local, &remote, 3);
 
     if (!path || path->conf.state <= MUD_DOWN)
         return 0;
@@ -1396,51 +1350,29 @@ mud_update(struct mud *mud)
 }
 
 int
-mud_set_path(struct mud *mud,
-             struct sockaddr *sa_local_addr,
-             struct sockaddr *sa_addr,
-             struct mud_path_conf *conf)
+mud_set_path(struct mud *mud, struct mud_path_conf *conf)
 {
     if (conf->state < MUD_EMPTY || conf->state >= MUD_LAST) {
         errno = EINVAL;
         return -1;
     }
 
-    struct sockaddr_storage local_addr, addr;
-
-    if (mud_ss_from_sa(&local_addr, sa_local_addr) ||
-        mud_ss_from_sa(&addr, sa_addr))
-        return -1;
-
-    struct mud_path *path = mud_get_path(mud,
-            &local_addr, &addr, conf->state > MUD_DOWN);
-
+    struct mud_path *path = mud_get_path(mud, &conf->local, &conf->remote,
+                                         conf->state > MUD_DOWN);
     if (!path)
         return -1;
 
-    if (conf->tx_max_rate)
-        path->conf.tx_max_rate = path->tx.rate = conf->tx_max_rate;
+    struct mud_path_conf c = path->conf;
 
-    if (conf->rx_max_rate)
-        path->conf.rx_max_rate = path->rx.rate = conf->rx_max_rate;
+    if (conf->state)       c.state       = conf->state;
+    if (conf->pref)        c.pref        = conf->pref >> 1;
+    if (conf->beat)        c.beat        = conf->beat * MUD_ONE_MSEC;
+    if (conf->fixed_rate)  c.fixed_rate  = conf->fixed_rate >> 1;
+    if (conf->loss_limit)  c.loss_limit  = conf->loss_limit;
+    if (conf->tx_max_rate) c.tx_max_rate = path->tx.rate = conf->tx_max_rate;
+    if (conf->rx_max_rate) c.rx_max_rate = path->rx.rate = conf->rx_max_rate;
 
-    if (conf->beat)
-        path->conf.beat = conf->beat * MUD_ONE_MSEC;
-
-    if (conf->pref)
-        path->conf.pref = conf->pref >> 1;
-
-    if (conf->fixed_rate)
-        path->conf.fixed_rate = conf->fixed_rate >> 1;
-
-    if (conf->loss_limit)
-        path->conf.loss_limit = conf->loss_limit;
-
-    if (conf->state && path->conf.state != conf->state) {
-        path->conf.state = conf->state;
-        mud_reset_path(path);
-        mud_update(mud);
-    }
+    *conf = path->conf = c;
 
     return 0;
 }
