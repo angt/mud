@@ -19,9 +19,9 @@ main(int argc, char **argv)
             .sin_addr.s_addr = htonl(INADDR_LOOPBACK),
         },
     };
-
     unsigned char key[] = "0123456789ABCDEF0123456789ABCDEF";
     int aes = 1;
+
     struct mud *mud = mud_create(&local, key, &aes);
 
     if (!mud) {
@@ -29,25 +29,19 @@ main(int argc, char **argv)
         return -1;
     }
 
-    // client is little harder to setup
     if (client) {
-        union mud_sockaddr remote = {
-            .sin = {
+        struct mud_path_conf path_conf = {
+            .local = local,
+            .remote.sin = {
                 .sin_family = AF_INET,
                 .sin_port = htons(20000),
                 .sin_addr.s_addr = htonl(INADDR_LOOPBACK),
             },
-        };
-
-        struct mud_path_conf path_conf = {
-            .local = local,
-            .remote = remote,
             .state = MUD_UP,
             .tx_max_rate = 1000 * 1000,
             .rx_max_rate = 1000 * 1000,
-        }; // use default beat, fixed_rate, loss_limit
-
-        // we are going to connect from local to remote
+            // use default beat, fixed_rate, loss_limit
+        };
         if (mud_set_path(mud, &path_conf)) {
             perror("mud_set_path");
             return -1;
@@ -67,7 +61,6 @@ main(int argc, char **argv)
                 .fd = mud_get_fd(mud),
                 .events = POLLIN,
             };
-
             switch (poll(&pollfd, 1, 0)) {
             case -1:
                 perror("poll");
@@ -90,10 +83,7 @@ main(int argc, char **argv)
                 perror("mud_send");
                 return -1;
             }
-
-            // we sent everything, bye :)
-            if (r)
-                break;
+            if (r) break;  // we sent everything, bye :)
         } else {
             int r = mud_recv(mud, buf, sizeof(buf));
 
@@ -104,14 +94,12 @@ main(int argc, char **argv)
                 perror("mud_recv");
                 return -1;
             }
-
             if (r) {
                 buf[r] = 0;
                 printf("%s\n", buf);
             }
         }
     }
-
     mud_delete(mud);
 
     return 0;
