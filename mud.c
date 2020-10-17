@@ -1245,17 +1245,28 @@ mud_cleanup_path(struct mud *mud, uint64_t now, struct mud_path *path)
 static int
 mud_path_is_ok(struct mud *mud, struct mud_path *path)
 {
+    if (path->msg.sent >= MUD_MSG_SENT_MAX) {
+        if (path->mtu.probe) {
+            mud_update_mtu(path, 0);
+            path->msg.sent = 0;
+        } else {
+            path->msg.sent = MUD_MSG_SENT_MAX;
+        }
+        return 0;
+    }
     if (!path->mtu.ok)
         return 0;
 
     if (path->tx.loss > path->conf.loss_limit)
         return 0;
 
-    if (!path->passive)
-        return 1;
+    if (path->passive &&
+        mud_timeout(mud->last_recv_time, path->rx.time,
+                    MUD_MSG_SENT_MAX * path->conf.beat))
+        return 0;
 
-    return !mud_timeout(mud->last_recv_time, path->rx.time,
-                        MUD_MSG_SENT_MAX * path->conf.beat);
+    path->ok = 1;
+    return 1;
 }
 
 int
@@ -1291,23 +1302,13 @@ mud_update(struct mud *mud)
             if (path->conf.pref > mud->pref)
                 continue;
         }
-
-        if (path->msg.sent >= MUD_MSG_SENT_MAX) {
-            if (path->mtu.probe) {
-                mud_update_mtu(path, 0);
-                path->msg.sent = 0;
-            } else {
-                path->msg.sent = MUD_MSG_SENT_MAX;
-            }
-        } else if (mud_path_is_ok(mud, path)) {
+        if (mud_path_is_ok(mud, path)) {
             if (pref > path->conf.pref)
                 pref = path->conf.pref;
             if (!ok)
                 path->idle = now;
             rate += path->tx.rate;
-            path->ok = 1;
         }
-
         if (path->passive)
             continue;
 
