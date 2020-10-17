@@ -409,39 +409,6 @@ mud_sso_int(int fd, int level, int optname, int opt)
     return setsockopt(fd, level, optname, &opt, sizeof(opt));
 }
 
-struct mud_path *
-mud_get_paths(struct mud *mud, unsigned *ret_count)
-{
-    if (!ret_count) {
-        errno = EINVAL;
-        return NULL;
-    }
-
-    size_t size = mud->capacity * sizeof(struct mud_path);
-
-    if (!size) {
-        errno = 0;
-        return NULL;
-    }
-
-    struct mud_path *paths = malloc(size);
-
-    if (!paths)
-        return NULL;
-
-    unsigned count = 0;
-
-    for (unsigned i = 0; i < mud->capacity; i++) {
-        struct mud_path *path = &mud->paths[i];
-
-        if (path->conf.state != MUD_EMPTY)
-            memcpy(&paths[count++], path, sizeof(struct mud_path));
-    }
-    *ret_count = count;
-
-    return paths;
-}
-
 static inline int
 mud_cmp_addr(union mud_sockaddr *a, union mud_sockaddr *b)
 {
@@ -472,6 +439,35 @@ mud_cmp_port(union mud_sockaddr *a, union mud_sockaddr *b)
         return memcmp(&a->sin6.sin6_port, &b->sin6.sin6_port,
                       sizeof(a->sin6.sin6_port));
     return 1;
+}
+
+int
+mud_get_paths(struct mud *mud, struct mud_paths *paths,
+              union mud_sockaddr *local, union mud_sockaddr *remote)
+{
+    if (!paths) {
+        errno = EINVAL;
+        return -1;
+    }
+    unsigned count = 0;
+
+    for (unsigned i = 0; i < mud->capacity; i++) {
+        struct mud_path *path = &mud->paths[i];
+
+        if (local && local->sa.sa_family &&
+            mud_cmp_addr(local, &path->conf.local))
+            continue;
+
+        if (remote && remote->sa.sa_family &&
+            (mud_cmp_addr(remote, &path->conf.remote) ||
+             mud_cmp_port(remote, &path->conf.remote)))
+            continue;
+
+        if (path->conf.state != MUD_EMPTY)
+            paths->path[count++] = *path;
+    }
+    paths->count = count;
+    return 0;
 }
 
 static struct mud_path *

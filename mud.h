@@ -90,6 +90,11 @@ struct mud_bad {
     } decrypt, difftime, keyx;
 };
 
+struct mud_paths {
+    struct mud_path path[MUD_PATH_MAX];
+    unsigned count;
+};
+
 struct mud *mud_create (union mud_sockaddr *, unsigned char *, int *);
 void        mud_delete (struct mud *);
 
@@ -102,8 +107,8 @@ int mud_send_wait (struct mud *);
 int mud_recv (struct mud *, void *, size_t);
 int mud_send (struct mud *, const void *, size_t);
 
-int    mud_get_fd  (struct mud *);
-size_t mud_get_mtu (struct mud *);
-int    mud_get_bad (struct mud *, struct mud_bad *);
-
-struct mud_path *mud_get_paths (struct mud *, unsigned *);
+int    mud_get_bad   (struct mud *, struct mud_bad *);
+int    mud_get_fd    (struct mud *);
+size_t mud_get_mtu   (struct mud *);
+int    mud_get_paths (struct mud *, struct mud_paths *,
+                      union mud_sockaddr *, union mud_sockaddr *);
