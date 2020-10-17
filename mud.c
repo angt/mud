@@ -1222,6 +1222,28 @@ mud_path_is_ok(struct mud *mud, struct mud_path *path)
     return 1;
 }
 
+static uint64_t
+mud_path_track(struct mud *mud, struct mud_path *path, uint64_t now)
+{
+    if (path->passive)
+        return now;
+
+    uint64_t timeout = path->conf.beat;
+
+    if (path->msg.sent >= MUD_MSG_SENT_MAX) {
+        timeout = 2 * MUD_MSG_SENT_MAX * timeout;
+    } else if (path->ok && mud_timeout(now, path->idle, MUD_ONE_SEC)) {
+        timeout = mud->conf.keepalive;
+    }
+    if (mud_timeout(now, path->msg.time, timeout)) {
+        path->msg.sent++;
+        path->msg.time = now;
+        mud_send_msg(mud, path, now, 0, 0, 0, path->mtu.probe);
+        now = mud_now(mud);
+    }
+    return now;
+}
+
 int
 mud_update(struct mud *mud)
 {
@@ -1262,22 +1284,7 @@ mud_update(struct mud *mud)
                 path->idle = now;
             rate += path->tx.rate;
         }
-        if (path->passive)
-            continue;
-
-        uint64_t timeout = path->conf.beat;
-
-        if (path->msg.sent >= MUD_MSG_SENT_MAX) {
-            timeout = 2 * MUD_MSG_SENT_MAX * timeout;
-        } else if (path->ok && mud_timeout(now, path->idle, MUD_ONE_SEC)) {
-            timeout = mud->conf.keepalive;
-        }
-        if (mud_timeout(now, path->msg.time, timeout)) {
-            path->msg.sent++;
-            path->msg.time = now;
-            mud_send_msg(mud, path, now, 0, 0, 0, path->mtu.probe);
-            now = mud_now(mud);
-        }
+        now = mud_path_track(mud, path, now);
     }
 
     if (!rate) {
