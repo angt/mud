@@ -331,7 +331,7 @@ mud_select_path(struct mud *mud, uint16_t cursor)
     for (unsigned i = 0; i < mud->capacity; i++) {
         struct mud_path *path = &mud->paths[i];
 
-        if (!path->ok)
+        if (path->status != MUD_RUNNING)
             continue;
 
         if (k < path->tx.rate)
@@ -1183,7 +1183,7 @@ mud_cleanup_path(struct mud *mud, uint64_t now, struct mud_path *path)
 }
 
 static int
-mud_path_is_ok(struct mud *mud, struct mud_path *path)
+mud_path_is_ready(struct mud *mud, struct mud_path *path, uint64_t now)
 {
     if (path->msg.sent >= MUD_MSG_SENT_MAX) {
         if (path->mtu.probe) {
@@ -1191,21 +1191,32 @@ mud_path_is_ok(struct mud *mud, struct mud_path *path)
             path->msg.sent = 0;
         } else {
             path->msg.sent = MUD_MSG_SENT_MAX;
+            path->status = MUD_DEGRADED;
+            return 0;
         }
+    }
+    if (!path->mtu.ok) {
+        path->status = MUD_PROBING;
         return 0;
     }
-    if (!path->mtu.ok)
+    if (path->tx.loss > path->conf.loss_limit) {
+        path->status = MUD_LOSSY;
         return 0;
-
-    if (path->tx.loss > path->conf.loss_limit)
-        return 0;
-
+    }
     if (path->passive &&
         mud_timeout(mud->last_recv_time, path->rx.time,
-                    MUD_MSG_SENT_MAX * path->conf.beat))
+                    MUD_MSG_SENT_MAX * path->conf.beat)) {
+        path->status = MUD_WAITING;
         return 0;
+    }
+    if (path->status < MUD_READY)
+        path->idle = now;
 
-    path->ok = 1;
+    if (path->conf.pref > mud->pref) {
+        path->status = MUD_READY;
+    } else {
+        path->status = MUD_RUNNING;
+    }
     return 1;
 }
 
@@ -1215,11 +1226,15 @@ mud_path_track(struct mud *mud, struct mud_path *path, uint64_t now)
     if (path->passive)
         return now;
 
+    if (path->status == MUD_READY)
+        return now;
+
     uint64_t timeout = path->conf.beat;
 
     if (path->msg.sent >= MUD_MSG_SENT_MAX) {
         timeout = 2 * MUD_MSG_SENT_MAX * timeout;
-    } else if (path->ok && mud_timeout(now, path->idle, MUD_ONE_SEC)) {
+    } else if (path->status == MUD_RUNNING &&
+               mud_timeout(now, path->idle, MUD_ONE_SEC)) {
         timeout = mud->conf.keepalive;
     }
     if (mud_timeout(now, path->msg.time, timeout)) {
@@ -1250,25 +1265,19 @@ mud_update(struct mud *mud)
         if (mud_cleanup_path(mud, now, path))
             continue;
 
-        const int ok = path->ok;
-        path->ok = 0;
         count++;
-
-        if (next_pref > path->conf.pref && path->conf.pref > mud->pref)
-            next_pref = path->conf.pref;
 
         if (path->mtu.ok) {
             if (!mtu || mtu > path->mtu.ok)
                 mtu = path->mtu.ok;
-            if (path->conf.pref > mud->pref)
-                continue;
         }
-        if (mud_path_is_ok(mud, path)) {
+        if (mud_path_is_ready(mud, path, now)) {
+            if (next_pref > path->conf.pref && path->conf.pref > mud->pref)
+                next_pref = path->conf.pref;
             if (pref > path->conf.pref)
                 pref = path->conf.pref;
-            if (!ok)
-                path->idle = now;
-            rate += path->tx.rate;
+            if (path->status == MUD_RUNNING)
+                rate += path->tx.rate;
         }
         now = mud_path_track(mud, path, now);
     }

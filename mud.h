@@ -17,6 +17,15 @@ enum mud_state {
     MUD_LAST,
 };
 
+enum mud_path_status {
+    MUD_PROBING = 0,
+    MUD_DEGRADED,
+    MUD_LOSSY,
+    MUD_WAITING,
+    MUD_READY,
+    MUD_RUNNING,
+};
+
 struct mud_stat {
     uint64_t val;
     uint64_t var;
@@ -49,6 +58,7 @@ struct mud_path_conf {
 
 struct mud_path {
     struct mud_path_conf conf;
+    enum mud_path_status status;
     union mud_sockaddr remote;
     struct mud_stat rtt;
     struct {
@@ -79,7 +89,6 @@ struct mud_path {
     } mtu;
     int passive;
     uint64_t idle;
-    unsigned char ok;
 };
 
 struct mud_error {
