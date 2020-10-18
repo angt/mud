@@ -349,7 +349,9 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
     if (!size || !path)
         return 0;
 
-    unsigned char ctrl[MUD_CTRL_SIZE] = {0};
+    unsigned char ctrl[MUD_CTRL_SIZE];
+    memset(ctrl, 0, sizeof(ctrl));
+
     struct msghdr msg = {
         .msg_iov = &(struct iovec) {
             .iov_base = data,
