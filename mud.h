@@ -82,12 +82,16 @@ struct mud_path {
     unsigned char ok;
 };
 
-struct mud_bad {
-    struct {
-        union mud_sockaddr addr;
-        uint64_t time;
-        uint64_t count;
-    } decrypt, difftime, keyx;
+struct mud_error {
+    union mud_sockaddr addr;
+    uint64_t time;
+    uint64_t count;
+};
+
+struct mud_errors {
+    struct mud_error decrypt;
+    struct mud_error clocksync;
+    struct mud_error keyx;
 };
 
 struct mud_paths {
@@ -107,8 +111,8 @@ int mud_send_wait (struct mud *);
 int mud_recv (struct mud *, void *, size_t);
 int mud_send (struct mud *, const void *, size_t);
 
-int    mud_get_bad   (struct mud *, struct mud_bad *);
-int    mud_get_fd    (struct mud *);
-size_t mud_get_mtu   (struct mud *);
-int    mud_get_paths (struct mud *, struct mud_paths *,
-                      union mud_sockaddr *, union mud_sockaddr *);
+int    mud_get_errors (struct mud *, struct mud_errors *);
+int    mud_get_fd     (struct mud *);
+size_t mud_get_mtu    (struct mud *);
+int    mud_get_paths  (struct mud *, struct mud_paths *,
+                       union mud_sockaddr *, union mud_sockaddr *);

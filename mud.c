@@ -148,7 +148,7 @@ struct mud {
     struct mud_keyx keyx;
     uint64_t last_recv_time;
     size_t mtu;
-    struct mud_bad bad;
+    struct mud_errors err;
     uint64_t rate;
     uint64_t window;
     uint64_t window_time;
@@ -540,13 +540,13 @@ mud_get_path(struct mud *mud,
 }
 
 int
-mud_get_bad(struct mud *mud, struct mud_bad *bad)
+mud_get_errors(struct mud *mud, struct mud_errors *err)
 {
-    if (!bad) {
+    if (!err) {
         errno = EINVAL;
         return -1;
     }
-    memcpy(bad, &mud->bad, sizeof(struct mud_bad));
+    memcpy(err, &mud->err, sizeof(struct mud_errors));
     return 0;
 }
 
@@ -1087,9 +1087,9 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
     }
     if (memcmp(msg->pkey, mud->keyx.remote, MUD_PUBKEY_SIZE)) {
         if (mud_keyx(&mud->keyx, msg->pkey, msg->aes)) {
-            mud->bad.keyx.addr = path->conf.remote;
-            mud->bad.keyx.time = now;
-            mud->bad.keyx.count++;
+            mud->err.keyx.addr = path->conf.remote;
+            mud->err.keyx.time = now;
+            mud->err.keyx.count++;
             return;
         }
     } else if (!path->passive) {
@@ -1130,15 +1130,15 @@ mud_recv(struct mud *mud, void *data, size_t size)
         return 0;
 
     const uint64_t now = mud_now(mud);
-    const uint64_t sent_time = mud_load(packet, MUD_TIME_SIZE);
-
     mud_unmapv4(&remote);
+
+    const uint64_t sent_time = mud_load(packet, MUD_TIME_SIZE);
 
     if ((MUD_TIME_MASK(now - sent_time) > mud->conf.timetolerance) &&
         (MUD_TIME_MASK(sent_time - now) > mud->conf.timetolerance)) {
-        mud->bad.difftime.addr = remote;
-        mud->bad.difftime.time = now;
-        mud->bad.difftime.count++;
+        mud->err.clocksync.addr = remote;
+        mud->err.clocksync.time = now;
+        mud->err.clocksync.count++;
         return 0;
     }
 
@@ -1146,9 +1146,9 @@ mud_recv(struct mud *mud, void *data, size_t size)
                      ? mud_decrypt_msg(mud, data, size, packet, (size_t)packet_size)
                      : mud_decrypt(mud, data, size, packet, (size_t)packet_size);
     if (!ret) {
-        mud->bad.decrypt.addr = remote;
-        mud->bad.decrypt.time = now;
-        mud->bad.decrypt.count++;
+        mud->err.decrypt.addr = remote;
+        mud->err.decrypt.time = now;
+        mud->err.decrypt.count++;
         return 0;
     }
 
