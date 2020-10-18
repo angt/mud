@@ -685,7 +685,8 @@ mud_create(union mud_sockaddr *addr, unsigned char *key, int *aes)
 
     if ((mud->fd == -1) ||
         (mud_setup_socket(mud->fd, v4, v6)) ||
-        (bind(mud->fd, &addr->sa, addrlen))) {
+        (bind(mud->fd, &addr->sa, addrlen)) ||
+        (getsockname(mud->fd, &addr->sa, &addrlen))) {
         mud_delete(mud);
         return NULL;
     }
