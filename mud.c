@@ -79,8 +79,7 @@
 #define MUD_MTU_MAX (1450U + MUD_PKT_MIN_SIZE)
 
 #define MUD_CTRL_SIZE (CMSG_SPACE(MUD_PKTINFO_SIZE) + \
-                       CMSG_SPACE(sizeof(struct in6_pktinfo)) + \
-                       CMSG_SPACE(sizeof(int)))
+                       CMSG_SPACE(sizeof(struct in6_pktinfo)))
 
 #define MUD_STORE_MSG(D,S) mud_store((D),(S),sizeof(D))
 #define MUD_LOAD_MSG(S)    mud_load((S),sizeof(S))
@@ -359,7 +358,6 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
         .msg_iovlen = 1,
         .msg_control = ctrl,
     };
-
     if (path->conf.remote.sa.sa_family == AF_INET) {
         msg.msg_name = &path->conf.remote.sin;
         msg.msg_namelen = sizeof(struct sockaddr_in);
@@ -372,7 +370,6 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
         memcpy(MUD_PKTINFO_DST(CMSG_DATA(cmsg)),
                &path->conf.local.sin.sin_addr,
                sizeof(struct in_addr));
-
     } else if (path->conf.remote.sa.sa_family == AF_INET6) {
         msg.msg_name = &path->conf.remote.sin6;
         msg.msg_namelen = sizeof(struct sockaddr_in6);
@@ -383,12 +380,12 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
         cmsg->cmsg_type = IPV6_PKTINFO;
         cmsg->cmsg_len = CMSG_LEN(sizeof(struct in6_pktinfo));
         memcpy(&((struct in6_pktinfo *)CMSG_DATA(cmsg))->ipi6_addr,
-               &path->conf.local.sin6.sin6_addr, sizeof(struct in6_addr));
+               &path->conf.local.sin6.sin6_addr,
+               sizeof(struct in6_addr));
     } else {
         errno = EAFNOSUPPORT;
         return -1;
     }
-
     ssize_t ret = sendmsg(mud->fd, &msg, flags);
 
     path->tx.total++;
@@ -511,7 +508,6 @@ mud_get_path(struct mud *mud,
             errno = ENOMEM;
             return NULL;
         }
-
         struct mud_path *paths = realloc(mud->paths,
                 (mud->capacity + 1) * sizeof(struct mud_path));
 
@@ -640,7 +636,6 @@ mud_keyx_init(struct mud *mud, uint64_t now)
         0x3d, 0x99, 0xce, 0x96, 0xb9, 0x4f, 0x79, 0x31, 0x01, 0xab, 0xaf,
         0xe3, 0x03, 0x59, 0x1a, 0xcd, 0xdd, 0xb0, 0xfb, 0xe3, 0x49
     };
-
     unsigned char tmp[crypto_scalarmult_BYTES];
 
     do {
@@ -677,7 +672,6 @@ mud_create(union mud_sockaddr *addr, unsigned char *key, int *aes)
     default:
         return NULL;
     }
-
     if (sodium_init() == -1)
         return NULL;
 
@@ -695,7 +689,6 @@ mud_create(union mud_sockaddr *addr, unsigned char *key, int *aes)
         mud_delete(mud);
         return NULL;
     }
-
     mud->conf.keepalive     = 25 * MUD_ONE_SEC;
     mud->conf.timetolerance = 10 * MUD_ONE_MIN;
     mud->conf.kxtimeout     = 60 * MUD_ONE_MIN;
@@ -764,7 +757,6 @@ mud_encrypt(struct mud *mud, uint64_t now,
         .src = src,
         .size = src_size,
     };
-
     mud_store(dst, now, MUD_TIME_SIZE);
 
     if (mud->keyx.use_next) {
@@ -1107,7 +1099,6 @@ mud_recv(struct mud *mud, void *data, size_t size)
     union mud_sockaddr remote;
     unsigned char ctrl[MUD_CTRL_SIZE];
     unsigned char packet[MUD_PKT_MAX_SIZE];
-
     struct msghdr msg = {
         .msg_name = &remote,
         .msg_namelen = sizeof(remote),
@@ -1119,7 +1110,6 @@ mud_recv(struct mud *mud, void *data, size_t size)
         .msg_control = ctrl,
         .msg_controllen = sizeof(ctrl),
     };
-
     const ssize_t packet_size = recvmsg(mud->fd, &msg, 0);
 
     if (packet_size == (ssize_t)-1)
@@ -1130,9 +1120,9 @@ mud_recv(struct mud *mud, void *data, size_t size)
         return 0;
 
     const uint64_t now = mud_now(mud);
-    mud_unmapv4(&remote);
-
     const uint64_t sent_time = mud_load(packet, MUD_TIME_SIZE);
+
+    mud_unmapv4(&remote);
 
     if ((MUD_TIME_MASK(now - sent_time) > mud->conf.timetolerance) &&
         (MUD_TIME_MASK(sent_time - now) > mud->conf.timetolerance)) {
@@ -1141,7 +1131,6 @@ mud_recv(struct mud *mud, void *data, size_t size)
         mud->err.clocksync.count++;
         return 0;
     }
-
     const size_t ret = MUD_MSG(sent_time)
                      ? mud_decrypt_msg(mud, data, size, packet, (size_t)packet_size)
                      : mud_decrypt(mud, data, size, packet, (size_t)packet_size);
@@ -1151,7 +1140,6 @@ mud_recv(struct mud *mud, void *data, size_t size)
         mud->err.decrypt.count++;
         return 0;
     }
-
     union mud_sockaddr local;
 
     if (mud_localaddr(&local, &msg))
@@ -1247,8 +1235,7 @@ mud_update(struct mud *mud)
     unsigned pref = 255;
     unsigned next_pref = 255;
     uint64_t rate = 0;
-    size_t mtu = 0;
-
+    size_t   mtu = 0;
     uint64_t now = mud_now(mud);
 
     if (!mud_keyx_init(mud, now))
@@ -1282,7 +1269,6 @@ mud_update(struct mud *mud)
         }
         now = mud_path_track(mud, path, now);
     }
-
     if (!rate) {
         pref = next_pref;
     } else if (mud->window < 1500) {
@@ -1294,7 +1280,6 @@ mud_update(struct mud *mud)
             mud->window_time = now;
         }
     }
-
     mud->pref = pref;
     mud->rate = rate;
     mud->mtu = mtu;
@@ -1312,7 +1297,6 @@ mud_set_path(struct mud *mud, struct mud_path_conf *conf)
         errno = EINVAL;
         return -1;
     }
-
     struct mud_path *path = mud_get_path(mud, &conf->local, &conf->remote,
                                          conf->state > MUD_DOWN);
     if (!path)
@@ -1348,7 +1332,6 @@ mud_send(struct mud *mud, const void *data, size_t size)
         errno = EAGAIN;
         return -1;
     }
-
     unsigned char packet[MUD_PKT_MAX_SIZE];
     const uint64_t now = mud_now(mud);
     const size_t packet_size = mud_encrypt(mud, now,
@@ -1358,7 +1341,6 @@ mud_send(struct mud *mud, const void *data, size_t size)
         errno = EMSGSIZE;
         return -1;
     }
-
     uint16_t k;
     memcpy(&k, &packet[packet_size - sizeof(k)], sizeof(k));
 
