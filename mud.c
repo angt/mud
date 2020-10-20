@@ -331,6 +331,9 @@ mud_select_path(struct mud *mud, uint16_t cursor)
     for (unsigned i = 0; i < mud->capacity; i++) {
         struct mud_path *path = &mud->paths[i];
 
+        if (path->conf.state != MUD_UP)
+            continue;
+
         if (path->status != MUD_RUNNING)
             continue;
 
@@ -496,7 +499,6 @@ mud_get_path(struct mud *mud,
         errno = 0;
         return NULL;
     }
-
     struct mud_path *path = NULL;
 
     for (unsigned i = 0; i < mud->capacity; i++) {
@@ -523,16 +525,14 @@ mud_get_path(struct mud *mud,
     }
     memset(path, 0, sizeof(struct mud_path));
 
-    memcpy(&path->conf.local, local, sizeof(*local));
-    memcpy(&path->conf.remote, remote, sizeof(*remote));
-
+    path->conf.local      = *local;
+    path->conf.remote     = *remote;
     path->conf.state      = MUD_UP;
     path->conf.beat       = 100 * MUD_ONE_MSEC;
     path->conf.fixed_rate = 1;
     path->conf.loss_limit = 255;
-
-    path->passive = create >> 1;
-    path->idle    = mud_now(mud);
+    path->passive         = create >> 1;
+    path->idle            = mud_now(mud);
 
     return path;
 }
@@ -1209,13 +1209,11 @@ mud_path_is_ready(struct mud *mud, struct mud_path *path, uint64_t now)
         path->status = MUD_WAITING;
         return 0;
     }
-    if (path->status < MUD_READY)
-        path->idle = now;
-
     if (path->conf.pref > mud->pref) {
         path->status = MUD_READY;
-    } else {
+    } else if (path->status != MUD_RUNNING) {
         path->status = MUD_RUNNING;
+        path->idle = now;
     }
     return 1;
 }
@@ -1226,16 +1224,22 @@ mud_path_track(struct mud *mud, struct mud_path *path, uint64_t now)
     if (path->passive)
         return now;
 
-    if (path->status == MUD_READY)
-        return now;
-
     uint64_t timeout = path->conf.beat;
 
-    if (path->msg.sent >= MUD_MSG_SENT_MAX) {
-        timeout = 2 * MUD_MSG_SENT_MAX * timeout;
-    } else if (path->status == MUD_RUNNING &&
-               mud_timeout(now, path->idle, MUD_ONE_SEC)) {
-        timeout = mud->conf.keepalive;
+    switch (path->status) {
+        case MUD_RUNNING:
+            if (mud_timeout(now, path->idle, MUD_ONE_SEC))
+                timeout = mud->conf.keepalive;
+            break;
+        case MUD_DEGRADED:
+        case MUD_LOSSY:
+            if (mud_timeout(now, path->idle, MUD_ONE_SEC))
+                timeout = MUD_ONE_SEC;
+            break;
+        case MUD_PROBING:
+            break;
+        default:
+            return now;
     }
     if (mud_timeout(now, path->msg.time, timeout)) {
         path->msg.sent++;
