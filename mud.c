@@ -1199,7 +1199,8 @@ mud_path_is_ready(struct mud *mud, struct mud_path *path, uint64_t now)
         path->status = MUD_PROBING;
         return 0;
     }
-    if (path->tx.loss > path->conf.loss_limit) {
+    if (path->tx.loss > path->conf.loss_limit ||
+        path->rx.loss > path->conf.loss_limit) {
         path->status = MUD_LOSSY;
         return 0;
     }
