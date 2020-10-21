@@ -1233,9 +1233,6 @@ mud_path_track(struct mud *mud, struct mud_path *path, uint64_t now)
             break;
         case MUD_DEGRADED:
         case MUD_LOSSY:
-            if (mud_timeout(now, path->idle, MUD_ONE_SEC))
-                timeout = MUD_ONE_SEC;
-            break;
         case MUD_PROBING:
             break;
         default:
