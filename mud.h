@@ -18,7 +18,8 @@ enum mud_state {
 };
 
 enum mud_path_status {
-    MUD_PROBING = 0,
+    MUD_DELETING = 0,
+    MUD_PROBING,
     MUD_DEGRADED,
     MUD_LOSSY,
     MUD_WAITING,

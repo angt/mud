@@ -111,7 +111,6 @@ struct mud_addr {
 
 struct mud_msg {
     unsigned char sent_time[MUD_TIME_SIZE];
-    unsigned char state;
     unsigned char aes;
     unsigned char pkey[MUD_PUBKEY_SIZE];
     struct {
@@ -331,9 +330,6 @@ mud_select_path(struct mud *mud, uint16_t cursor)
     for (unsigned i = 0; i < mud->capacity; i++) {
         struct mud_path *path = &mud->paths[i];
 
-        if (path->conf.state != MUD_UP)
-            continue;
-
         if (path->status != MUD_RUNNING)
             continue;
 
@@ -531,6 +527,7 @@ mud_get_path(struct mud *mud,
     path->conf.beat       = 100 * MUD_ONE_MSEC;
     path->conf.fixed_rate = 1;
     path->conf.loss_limit = 255;
+    path->status          = MUD_PROBING;
     path->passive         = create >> 1;
     path->idle            = mud_now(mud);
 
@@ -886,8 +883,6 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
     if (mud_addr_from_sock(&msg->addr, &path->conf.remote))
         return -1;
 
-    msg->state = (unsigned char)path->conf.state;
-
     memcpy(msg->pkey, mud->keyx.local, sizeof(mud->keyx.local));
     msg->aes = (unsigned char)mud->keyx.aes;
 
@@ -941,9 +936,9 @@ mud_decrypt_msg(struct mud *mud,
 }
 
 static void
-mud_update_window(struct mud *mud, struct mud_path *path, uint64_t now,
-                  uint64_t tx_dt, uint64_t tx_bytes, uint64_t tx_pkt,
-                  uint64_t rx_dt, uint64_t rx_bytes, uint64_t rx_pkt)
+mud_update_rl(struct mud *mud, struct mud_path *path, uint64_t now,
+              uint64_t tx_dt, uint64_t tx_bytes, uint64_t tx_pkt,
+              uint64_t rx_dt, uint64_t rx_bytes, uint64_t rx_pkt)
 {
     if (rx_dt && rx_dt > tx_dt + (tx_dt >> 3)) {
         if (!path->conf.fixed_rate)
@@ -1033,8 +1028,8 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
 
         if ((tx_time > path->msg.tx.time) && (tx_bytes > path->msg.tx.bytes) &&
             (rx_time > path->msg.rx.time) && (rx_bytes > path->msg.rx.bytes)) {
-            if (path->msg.set && path->mtu.ok) {
-                mud_update_window(mud, path, now,
+            if (path->msg.set && path->status > MUD_PROBING) {
+                mud_update_rl(mud, path, now,
                         MUD_TIME_MASK(tx_time - path->msg.tx.time),
                         tx_bytes - path->msg.tx.bytes,
                         tx_total - path->msg.tx.total,
@@ -1061,7 +1056,6 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
         if (path->mtu.last && path->mtu.last == MUD_LOAD_MSG(msg->mtu))
             path->mtu.ok = path->mtu.last;
     } else {
-        path->conf.state = (enum mud_state)msg->state;
         path->conf.beat = MUD_LOAD_MSG(msg->beat);
 
         const uint64_t max_rate = MUD_LOAD_MSG(msg->max_rate);
@@ -1168,23 +1162,21 @@ mud_recv(struct mud *mud, void *data, size_t size)
 }
 
 static int
-mud_cleanup_path(struct mud *mud, uint64_t now, struct mud_path *path)
+mud_path_update(struct mud *mud, struct mud_path *path, uint64_t now)
 {
     if (path->conf.state < MUD_DOWN)
-        return 1;
-
-    if (!path->passive && path->conf.state > MUD_DOWN)
         return 0;
 
-    if (mud_timeout(now, path->rx.time, MUD_ONE_MIN))
-        memset(path, 0, sizeof(struct mud_path));
-
-    return path->conf.state <= MUD_DOWN;
-}
-
-static int
-mud_path_is_ready(struct mud *mud, struct mud_path *path, uint64_t now)
-{
+    if (path->conf.state == MUD_DOWN || path->passive) {
+        if (mud_timeout(now, path->rx.time, 5 * MUD_ONE_MIN)) {
+            memset(path, 0, sizeof(struct mud_path));
+            return 0;
+        }
+    }
+    if (path->conf.state == MUD_DOWN) {
+        path->status = MUD_DELETING;
+        return 0;
+    }
     if (path->msg.sent >= MUD_MSG_SENT_MAX) {
         if (path->mtu.probe) {
             mud_update_mtu(path, 0);
@@ -1248,6 +1240,21 @@ mud_path_track(struct mud *mud, struct mud_path *path, uint64_t now)
     return now;
 }
 
+static void
+mud_update_window(struct mud *mud, const uint64_t now)
+{
+    uint64_t elapsed = MUD_TIME_MASK(now - mud->window_time);
+
+    if (elapsed > MUD_ONE_MSEC) {
+        mud->window += mud->rate * elapsed / MUD_ONE_SEC;
+        mud->window_time = now;
+    }
+    uint64_t window_max = mud->rate * 100 * MUD_ONE_MSEC / MUD_ONE_SEC;
+
+    if (mud->window > window_max)
+        mud->window = window_max;
+}
+
 int
 mud_update(struct mud *mud)
 {
@@ -1264,16 +1271,7 @@ mud_update(struct mud *mud)
     for (unsigned i = 0; i < mud->capacity; i++) {
         struct mud_path *path = &mud->paths[i];
 
-        if (mud_cleanup_path(mud, now, path))
-            continue;
-
-        count++;
-
-        if (path->mtu.ok) {
-            if (!mtu || mtu > path->mtu.ok)
-                mtu = path->mtu.ok;
-        }
-        if (mud_path_is_ready(mud, path, now)) {
+        if (mud_path_update(mud, path, now)) {
             if (next_pref > path->conf.pref && path->conf.pref > mud->pref)
                 next_pref = path->conf.pref;
             if (pref > path->conf.pref)
@@ -1281,22 +1279,32 @@ mud_update(struct mud *mud)
             if (path->status == MUD_RUNNING)
                 rate += path->tx.rate;
         }
+        if (path->mtu.ok) {
+            if (!mtu || mtu > path->mtu.ok)
+                mtu = path->mtu.ok;
+        }
         now = mud_path_track(mud, path, now);
+        count++;
     }
-    if (!rate) {
-        pref = next_pref;
-    } else if (mud->window < 1500) {
-        uint64_t elapsed = MUD_TIME_MASK(now - mud->window_time);
-        if (elapsed > MUD_ONE_MSEC) {
-            if (elapsed > 20 * MUD_ONE_MSEC)
-                elapsed = 20 * MUD_ONE_MSEC;
-            mud->window += rate * elapsed / MUD_ONE_SEC;
-            mud->window_time = now;
+    if (rate) {
+        mud->pref = pref;
+    } else {
+        mud->pref = next_pref;
+
+        for (unsigned i = 0; i < mud->capacity; i++) {
+            struct mud_path *path = &mud->paths[i];
+
+            if (!mud_path_update(mud, path, now))
+                continue;
+
+            if (path->status == MUD_RUNNING)
+                rate += path->tx.rate;
         }
     }
-    mud->pref = pref;
     mud->rate = rate;
     mud->mtu = mtu;
+
+    mud_update_window(mud, now);
 
     if (!count)
         return -1;
