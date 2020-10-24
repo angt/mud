@@ -13,6 +13,7 @@ struct mud;
 enum mud_state {
     MUD_EMPTY = 0,
     MUD_DOWN,
+    MUD_PASSIVE,
     MUD_UP,
     MUD_LAST,
 };
@@ -88,7 +89,6 @@ struct mud_path {
         size_t last;
         size_t ok;
     } mtu;
-    int passive;
     uint64_t idle;
 };
 

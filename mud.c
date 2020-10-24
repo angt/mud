@@ -472,7 +472,7 @@ static struct mud_path *
 mud_get_path(struct mud *mud,
              union mud_sockaddr *local,
              union mud_sockaddr *remote,
-             int create)
+             enum mud_state state)
 {
     if (local->sa.sa_family != remote->sa.sa_family) {
         errno = EINVAL;
@@ -491,7 +491,7 @@ mud_get_path(struct mud *mud,
 
         return path;
     }
-    if (!create) {
+    if (state <= MUD_DOWN) {
         errno = 0;
         return NULL;
     }
@@ -523,12 +523,11 @@ mud_get_path(struct mud *mud,
 
     path->conf.local      = *local;
     path->conf.remote     = *remote;
-    path->conf.state      = MUD_UP;
+    path->conf.state      = state;
     path->conf.beat       = 100 * MUD_ONE_MSEC;
     path->conf.fixed_rate = 1;
     path->conf.loss_limit = 255;
     path->status          = MUD_PROBING;
-    path->passive         = create >> 1;
     path->idle            = mud_now(mud);
 
     return path;
@@ -1048,7 +1047,7 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
         path->rx.loss = (uint64_t)msg->loss;
         path->msg.sent = 0;
 
-        if (path->passive)
+        if (path->conf.state == MUD_PASSIVE)
             return;
 
         mud_update_mtu(path, size);
@@ -1081,7 +1080,7 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
             mud->err.keyx.count++;
             return;
         }
-    } else if (!path->passive) {
+    } else if (path->conf.state == MUD_UP) {
         mud->keyx.use_next = 1;
     }
     mud_send_msg(mud, path, now, sent_time,
@@ -1142,7 +1141,7 @@ mud_recv(struct mud *mud, void *data, size_t size)
     if (mud_localaddr(&local, &msg))
         return 0;
 
-    struct mud_path *path = mud_get_path(mud, &local, &remote, 3);
+    struct mud_path *path = mud_get_path(mud, &local, &remote, MUD_PASSIVE);
 
     if (!path || path->conf.state <= MUD_DOWN)
         return 0;
@@ -1164,19 +1163,20 @@ mud_recv(struct mud *mud, void *data, size_t size)
 static int
 mud_path_update(struct mud *mud, struct mud_path *path, uint64_t now)
 {
-    if (path->conf.state < MUD_DOWN)
+    switch (path->conf.state) {
+        case MUD_DOWN:
+            path->status = MUD_DELETING;
+        case MUD_PASSIVE:
+            if (mud_timeout(now, path->rx.time, 5 * MUD_ONE_MIN)) {
+                memset(path, 0, sizeof(struct mud_path));
+                return 0;
+            }
+        case MUD_UP: break;
+        default:     return 0;
+    }
+    if (path->conf.state == MUD_DOWN)
         return 0;
 
-    if (path->conf.state == MUD_DOWN || path->passive) {
-        if (mud_timeout(now, path->rx.time, 5 * MUD_ONE_MIN)) {
-            memset(path, 0, sizeof(struct mud_path));
-            return 0;
-        }
-    }
-    if (path->conf.state == MUD_DOWN) {
-        path->status = MUD_DELETING;
-        return 0;
-    }
     if (path->msg.sent >= MUD_MSG_SENT_MAX) {
         if (path->mtu.probe) {
             mud_update_mtu(path, 0);
@@ -1196,7 +1196,7 @@ mud_path_update(struct mud *mud, struct mud_path *path, uint64_t now)
         path->status = MUD_LOSSY;
         return 0;
     }
-    if (path->passive &&
+    if (path->conf.state == MUD_PASSIVE &&
         mud_timeout(mud->last_recv_time, path->rx.time,
                     MUD_MSG_SENT_MAX * path->conf.beat)) {
         path->status = MUD_WAITING;
@@ -1214,7 +1214,7 @@ mud_path_update(struct mud *mud, struct mud_path *path, uint64_t now)
 static uint64_t
 mud_path_track(struct mud *mud, struct mud_path *path, uint64_t now)
 {
-    if (path->passive)
+    if (path->conf.state != MUD_UP)
         return now;
 
     uint64_t timeout = path->conf.beat;
@@ -1319,8 +1319,9 @@ mud_set_path(struct mud *mud, struct mud_path_conf *conf)
         errno = EINVAL;
         return -1;
     }
-    struct mud_path *path = mud_get_path(mud, &conf->local, &conf->remote,
-                                         conf->state > MUD_DOWN);
+    struct mud_path *path = mud_get_path(mud, &conf->local,
+                                              &conf->remote,
+                                              conf->state);
     if (!path)
         return -1;
 
