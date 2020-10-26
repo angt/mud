@@ -1164,19 +1164,19 @@ static int
 mud_path_update(struct mud *mud, struct mud_path *path, uint64_t now)
 {
     switch (path->conf.state) {
-        case MUD_DOWN:
-            path->status = MUD_DELETING;
-        case MUD_PASSIVE:
-            if (mud_timeout(now, path->rx.time, 5 * MUD_ONE_MIN)) {
-                memset(path, 0, sizeof(struct mud_path));
-                return 0;
-            }
-        case MUD_UP: break;
-        default:     return 0;
-    }
-    if (path->conf.state == MUD_DOWN)
+    case MUD_DOWN:
+        path->status = MUD_DELETING;
+        if (mud_timeout(now, path->rx.time, 2 * MUD_ONE_MIN))
+            memset(path, 0, sizeof(struct mud_path));
         return 0;
-
+    case MUD_PASSIVE:
+        if (mud_timeout(now, mud->last_recv_time, 2 * MUD_ONE_MIN)) {
+            memset(path, 0, sizeof(struct mud_path));
+            return 0;
+        }
+    case MUD_UP: break;
+    default:     return 0;
+    }
     if (path->msg.sent >= MUD_MSG_SENT_MAX) {
         if (path->mtu.probe) {
             mud_update_mtu(path, 0);
