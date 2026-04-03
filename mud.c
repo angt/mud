@@ -9,8 +9,22 @@
 #include "mud.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
+
+#if defined(MUD_TEST)
+static int mud_test_drop_incoming;
+
+static void
+mud_test_env_init(void)
+{
+    const char *e = getenv("MUD_TEST_DROP_INCOMING");
+
+    if (e)
+        mud_test_drop_incoming = atoi(e);
+}
+#endif
 #include <time.h>
 #include <unistd.h>
 
@@ -70,10 +84,41 @@
 
 #define MUD_MSG(X)       ((X) & UINT64_C(1))
 #define MUD_MSG_MARK(X)  ((X) | UINT64_C(1))
-#define MUD_MSG_SENT_MAX (5)
+#define MUD_REL_BIT        UINT64_C(4)
+#define MUD_RELIABLE(X)    ((X) & MUD_REL_BIT)
+static inline unsigned
+mud_path_miss_max(const struct mud_path *path)
+{
+    unsigned m = path->conf.heartbeat_miss_max;
+    return m ? m : MUD_HEARTBEAT_MISS_DEFAULT;
+}
+
+static inline uint64_t
+mud_path_weight(const struct mud_path *path)
+{
+    uint64_t w = path->tx.rate;
+    return w ? w : 1;
+}
+
+/* Paths that may send user/control traffic (aligned with mud_reliable_min_beat). */
+static int
+mud_path_eligible_for_tx(const struct mud_path *path)
+{
+    if (path->conf.state != MUD_UP && path->conf.state != MUD_PASSIVE)
+        return 0;
+    return path->status == MUD_RUNNING || path->status == MUD_READY ||
+        path->status == MUD_LOSSY || path->status == MUD_PROBING ||
+        path->status == MUD_WAITING;
+}
 
 #define MUD_PKT_MIN_SIZE (MUD_TIME_SIZE + MUD_MAC_SIZE)
 #define MUD_PKT_MAX_SIZE (1500U)
+#define MUD_REL_HDR_SIZE   (MUD_TIME_SIZE + 16U)
+#define MUD_TUN_PAYLOAD_MAX (MUD_PKT_MAX_SIZE - MUD_REL_HDR_SIZE - MUD_MAC_SIZE)
+#define MUD_REL_MAX_PENDING 128
+#define MUD_REL_MAX_REORDER 128
+#define MUD_REL_MAX_RTX     12
+#define MUD_REL_RETX_DEGRADE 8
 
 #define MUD_MTU_MIN ( 576U + MUD_PKT_MIN_SIZE)
 #define MUD_MTU_MAX (1450U + MUD_PKT_MIN_SIZE)
@@ -137,6 +182,21 @@ struct mud_keyx {
     int aes;
 };
 
+struct mud_pending {
+    uint64_t seq;
+    uint64_t last_send;
+    unsigned retransmits;
+    size_t len;
+    unsigned char data[MUD_TUN_PAYLOAD_MAX];
+};
+
+struct mud_reorder_slot {
+    int used;
+    uint64_t seq;
+    size_t len;
+    unsigned char data[MUD_TUN_PAYLOAD_MAX];
+};
+
 struct mud {
     int fd;
     struct mud_conf conf;
@@ -151,6 +211,17 @@ struct mud {
     uint64_t window;
     uint64_t window_time;
     uint64_t base_time;
+    int reliable;
+    uint64_t rel_tx_seq;
+    uint64_t rel_rx_next;
+    uint64_t rel_peer_ack;
+    uint64_t rel_last_ack_send;
+    int rel_ack_due;
+    struct mud_pending rel_pending[MUD_REL_MAX_PENDING];
+    unsigned rel_pending_n;
+    struct mud_reorder_slot rel_reorder[MUD_REL_MAX_REORDER];
+    unsigned char rel_ready[MUD_TUN_PAYLOAD_MAX];
+    size_t rel_ready_len;
 #if defined __APPLE__
     mach_timebase_info_data_t mtid;
 #endif
@@ -330,13 +401,15 @@ mud_select_path(struct mud *mud, uint16_t cursor)
     for (unsigned i = 0; i < mud->capacity; i++) {
         struct mud_path *path = &mud->paths[i];
 
-        if (path->status != MUD_RUNNING)
+        if (!mud_path_eligible_for_tx(path))
             continue;
 
-        if (k < path->tx.rate)
+        uint64_t w = mud_path_weight(path);
+
+        if (k < w)
             return path;
 
-        k -= path->tx.rate;
+        k -= w;
     }
     return NULL;
 }
@@ -388,6 +461,9 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
         return -1;
     }
     ssize_t ret = sendmsg(mud->fd, &msg, flags);
+
+    if (ret == (ssize_t)-1)
+        return -1;
 
     path->tx.total++;
     path->tx.bytes += size;
@@ -526,7 +602,8 @@ mud_get_path(struct mud *mud,
     path->conf.state      = state;
     path->conf.beat       = 100 * MUD_ONE_MSEC;
     path->conf.fixed_rate = 1;
-    path->conf.loss_limit = 255;
+    path->conf.loss_limit       = 255;
+    path->conf.heartbeat_miss_max = 0;
     path->status          = MUD_PROBING;
     path->idle            = mud_now(mud);
 
@@ -552,7 +629,14 @@ mud_set(struct mud *mud, struct mud_conf *conf)
     if (conf->keepalive)     c.keepalive     = conf->keepalive;
     if (conf->timetolerance) c.timetolerance = conf->timetolerance;
     if (conf->kxtimeout)     c.kxtimeout     = conf->kxtimeout;
+    if (conf->reliable) {
+        if (conf->reliable == 1)
+            mud->reliable = 0;
+        else
+            mud->reliable = 1;
+    }
 
+    c.reliable = mud->reliable ? 2 : 1;
     *conf = mud->conf = c;
     return 0;
 }
@@ -714,6 +798,26 @@ mud_create(union mud_sockaddr *addr, unsigned char *key, int *aes)
         *aes = 0;
 
     mud->keyx.aes = *aes;
+
+    mud->reliable = 1;
+    mud->rel_tx_seq = 0;
+    mud->rel_rx_next = 0;
+    mud->rel_peer_ack = 0;
+    mud->rel_last_ack_send = mud_now(mud);
+    mud->rel_ack_due = 0;
+    mud->rel_pending_n = 0;
+    mud->rel_ready_len = 0;
+    memset(mud->rel_reorder, 0, sizeof(mud->rel_reorder));
+
+    if (fcntl(mud->fd, F_SETFL, O_NONBLOCK) == -1) {
+        mud_delete(mud);
+        return NULL;
+    }
+
+#if defined(MUD_TEST)
+    mud_test_env_init();
+#endif
+
     return mud;
 }
 
@@ -793,6 +897,337 @@ mud_decrypt(struct mud *mud,
         }
     }
     return size;
+}
+
+static int
+mud_encrypt_reliable_inner(const struct mud_crypto_key *k,
+                           unsigned char *dst,
+                           const unsigned char *src, size_t src_size)
+{
+    unsigned char npub[AEGIS256_NPUBBYTES] = {0};
+
+    memcpy(npub, dst, MUD_TIME_SIZE);
+
+    if (k->aes) {
+        unsigned long long clen = 0;
+        return aegis256_encrypt(
+            dst + MUD_REL_HDR_SIZE,
+            &clen,
+            src,
+            src_size,
+            dst + MUD_TIME_SIZE,
+            16,
+            npub,
+            k->encrypt.key
+        );
+    }
+    return crypto_aead_chacha20poly1305_encrypt(
+        dst + MUD_REL_HDR_SIZE,
+        NULL,
+        src,
+        src_size,
+        dst + MUD_TIME_SIZE,
+        16,
+        NULL,
+        npub,
+        k->encrypt.key
+    );
+}
+
+static size_t
+mud_encrypt_reliable(struct mud *mud, uint64_t now,
+                     unsigned char *dst, size_t dst_size,
+                     const unsigned char *src, size_t src_size,
+                     uint64_t seq, uint64_t ack)
+{
+    const size_t out = MUD_REL_HDR_SIZE + src_size + MUD_MAC_SIZE;
+
+    if (out > dst_size || src_size > MUD_TUN_PAYLOAD_MAX)
+        return 0;
+
+    mud_store(dst, now | MUD_REL_BIT, MUD_TIME_SIZE);
+    mud_store(dst + MUD_TIME_SIZE, seq, 8);
+    mud_store(dst + MUD_TIME_SIZE + 8, ack, 8);
+
+    const struct mud_crypto_key *k = mud->keyx.use_next
+        ? &mud->keyx.next : &mud->keyx.current;
+
+    if (mud_encrypt_reliable_inner(k, dst, src, src_size))
+        return 0;
+
+    return out;
+}
+
+static int
+mud_decrypt_reliable_inner(const struct mud_crypto_key *k,
+                           unsigned char *dst,
+                           const unsigned char *src, size_t src_size)
+{
+    unsigned char npub[AEGIS256_NPUBBYTES] = {0};
+
+    memcpy(npub, src, MUD_TIME_SIZE);
+
+    if (k->aes) {
+        unsigned long long mlen = 0;
+        return aegis256_decrypt(
+            dst,
+            &mlen,
+            src + MUD_REL_HDR_SIZE,
+            src_size - MUD_REL_HDR_SIZE,
+            src + MUD_TIME_SIZE,
+            16,
+            npub,
+            k->decrypt.key
+        );
+    }
+    return crypto_aead_chacha20poly1305_decrypt(
+        dst,
+        NULL,
+        NULL,
+        src + MUD_REL_HDR_SIZE,
+        src_size - MUD_REL_HDR_SIZE,
+        src + MUD_TIME_SIZE,
+        16,
+        npub,
+        k->decrypt.key
+    );
+}
+
+static ssize_t
+mud_decrypt_reliable(struct mud *mud,
+                     unsigned char *dst, size_t dst_size,
+                     const unsigned char *src, size_t src_size,
+                     uint64_t *seq_out, uint64_t *ack_out)
+{
+    if (src_size < MUD_REL_HDR_SIZE + MUD_MAC_SIZE)
+        return -1;
+
+    const size_t plain_max = src_size - MUD_REL_HDR_SIZE - MUD_MAC_SIZE;
+
+    if (plain_max > dst_size || plain_max > MUD_TUN_PAYLOAD_MAX)
+        return -1;
+
+    *seq_out = mud_load(src + MUD_TIME_SIZE, 8);
+    *ack_out = mud_load(src + MUD_TIME_SIZE + 8, 8);
+
+    if (mud_decrypt_reliable_inner(&mud->keyx.current, dst, src, src_size)) {
+        if (!mud_decrypt_reliable_inner(&mud->keyx.next, dst, src, src_size)) {
+            mud->keyx.last = mud->keyx.current;
+            mud->keyx.current = mud->keyx.next;
+            mud->keyx.use_next = 0;
+        } else {
+            if (mud_decrypt_reliable_inner(&mud->keyx.last, dst, src, src_size) &&
+                mud_decrypt_reliable_inner(&mud->keyx.private, dst, src, src_size))
+                return -1;
+        }
+    }
+    return (ssize_t)plain_max;
+}
+
+static uint64_t
+mud_reliable_min_beat(struct mud *mud)
+{
+    uint64_t b = 0;
+
+    for (unsigned i = 0; i < mud->capacity; i++) {
+        struct mud_path *p = &mud->paths[i];
+
+        if (p->conf.state != MUD_UP)
+            continue;
+        if (p->status != MUD_RUNNING && p->status != MUD_READY &&
+            p->status != MUD_LOSSY && p->status != MUD_PROBING &&
+            p->status != MUD_WAITING)
+            continue;
+        if (!b || p->conf.beat < b)
+            b = p->conf.beat;
+    }
+    if (!b)
+        b = 100 * MUD_ONE_MSEC;
+    return b;
+}
+
+static void
+mud_reliable_ack_peer(struct mud *mud, uint64_t now, uint64_t peer_ack)
+{
+    (void)now;
+
+    if (peer_ack <= mud->rel_peer_ack)
+        return;
+    mud->rel_peer_ack = peer_ack;
+
+    while (mud->rel_pending_n) {
+        struct mud_pending *p = &mud->rel_pending[0];
+
+        if (p->seq >= peer_ack)
+            break;
+        memmove(&mud->rel_pending[0], &mud->rel_pending[1],
+                (mud->rel_pending_n - 1) * sizeof(struct mud_pending));
+        mud->rel_pending_n--;
+    }
+}
+
+static int
+mud_reorder_insert(struct mud *mud, uint64_t seq,
+                   const unsigned char *data, size_t len)
+{
+    if (len > MUD_TUN_PAYLOAD_MAX)
+        return -1;
+
+    if (seq >= mud->rel_rx_next + MUD_REL_MAX_REORDER)
+        return -1;
+
+    if (seq < mud->rel_rx_next)
+        return 0;
+
+    for (unsigned i = 0; i < MUD_REL_MAX_REORDER; i++) {
+        struct mud_reorder_slot *s = &mud->rel_reorder[i];
+
+        if (s->used && s->seq == seq)
+            return 0;
+    }
+    for (unsigned i = 0; i < MUD_REL_MAX_REORDER; i++) {
+        struct mud_reorder_slot *s = &mud->rel_reorder[i];
+
+        if (!s->used) {
+            s->used = 1;
+            s->seq = seq;
+            s->len = len;
+            memcpy(s->data, data, len);
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static void
+mud_reliable_flush_ready(struct mud *mud)
+{
+    if (mud->rel_ready_len)
+        return;
+
+    for (unsigned i = 0; i < MUD_REL_MAX_REORDER; i++) {
+        struct mud_reorder_slot *s = &mud->rel_reorder[i];
+
+        if (s->used && s->seq == mud->rel_rx_next) {
+            memcpy(mud->rel_ready, s->data, s->len);
+            mud->rel_ready_len = s->len;
+            s->used = 0;
+            mud->rel_rx_next++;
+            return;
+        }
+    }
+}
+
+static void
+mud_reliable_rx(struct mud *mud, struct mud_path *path,
+                uint64_t now, uint64_t seq, uint64_t ack,
+                const unsigned char *plain, size_t plen)
+{
+    mud_reliable_ack_peer(mud, now, ack);
+
+    if (plen == 0)
+        return;
+
+    if (seq < mud->rel_rx_next)
+        return;
+
+    if (seq == mud->rel_rx_next) {
+        if (mud->rel_ready_len) {
+            if (mud_reorder_insert(mud, seq, plain, plen))
+                path->rel_retx++;
+        } else {
+            memcpy(mud->rel_ready, plain, plen);
+            mud->rel_ready_len = plen;
+            mud->rel_rx_next++;
+            mud_reliable_flush_ready(mud);
+        }
+    } else {
+        if (mud_reorder_insert(mud, seq, plain, plen))
+            path->rel_retx++;
+        mud_reliable_flush_ready(mud);
+    }
+
+    mud->rel_ack_due = 1;
+}
+
+static int
+mud_send_reliable_raw(struct mud *mud, struct mud_path *path,
+                      uint64_t now, const unsigned char *plain, size_t plen,
+                      uint64_t seq, uint64_t ack, int is_retx)
+{
+    unsigned char buf[MUD_PKT_MAX_SIZE];
+    static const unsigned char z[1];
+    const unsigned char *src = plain ? plain : z;
+
+    const size_t sz = mud_encrypt_reliable(mud, now, buf, sizeof(buf),
+                                           src, plen, seq, ack);
+
+    if (!sz) {
+        errno = EMSGSIZE;
+        return -1;
+    }
+    uint16_t k;
+    memcpy(&k, &buf[sz - sizeof(k)], sizeof(k));
+
+    struct mud_path *p = path;
+
+    if (!p)
+        p = mud_select_path(mud, k);
+
+    if (!p) {
+        errno = EAGAIN;
+        return -1;
+    }
+    p->idle = now;
+    if (is_retx)
+        p->rel_retx++;
+    return mud_send_path(mud, p, now, buf, sz, 0);
+}
+
+static int
+mud_reliable_retransmit(struct mud *mud, uint64_t now)
+{
+    const uint64_t beat = mud_reliable_min_beat(mud);
+
+    for (unsigned i = 0; i < mud->rel_pending_n; i++) {
+        struct mud_pending *p = &mud->rel_pending[i];
+
+        uint64_t mult = (uint64_t)1U << (p->retransmits > 3 ? 3 : p->retransmits);
+        uint64_t rto = beat * mult;
+
+        if (!mud_timeout(now, p->last_send, rto))
+            continue;
+        if (p->retransmits >= MUD_REL_MAX_RTX)
+            continue;
+        p->retransmits++;
+        p->last_send = now;
+
+        if (mud_send_reliable_raw(mud, NULL, now, p->data, p->len,
+                                  p->seq, mud->rel_rx_next, 1) < 0)
+            return -1;
+    }
+    return 0;
+}
+
+static int
+mud_reliable_send_ack_if_needed(struct mud *mud, uint64_t now)
+{
+    const uint64_t beat = mud_reliable_min_beat(mud);
+
+    if (!mud->rel_ack_due)
+        return 0;
+    if (!mud_timeout(now, mud->rel_last_ack_send, beat))
+        return 0;
+
+    const uint64_t seq = mud->rel_tx_seq++;
+
+    if (mud_send_reliable_raw(mud, NULL, now, NULL, 0,
+                              seq, mud->rel_rx_next, 0) < 0)
+        return -1;
+
+    mud->rel_ack_due = 0;
+    mud->rel_last_ack_send = now;
+    return 0;
 }
 
 static int
@@ -939,26 +1374,64 @@ mud_update_rl(struct mud *mud, struct mud_path *path, uint64_t now,
               uint64_t tx_dt, uint64_t tx_bytes, uint64_t tx_pkt,
               uint64_t rx_dt, uint64_t rx_bytes, uint64_t rx_pkt)
 {
-    if (rx_dt && rx_dt > tx_dt + (tx_dt >> 3)) {
-        if (!path->conf.fixed_rate)
-            path->tx.rate = (7 * rx_bytes * MUD_ONE_SEC) / (8 * rx_dt);
+    (void)mud;
+    (void)now;
+
+    uint64_t tx_acc = path->msg.tx.acc + tx_pkt;
+    uint64_t rx_acc = path->msg.rx.acc + rx_pkt;
+
+    if (tx_acc > 1000) {
+        if (tx_acc >= rx_acc)
+            path->tx.loss = (tx_acc - rx_acc) * 255U / tx_acc;
+        path->msg.tx.acc = tx_acc - (tx_acc >> 4);
+        path->msg.rx.acc = rx_acc - (rx_acc >> 4);
     } else {
-        uint64_t tx_acc = path->msg.tx.acc + tx_pkt;
-        uint64_t rx_acc = path->msg.rx.acc + rx_pkt;
-
-        if (tx_acc > 1000) {
-            if (tx_acc >= rx_acc)
-                path->tx.loss = (tx_acc - rx_acc) * 255U / tx_acc;
-            path->msg.tx.acc = tx_acc - (tx_acc >> 4);
-            path->msg.rx.acc = rx_acc - (rx_acc >> 4);
-        } else {
-            path->msg.tx.acc = tx_acc;
-            path->msg.rx.acc = rx_acc;
-        }
-
-        if (!path->conf.fixed_rate)
-            path->tx.rate += path->tx.rate / 10;
+        path->msg.tx.acc = tx_acc;
+        path->msg.rx.acc = rx_acc;
     }
+
+    if (path->conf.fixed_rate) {
+        path->tx.rate = path->conf.tx_max_rate;
+        if (path->tx.rate > path->conf.tx_max_rate)
+            path->tx.rate = path->conf.tx_max_rate;
+        return;
+    }
+
+    if (tx_dt && tx_dt < MUD_ONE_MSEC)
+        tx_dt = MUD_ONE_MSEC;
+    if (rx_dt && rx_dt < MUD_ONE_MSEC)
+        rx_dt = MUD_ONE_MSEC;
+
+    uint64_t tx_bps = 0, rx_bps = 0;
+    if (tx_dt)
+        tx_bps = tx_bytes * MUD_ONE_SEC / tx_dt;
+    if (rx_dt)
+        rx_bps = rx_bytes * MUD_ONE_SEC / rx_dt;
+
+    uint64_t sample = 0;
+    if (tx_bps && rx_bps)
+        sample = (tx_bps < rx_bps) ? tx_bps : rx_bps;
+    else
+        sample = tx_bps ? tx_bps : rx_bps;
+
+    if (rx_dt && tx_dt && rx_dt > tx_dt + (tx_dt >> 3)) {
+        uint64_t asym = (7 * rx_bytes * MUD_ONE_SEC) / (8 * rx_dt);
+        if (!sample || asym < sample)
+            sample = asym;
+    }
+
+    if (sample > path->conf.tx_max_rate)
+        sample = path->conf.tx_max_rate;
+
+    if (sample) {
+        if (path->tx.rate)
+            path->tx.rate = (path->tx.rate * 3 + sample) / 4;
+        else
+            path->tx.rate = sample;
+    } else if (path->tx.rate) {
+        path->tx.rate -= path->tx.rate / 8;
+    }
+
     if (path->tx.rate > path->conf.tx_max_rate)
         path->tx.rate = path->conf.tx_max_rate;
 }
@@ -1027,7 +1500,7 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
 
         if ((tx_time > path->msg.tx.time) && (tx_bytes > path->msg.tx.bytes) &&
             (rx_time > path->msg.rx.time) && (rx_bytes > path->msg.rx.bytes)) {
-            if (path->msg.set && path->status > MUD_PROBING) {
+            if (path->msg.set && path->status >= MUD_PROBING) {
                 mud_update_rl(mud, path, now,
                         MUD_TIME_MASK(tx_time - path->msg.tx.time),
                         tx_bytes - path->msg.tx.bytes,
@@ -1061,6 +1534,8 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
 
         if (path->conf.tx_max_rate != max_rate || msg->fixed_rate)
             path->tx.rate = max_rate;
+        else if (!msg->fixed_rate && max_rate && !path->tx.rate)
+            path->tx.rate = max_rate;
 
         path->conf.tx_max_rate = max_rate;
         path->conf.pref = msg->pref;
@@ -1092,72 +1567,209 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
 int
 mud_recv(struct mud *mud, void *data, size_t size)
 {
-    union mud_sockaddr remote;
-    unsigned char ctrl[MUD_CTRL_SIZE];
-    unsigned char packet[MUD_PKT_MAX_SIZE];
-    struct msghdr msg = {
-        .msg_name = &remote,
-        .msg_namelen = sizeof(remote),
-        .msg_iov = &(struct iovec) {
-            .iov_base = packet,
-            .iov_len = sizeof(packet),
-        },
-        .msg_iovlen = 1,
-        .msg_control = ctrl,
-        .msg_controllen = sizeof(ctrl),
-    };
-    const ssize_t packet_size = recvmsg(mud->fd, &msg, 0);
+    if (mud->reliable && mud->rel_ready_len) {
+        if (mud->rel_ready_len > size) {
+            errno = EMSGSIZE;
+            return -1;
+        }
+        memcpy(data, mud->rel_ready, mud->rel_ready_len);
+        {
+            const int n = (int)mud->rel_ready_len;
 
-    if (packet_size == (ssize_t)-1)
-        return -1;
-
-    if ((msg.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) ||
-        (packet_size <= (ssize_t)MUD_PKT_MIN_SIZE))
-        return 0;
-
-    const uint64_t now = mud_now(mud);
-    const uint64_t sent_time = mud_load(packet, MUD_TIME_SIZE);
-
-    mud_unmapv4(&remote);
-
-    if ((MUD_TIME_MASK(now - sent_time) > mud->conf.timetolerance) &&
-        (MUD_TIME_MASK(sent_time - now) > mud->conf.timetolerance)) {
-        mud->err.clocksync.addr = remote;
-        mud->err.clocksync.time = now;
-        mud->err.clocksync.count++;
-        return 0;
+            mud->rel_ready_len = 0;
+            mud_reliable_flush_ready(mud);
+            return n;
+        }
     }
-    const size_t ret = MUD_MSG(sent_time)
-                     ? mud_decrypt_msg(mud, data, size, packet, (size_t)packet_size)
-                     : mud_decrypt(mud, data, size, packet, (size_t)packet_size);
-    if (!ret) {
-        mud->err.decrypt.addr = remote;
-        mud->err.decrypt.time = now;
-        mud->err.decrypt.count++;
-        return 0;
+
+    if (!mud->reliable) {
+        union mud_sockaddr remote;
+        unsigned char ctrl[MUD_CTRL_SIZE];
+        unsigned char packet[MUD_PKT_MAX_SIZE];
+        struct msghdr msg = {
+            .msg_name = &remote,
+            .msg_namelen = sizeof(remote),
+            .msg_iov = &(struct iovec) {
+                .iov_base = packet,
+                .iov_len = sizeof(packet),
+            },
+            .msg_iovlen = 1,
+            .msg_control = ctrl,
+            .msg_controllen = sizeof(ctrl),
+        };
+        const ssize_t packet_size = recvmsg(mud->fd, &msg, 0);
+
+        if (packet_size == (ssize_t)-1)
+            return -1;
+
+        if ((msg.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) ||
+            (packet_size <= (ssize_t)MUD_PKT_MIN_SIZE))
+            return 0;
+
+        const uint64_t now = mud_now(mud);
+        const uint64_t sent_time = mud_load(packet, MUD_TIME_SIZE);
+
+        mud_unmapv4(&remote);
+
+        if ((MUD_TIME_MASK(now - sent_time) > mud->conf.timetolerance) &&
+            (MUD_TIME_MASK(sent_time - now) > mud->conf.timetolerance)) {
+            mud->err.clocksync.addr = remote;
+            mud->err.clocksync.time = now;
+            mud->err.clocksync.count++;
+            return 0;
+        }
+        const size_t ret = MUD_MSG(sent_time)
+                         ? mud_decrypt_msg(mud, data, size, packet, (size_t)packet_size)
+                         : mud_decrypt(mud, data, size, packet, (size_t)packet_size);
+        if (!ret) {
+            mud->err.decrypt.addr = remote;
+            mud->err.decrypt.time = now;
+            mud->err.decrypt.count++;
+            return 0;
+        }
+        union mud_sockaddr local;
+
+        if (mud_localaddr(&local, &msg))
+            return 0;
+
+        struct mud_path *path = mud_get_path(mud, &local, &remote, MUD_PASSIVE);
+
+        if (!path || path->conf.state <= MUD_DOWN)
+            return 0;
+
+        if (MUD_MSG(sent_time)) {
+            mud_recv_msg(mud, path, now, sent_time, data, (size_t)packet_size);
+        } else {
+            path->idle = now;
+        }
+        path->rx.total++;
+        path->rx.time = now;
+        path->rx.bytes += (size_t)packet_size;
+
+        mud->last_recv_time = now;
+
+        return MUD_MSG(sent_time) ? 0 : (int)ret;
     }
-    union mud_sockaddr local;
 
-    if (mud_localaddr(&local, &msg))
-        return 0;
+    for (;;) {
+        union mud_sockaddr remote;
+        unsigned char ctrl[MUD_CTRL_SIZE];
+        unsigned char packet[MUD_PKT_MAX_SIZE];
+        struct msghdr msg = {
+            .msg_name = &remote,
+            .msg_namelen = sizeof(remote),
+            .msg_iov = &(struct iovec) {
+                .iov_base = packet,
+                .iov_len = sizeof(packet),
+            },
+            .msg_iovlen = 1,
+            .msg_control = ctrl,
+            .msg_controllen = sizeof(ctrl),
+        };
+        const ssize_t packet_size = recvmsg(mud->fd, &msg, 0);
 
-    struct mud_path *path = mud_get_path(mud, &local, &remote, MUD_PASSIVE);
+        if (packet_size == (ssize_t)-1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                return 0;
+            return -1;
+        }
 
-    if (!path || path->conf.state <= MUD_DOWN)
-        return 0;
+#if defined(MUD_TEST)
+        if (mud_test_drop_incoming > 0) {
+            mud_test_drop_incoming--;
+            continue;
+        }
+#endif
 
-    if (MUD_MSG(sent_time)) {
-        mud_recv_msg(mud, path, now, sent_time, data, (size_t)packet_size);
-    } else {
+        if ((msg.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) ||
+            (packet_size <= (ssize_t)MUD_PKT_MIN_SIZE))
+            continue;
+
+        const uint64_t now = mud_now(mud);
+        const uint64_t sent_time = mud_load(packet, MUD_TIME_SIZE);
+
+        mud_unmapv4(&remote);
+
+        if ((MUD_TIME_MASK(now - sent_time) > mud->conf.timetolerance) &&
+            (MUD_TIME_MASK(sent_time - now) > mud->conf.timetolerance)) {
+            mud->err.clocksync.addr = remote;
+            mud->err.clocksync.time = now;
+            mud->err.clocksync.count++;
+            continue;
+        }
+
+        union mud_sockaddr local;
+
+        if (mud_localaddr(&local, &msg))
+            continue;
+
+        struct mud_path *path = mud_get_path(mud, &local, &remote, MUD_PASSIVE);
+
+        if (!path || path->conf.state <= MUD_DOWN)
+            continue;
+
+        path->rx.total++;
+        path->rx.time = now;
+        path->rx.bytes += (size_t)packet_size;
+        mud->last_recv_time = now;
+
+        if (MUD_MSG(sent_time)) {
+            unsigned char msgbuf[MUD_PKT_MAX_SIZE];
+            const size_t mr = mud_decrypt_msg(mud, msgbuf, sizeof(msgbuf),
+                                               packet, (size_t)packet_size);
+
+            if (!mr) {
+                mud->err.decrypt.addr = remote;
+                mud->err.decrypt.time = now;
+                mud->err.decrypt.count++;
+                continue;
+            }
+            mud_recv_msg(mud, path, now, sent_time, msgbuf, (size_t)packet_size);
+            continue;
+        }
+
+        if (MUD_RELIABLE(sent_time)) {
+            unsigned char plain[MUD_TUN_PAYLOAD_MAX];
+            uint64_t seq, ack;
+            const ssize_t plen = mud_decrypt_reliable(mud, plain, sizeof(plain),
+                                                      packet, (size_t)packet_size,
+                                                      &seq, &ack);
+
+            if (plen < 0) {
+                mud->err.decrypt.addr = remote;
+                mud->err.decrypt.time = now;
+                mud->err.decrypt.count++;
+                continue;
+            }
+            mud_reliable_rx(mud, path, now, seq, ack, plain, (size_t)plen);
+            if (mud->rel_ready_len) {
+                if (mud->rel_ready_len > size) {
+                    errno = EMSGSIZE;
+                    return -1;
+                }
+                memcpy(data, mud->rel_ready, mud->rel_ready_len);
+                {
+                    const int n = (int)mud->rel_ready_len;
+
+                    mud->rel_ready_len = 0;
+                    mud_reliable_flush_ready(mud);
+                    return n;
+                }
+            }
+            continue;
+        }
+
+        const size_t ret = mud_decrypt(mud, data, size, packet, (size_t)packet_size);
+
+        if (!ret) {
+            mud->err.decrypt.addr = remote;
+            mud->err.decrypt.time = now;
+            mud->err.decrypt.count++;
+            continue;
+        }
         path->idle = now;
+        return (int)ret;
     }
-    path->rx.total++;
-    path->rx.time = now;
-    path->rx.bytes += (size_t)packet_size;
-
-    mud->last_recv_time = now;
-
-    return MUD_MSG(sent_time) ? 0 : (int)ret;
 }
 
 static int
@@ -1177,14 +1789,17 @@ mud_path_update(struct mud *mud, struct mud_path *path, uint64_t now)
     case MUD_UP: break;
     default:     return 0;
     }
-    if (path->msg.sent >= MUD_MSG_SENT_MAX) {
-        if (path->mtu.probe) {
-            mud_update_mtu(path, 0);
-            path->msg.sent = 0;
-        } else {
-            path->msg.sent = MUD_MSG_SENT_MAX;
-            path->status = MUD_DEGRADED;
-            return 0;
+    {
+        unsigned miss_max = mud_path_miss_max(path);
+        if (path->msg.sent >= miss_max) {
+            if (path->mtu.probe) {
+                mud_update_mtu(path, 0);
+                path->msg.sent = 0;
+            } else {
+                path->msg.sent = miss_max;
+                path->status = MUD_DEGRADED;
+                return 0;
+            }
         }
     }
     if (!path->mtu.ok) {
@@ -1196,9 +1811,13 @@ mud_path_update(struct mud *mud, struct mud_path *path, uint64_t now)
         path->status = MUD_LOSSY;
         return 0;
     }
+    if (path->rel_retx >= MUD_REL_RETX_DEGRADE) {
+        path->status = MUD_LOSSY;
+        return 0;
+    }
     if (path->conf.state == MUD_PASSIVE &&
         mud_timeout(mud->last_recv_time, path->rx.time,
-                    MUD_MSG_SENT_MAX * path->conf.beat)) {
+                    (uint64_t)mud_path_miss_max(path) * path->conf.beat)) {
         path->status = MUD_WAITING;
         return 0;
     }
@@ -1268,6 +1887,16 @@ mud_update(struct mud *mud)
     if (!mud_keyx_init(mud, now))
         now = mud_now(mud);
 
+    for (unsigned i = 0; i < mud->capacity; i++)
+        mud->paths[i].rel_retx = 0;
+
+    if (mud->reliable) {
+        if (mud_reliable_retransmit(mud, now))
+            now = mud_now(mud);
+        if (mud_reliable_send_ack_if_needed(mud, now))
+            now = mud_now(mud);
+    }
+
     for (unsigned i = 0; i < mud->capacity; i++) {
         struct mud_path *path = &mud->paths[i];
 
@@ -1276,9 +1905,11 @@ mud_update(struct mud *mud)
                 next_pref = path->conf.pref;
             if (pref > path->conf.pref)
                 pref = path->conf.pref;
-            if (path->status == MUD_RUNNING)
-                rate += path->tx.rate;
         }
+        /* Rate/window must reflect any path that can transmit, even while probing
+         * (mud_path_update returns 0 when !mtu.ok). */
+        if (mud_path_eligible_for_tx(path))
+            rate += mud_path_weight(path);
         if (path->mtu.ok) {
             if (!mtu || mtu > path->mtu.ok)
                 mtu = path->mtu.ok;
@@ -1297,8 +1928,8 @@ mud_update(struct mud *mud)
             if (!mud_path_update(mud, path, now))
                 continue;
 
-            if (path->status == MUD_RUNNING)
-                rate += path->tx.rate;
+            if (mud_path_eligible_for_tx(path))
+                rate += mud_path_weight(path);
         }
     }
     mud->rate = rate;
@@ -1332,6 +1963,7 @@ mud_set_path(struct mud *mud, struct mud_path_conf *conf)
     if (conf->beat)        c.beat        = conf->beat * MUD_ONE_MSEC;
     if (conf->fixed_rate)  c.fixed_rate  = conf->fixed_rate >> 1;
     if (conf->loss_limit)  c.loss_limit  = conf->loss_limit;
+    if (conf->heartbeat_miss_max) c.heartbeat_miss_max = conf->heartbeat_miss_max;
     if (conf->tx_max_rate) c.tx_max_rate = path->tx.rate = conf->tx_max_rate;
     if (conf->rx_max_rate) c.rx_max_rate = path->rx.rate = conf->rx_max_rate;
 
@@ -1355,8 +1987,42 @@ mud_send(struct mud *mud, const void *data, size_t size)
         errno = EAGAIN;
         return -1;
     }
-    unsigned char packet[MUD_PKT_MAX_SIZE];
+
     const uint64_t now = mud_now(mud);
+
+    if (mud->reliable) {
+        if (size > MUD_TUN_PAYLOAD_MAX) {
+            errno = EMSGSIZE;
+            return -1;
+        }
+        if (mud->rel_pending_n >= MUD_REL_MAX_PENDING) {
+            errno = ENOBUFS;
+            return -1;
+        }
+
+        const uint64_t seq = mud->rel_tx_seq++;
+        struct mud_pending *p = &mud->rel_pending[mud->rel_pending_n];
+
+        p->seq = seq;
+        p->len = size;
+        memcpy(p->data, data, size);
+        p->last_send = now;
+        p->retransmits = 0;
+        mud->rel_pending_n++;
+
+        if (mud_send_reliable_raw(mud, NULL, now, p->data, p->len,
+                                  seq, mud->rel_rx_next, 0) < 0) {
+            const int err = errno;
+
+            mud->rel_pending_n--;
+            mud->rel_tx_seq--;
+            errno = err;
+            return -1;
+        }
+        return (int)size;
+    }
+
+    unsigned char packet[MUD_PKT_MAX_SIZE];
     const size_t packet_size = mud_encrypt(mud, now,
                                            packet, sizeof(packet),
                                            data, size);

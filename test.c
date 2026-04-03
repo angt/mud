@@ -29,6 +29,13 @@ main(int argc, char **argv)
         return -1;
     }
 
+    /* Legacy demo: classic (non-reliable) framing; mud_create defaults to reliable. */
+    {
+        struct mud_conf mc = { .reliable = 1 };
+
+        mud_set(mud, &mc);
+    }
+
     if (client) {
         struct mud_path_conf path_conf = {
             .local = local,

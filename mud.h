@@ -7,6 +7,8 @@
 
 #define MUD_PATH_MAX    (32U)
 #define MUD_PUBKEY_SIZE (32U)
+/** Default for `heartbeat_miss_max` when set to 0. */
+#define MUD_HEARTBEAT_MISS_DEFAULT (5U)
 
 struct mud;
 
@@ -38,6 +40,8 @@ struct mud_conf {
     uint64_t keepalive;
     uint64_t timetolerance;
     uint64_t kxtimeout;
+    /** 0 = leave unchanged, 1 = disable, 2 = enable reliable delivery (seq/ACK/retransmit). */
+    uint64_t reliable;
 };
 
 union mud_sockaddr {
@@ -56,6 +60,8 @@ struct mud_path_conf {
     unsigned char pref;
     unsigned char fixed_rate;
     unsigned char loss_limit;
+    /** Max unanswered beats before path is treated as degraded (0 = default 5). */
+    unsigned char heartbeat_miss_max;
 };
 
 struct mud_path {
@@ -90,6 +96,8 @@ struct mud_path {
         size_t ok;
     } mtu;
     uint64_t idle;
+    /** Recent reliable-layer retransmits on this path (for health). */
+    unsigned rel_retx;
 };
 
 struct mud_error {

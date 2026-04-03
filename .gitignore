@@ -2,3 +2,6 @@
 .dirstamp
 *.[ios]
 test
+mudtest
+t_reliable_echo
+.nfs*
