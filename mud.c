@@ -33,10 +33,6 @@
 #define MUD_V4V6 0
 #endif
 
-#if defined __APPLE__
-#include <mach/mach_time.h>
-#endif
-
 #if defined IP_PKTINFO
 #define MUD_PKTINFO IP_PKTINFO
 #define MUD_PKTINFO_SRC(X) &((struct in_pktinfo *)(X))->ipi_addr
@@ -160,9 +156,6 @@ struct mud {
     uint64_t window;
     uint64_t window_time;
     uint64_t base_time;
-#if defined __APPLE__
-    mach_timebase_info_data_t mtid;
-#endif
 };
 
 static inline int
@@ -298,11 +291,7 @@ mud_time(void)
 static inline uint64_t
 mud_now(struct mud *mud)
 {
-#if defined __APPLE__
-    return MUD_TIME_MASK(mud->base_time
-            + (mach_absolute_time() * mud->mtid.numer / mud->mtid.denom)
-            / 1000ULL);
-#elif defined CLOCK_MONOTONIC
+#if defined CLOCK_MONOTONIC
     struct timespec tv;
     clock_gettime(CLOCK_MONOTONIC, &tv);
     return MUD_TIME_MASK(mud->base_time
@@ -714,10 +703,6 @@ mud_create(union mud_sockaddr *addr, unsigned char *key)
     mud->conf.keepalive     = 25 * MUD_ONE_SEC;
     mud->conf.timetolerance = 10 * MUD_ONE_MIN;
     mud->conf.kxtimeout     = 60 * MUD_ONE_MIN;
-
-#if defined __APPLE__
-    mach_timebase_info(&mud->mtid);
-#endif
 
     uint64_t now = mud_now(mud);
     uint64_t base_time = mud_time();
