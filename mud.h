@@ -83,11 +83,11 @@ struct mud_path {
         uint64_t set;
     } msg;
     struct {
-        size_t min;
-        size_t max;
-        size_t probe;
-        size_t last;
-        size_t ok;
+        uint64_t min;
+        uint64_t max;
+        uint64_t probe;
+        uint64_t last;
+        uint64_t ok;
     } mtu;
     uint64_t idle;
 };
@@ -121,8 +121,10 @@ int mud_send_wait (struct mud *);
 int mud_recv (struct mud *, void *, size_t);
 int mud_send (struct mud *, const void *, size_t);
 
-int    mud_get_errors (struct mud *, struct mud_errors *);
-int    mud_get_fd     (struct mud *);
-size_t mud_get_mtu    (struct mud *);
-int    mud_get_paths  (struct mud *, struct mud_paths *,
-                       union mud_sockaddr *, union mud_sockaddr *);
+int      mud_get_errors (struct mud *, struct mud_errors *);
+int      mud_get_fd     (struct mud *);
+uint64_t mud_get_mtu    (struct mud *);
+int      mud_get_paths  (struct mud *,
+                         struct mud_paths *,
+                          union mud_sockaddr *,
+                          union mud_sockaddr *);

@@ -81,9 +81,6 @@
 #define MUD_CTRL_SIZE (CMSG_SPACE(MUD_PKTINFO_SIZE) + \
                        CMSG_SPACE(sizeof(struct in6_pktinfo)))
 
-#define MUD_STORE_MSG(D,S) mud_store((D),(S),sizeof(D))
-#define MUD_LOAD_MSG(S)    mud_load((S),sizeof(S))
-
 struct mud_crypto_opt {
     unsigned char *dst;
     const unsigned char *src;
@@ -109,17 +106,29 @@ struct mud_addr {
     unsigned char port[2];
 };
 
+struct mud_u16 {
+    unsigned char b[2];
+};
+
+struct mud_time {
+    unsigned char b[6];
+};
+
+struct mud_u64 {
+    unsigned char b[8];
+};
+
 struct mud_msg {
-    unsigned char sent_time[MUD_TIME_SIZE];
+    struct mud_time sent_time;
     unsigned char aes;
     unsigned char pkey[MUD_PUBKEY_SIZE];
     struct {
-        unsigned char bytes[sizeof(uint64_t)];
-        unsigned char total[sizeof(uint64_t)];
+        struct mud_u64 bytes;
+        struct mud_u64 total;
     } tx, rx, fw;
-    unsigned char max_rate[sizeof(uint64_t)];
-    unsigned char beat[MUD_TIME_SIZE];
-    unsigned char mtu[2];
+    struct mud_u64 max_rate;
+    struct mud_time beat;
+    struct mud_u16 mtu;
     unsigned char pref;
     unsigned char loss;
     unsigned char fixed_rate;
@@ -145,7 +154,7 @@ struct mud {
     unsigned capacity;
     struct mud_keyx keyx;
     uint64_t last_recv_time;
-    size_t mtu;
+    uint64_t mtu;
     struct mud_errors err;
     uint64_t rate;
     uint64_t window;
@@ -214,36 +223,58 @@ mud_decrypt_opt(const struct mud_crypto_key *k,
     }
 }
 
-static inline void
-mud_store(unsigned char *dst, uint64_t src, size_t size)
-{
-    dst[0] = (unsigned char)(src);
-    dst[1] = (unsigned char)(src >> 8);
-    if (size <= 2) return;
-    dst[2] = (unsigned char)(src >> 16);
-    dst[3] = (unsigned char)(src >> 24);
-    dst[4] = (unsigned char)(src >> 32);
-    dst[5] = (unsigned char)(src >> 40);
-    if (size <= 6) return;
-    dst[6] = (unsigned char)(src >> 48);
-    dst[7] = (unsigned char)(src >> 56);
+static inline uint64_t
+mud_le64(uint64_t x) {
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    return __builtin_bswap64(x);
+#else
+    return x;
+#endif
+}
+
+static inline struct mud_time
+mud_to_time(uint64_t v) {
+    struct mud_time t;
+    v = mud_le64(v);
+    memcpy(t.b, &v, 6);
+    return t;
 }
 
 static inline uint64_t
-mud_load(const unsigned char *src, size_t size)
-{
-    uint64_t ret = 0;
-    ret = src[0];
-    ret |= ((uint64_t)src[1]) << 8;
-    if (size <= 2) return ret;
-    ret |= ((uint64_t)src[2]) << 16;
-    ret |= ((uint64_t)src[3]) << 24;
-    ret |= ((uint64_t)src[4]) << 32;
-    ret |= ((uint64_t)src[5]) << 40;
-    if (size <= 6) return ret;
-    ret |= ((uint64_t)src[6]) << 48;
-    ret |= ((uint64_t)src[7]) << 56;
-    return ret;
+mud_from_time(struct mud_time t) {
+    uint64_t v = 0;
+    memcpy(&v, t.b, 6);
+    return mud_le64(v);
+}
+
+static inline struct mud_u16
+mud_to_u16(uint64_t v) {
+    struct mud_u16 u;
+    v = mud_le64(v);
+    memcpy(u.b, &v, 2);
+    return u;
+}
+
+static inline uint64_t
+mud_from_u16(struct mud_u16 u) {
+    uint64_t v = 0;
+    memcpy(&v, u.b, 2);
+    return mud_le64(v);
+}
+
+static inline struct mud_u64
+mud_to_u64(uint64_t v) {
+    struct mud_u64 u;
+    v = mud_le64(v);
+    memcpy(u.b, &v, 8);
+    return u;
+}
+
+static inline uint64_t
+mud_from_u64(struct mud_u64 u) {
+    uint64_t v;
+    memcpy(&v, u.b, 8);
+    return mud_le64(v);
 }
 
 static inline uint64_t
@@ -549,7 +580,7 @@ mud_set(struct mud *mud, struct mud_conf *conf)
     return 0;
 }
 
-size_t
+uint64_t
 mud_get_mtu(struct mud *mud)
 {
     if (!mud->mtu)
@@ -745,7 +776,8 @@ mud_encrypt(struct mud *mud, uint64_t now,
         .src = src,
         .size = src_size,
     };
-    mud_store(dst, now, MUD_TIME_SIZE);
+    struct mud_time tmp = mud_to_time(now);
+    memcpy(dst, tmp.b, sizeof(tmp)); // XXX
 
     if (mud->keyx.use_next) {
         mud_encrypt_opt(&mud->keyx.next, &opt);
@@ -865,8 +897,10 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
     if (size < MUD_PKT_MIN_SIZE + sizeof(struct mud_msg))
         size = MUD_PKT_MIN_SIZE + sizeof(struct mud_msg);
 
-    mud_store(dst, MUD_MSG_MARK(now), MUD_TIME_SIZE);
-    MUD_STORE_MSG(msg->sent_time, sent_time);
+    struct mud_time tmp = mud_to_time(MUD_MSG_MARK(now));
+    memcpy(dst, tmp.b, sizeof(tmp)); // XXX
+
+    msg->sent_time = mud_to_time(sent_time);
 
     if (mud_addr_from_sock(&msg->addr, &path->conf.remote))
         return -1;
@@ -875,19 +909,18 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
     msg->aes = (unsigned char)mud->keyx.aes;
 
     if (!path->mtu.probe)
-        MUD_STORE_MSG(msg->mtu, path->mtu.last);
+        msg->mtu = mud_to_u16(path->mtu.last);
 
-    MUD_STORE_MSG(msg->tx.bytes, path->tx.bytes);
-    MUD_STORE_MSG(msg->rx.bytes, path->rx.bytes);
-    MUD_STORE_MSG(msg->tx.total, path->tx.total);
-    MUD_STORE_MSG(msg->rx.total, path->rx.total);
-    MUD_STORE_MSG(msg->fw.bytes, fw_bytes);
-    MUD_STORE_MSG(msg->fw.total, fw_total);
-    MUD_STORE_MSG(msg->max_rate, path->conf.rx_max_rate);
-    MUD_STORE_MSG(msg->beat, path->conf.beat);
-
-    msg->loss = (unsigned char)path->tx.loss;
-    msg->pref = path->conf.pref;
+    msg->tx.bytes   = mud_to_u64(path->tx.bytes);
+    msg->rx.bytes   = mud_to_u64(path->rx.bytes);
+    msg->tx.total   = mud_to_u64(path->tx.total);
+    msg->rx.total   = mud_to_u64(path->rx.total);
+    msg->fw.bytes   = mud_to_u64(fw_bytes);
+    msg->fw.total   = mud_to_u64(fw_total);
+    msg->max_rate   = mud_to_u64(path->conf.rx_max_rate);
+    msg->beat       = mud_to_time(path->conf.beat);
+    msg->loss       = path->tx.loss;
+    msg->pref       = path->conf.pref;
     msg->fixed_rate = path->conf.fixed_rate;
     msg->loss_limit = path->conf.loss_limit;
 
@@ -953,7 +986,7 @@ mud_update_rl(struct mud *mud, struct mud_path *path, uint64_t now,
 }
 
 static void
-mud_update_mtu(struct mud_path *path, size_t size)
+mud_update_mtu(struct mud_path *path, uint64_t size)
 {
     if (!path->mtu.probe) {
         if (!path->mtu.last) {
@@ -972,7 +1005,7 @@ mud_update_mtu(struct mud_path *path, size_t size)
         path->mtu.max = path->mtu.probe - 1;
     }
 
-    size_t probe = (path->mtu.min + path->mtu.max) >> 1;
+    uint64_t probe = (path->mtu.min + path->mtu.max) >> 1;
 
     if (path->mtu.min > path->mtu.max) {
         path->mtu.probe = 0;
@@ -1001,17 +1034,17 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
              unsigned char *data, size_t size)
 {
     struct mud_msg *msg = (struct mud_msg *)data;
-    const uint64_t tx_time = MUD_LOAD_MSG(msg->sent_time);
+    const uint64_t tx_time = mud_from_time(msg->sent_time);
 
     mud_sock_from_addr(&path->remote, &msg->addr);
 
     if (tx_time) {
         mud_update_stat(&path->rtt, MUD_TIME_MASK(now - tx_time));
 
-        const uint64_t tx_bytes = MUD_LOAD_MSG(msg->fw.bytes);
-        const uint64_t tx_total = MUD_LOAD_MSG(msg->fw.total);
-        const uint64_t rx_bytes = MUD_LOAD_MSG(msg->rx.bytes);
-        const uint64_t rx_total = MUD_LOAD_MSG(msg->rx.total);
+        const uint64_t tx_bytes = mud_from_u64(msg->fw.bytes);
+        const uint64_t tx_total = mud_from_u64(msg->fw.total);
+        const uint64_t rx_bytes = mud_from_u64(msg->rx.bytes);
+        const uint64_t rx_total = mud_from_u64(msg->rx.total);
         const uint64_t rx_time  = sent_time;
 
         if ((tx_time > path->msg.tx.time) && (tx_bytes > path->msg.tx.bytes) &&
@@ -1041,12 +1074,12 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
 
         mud_update_mtu(path, size);
 
-        if (path->mtu.last && path->mtu.last == MUD_LOAD_MSG(msg->mtu))
+        if (path->mtu.last && path->mtu.last == mud_from_u16(msg->mtu))
             path->mtu.ok = path->mtu.last;
     } else {
-        path->conf.beat = MUD_LOAD_MSG(msg->beat);
+        path->conf.beat = mud_from_time(msg->beat);
 
-        const uint64_t max_rate = MUD_LOAD_MSG(msg->max_rate);
+        const uint64_t max_rate = mud_from_u64(msg->max_rate);
 
         if (path->conf.tx_max_rate != max_rate || msg->fixed_rate)
             path->tx.rate = max_rate;
@@ -1056,7 +1089,7 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
         path->conf.fixed_rate = msg->fixed_rate;
         path->conf.loss_limit = msg->loss_limit;
 
-        path->mtu.last = MUD_LOAD_MSG(msg->mtu);
+        path->mtu.last = mud_from_u16(msg->mtu);
         path->mtu.ok = path->mtu.last;
 
         path->msg.sent++;
@@ -1073,8 +1106,8 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
         mud->keyx.use_next = 1;
     }
     mud_send_msg(mud, path, now, sent_time,
-                 MUD_LOAD_MSG(msg->tx.bytes),
-                 MUD_LOAD_MSG(msg->tx.total),
+                 mud_from_u64(msg->tx.bytes),
+                 mud_from_u64(msg->tx.total),
                  size);
 }
 
@@ -1105,7 +1138,7 @@ mud_recv(struct mud *mud, void *data, size_t size)
         return 0;
 
     const uint64_t now = mud_now(mud);
-    const uint64_t sent_time = mud_load(packet, MUD_TIME_SIZE);
+    const uint64_t sent_time = mud_from_time(*(struct mud_time *)packet); // XXX
 
     mud_unmapv4(&remote);
 
@@ -1251,7 +1284,7 @@ mud_update(struct mud *mud)
     unsigned pref = 255;
     unsigned next_pref = 255;
     uint64_t rate = 0;
-    size_t   mtu = 0;
+    uint64_t mtu = 0;
     uint64_t now = mud_now(mud);
 
     if (!mud_keyx_init(mud, now))
