@@ -1,0 +1,19 @@
+name: build
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      - name: Install libsodium
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y libsodium-dev
+      - name: Build and test
+        run: make
