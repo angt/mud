@@ -1,8 +1,10 @@
-#include "mud.c"
-#include "aegis256/aegis256.c"
+#include "mud.h"
 
-#include <stdio.h>
+#include <errno.h>
 #include <poll.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
 
 int
 main(int argc, char **argv)

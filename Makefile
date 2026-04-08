@@ -1,15 +1,22 @@
-CFLAGS = -march=native -Wall -O2 -g -fsanitize=address,undefined
-LDLIBS = -lsodium
+CFLAGS  = -march=native -Wall -O2 -g -fsanitize=address,undefined
+LDFLAGS = -fsanitize=address,undefined
+LDLIBS  = -lsodium
 
 ifeq ($(shell uname -s),Darwin)
 CFLAGS  += -I$(shell brew --prefix libsodium)/include
 LDFLAGS += -L$(shell brew --prefix libsodium)/lib
 endif
 
+COMMON_C = mud.c aegis256/aegis256.c
+COMMON_O = $(COMMON_C:.c=.o)
+
 all: clean test
 	./test & ./test hello
+
+test: $(COMMON_O)
 
 clean:
 	rm -f test
 
 .PHONY: clean all
+.INTERMEDIATE: $(COMMON_O) test.o
