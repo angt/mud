@@ -19,16 +19,13 @@ main(int argc, char **argv)
             .sin_addr.s_addr = htonl(INADDR_LOOPBACK),
         },
     };
-    unsigned char key[] = "0123456789ABCDEF0123456789ABCDEF";
-    int aes = 1;
-
-    struct mud *mud = mud_create(&local, key, &aes);
+    unsigned char key[32] = {42};
+    struct mud *mud = mud_create(&local, key);
 
     if (!mud) {
         perror("mud_create");
         return -1;
     }
-
     if (client) {
         struct mud_path_conf path_conf = {
             .local = local,
@@ -47,13 +44,12 @@ main(int argc, char **argv)
             return -1;
         }
     }
-
     unsigned char buf[1500];
 
     for (;;) {
         // mandatory, mud have lot of work to do.
         if (mud_update(mud))
-            usleep(100000); // don't use all the cpu
+            usleep(1000); // don't use all the cpu
 
         if (client) {
             // when there is data, mud_recv() is mandatory
@@ -71,7 +67,6 @@ main(int argc, char **argv)
                     return -1;
                 }
             }
-
             // we can safely call mud_send()
             // even if the link is not ready
             int r = mud_send(mud, argv[1], strlen(argv[1]));
@@ -96,7 +91,8 @@ main(int argc, char **argv)
             }
             if (r) {
                 buf[r] = 0;
-                printf("%s\n", buf);
+                fprintf(stderr, "%s\n", buf);
+                break;
             }
         }
     }

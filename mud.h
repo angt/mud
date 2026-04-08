@@ -109,7 +109,7 @@ struct mud_paths {
     unsigned count;
 };
 
-struct mud *mud_create (union mud_sockaddr *, unsigned char *, int *);
+struct mud *mud_create (union mud_sockaddr *, unsigned char *);
 void        mud_delete (struct mud *);
 
 int mud_set      (struct mud *, struct mud_conf *);

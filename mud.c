@@ -165,25 +165,20 @@ mud_encrypt_opt(const struct mud_crypto_key *k,
         memcpy(npub, c->dst, MUD_TIME_SIZE);
         return aegis256_encrypt(
             c->dst + MUD_TIME_SIZE,
-            NULL,
-            c->src,
-            c->size,
-            c->dst,
-            MUD_TIME_SIZE,
+            c->src, c->size,
+            c->dst, MUD_TIME_SIZE, // ad
             npub,
-            k->encrypt.key
+            k->encrypt.key,
+            c->dst + MUD_TIME_SIZE + c->size // tag
         );
     } else {
         unsigned char npub[crypto_aead_chacha20poly1305_NPUBBYTES] = {0};
         memcpy(npub, c->dst, MUD_TIME_SIZE);
         return crypto_aead_chacha20poly1305_encrypt(
-            c->dst + MUD_TIME_SIZE,
-            NULL,
-            c->src,
-            c->size,
-            c->dst,
-            MUD_TIME_SIZE,
-            NULL,
+            c->dst + MUD_TIME_SIZE, NULL,
+            c->src, c->size,
+            c->dst, MUD_TIME_SIZE, // ad
+            NULL, // nsec
             npub,
             k->encrypt.key
         );
@@ -199,23 +194,20 @@ mud_decrypt_opt(const struct mud_crypto_key *k,
         memcpy(npub, c->src, MUD_TIME_SIZE);
         return aegis256_decrypt(
             c->dst,
-            NULL,
-            c->src + MUD_TIME_SIZE,
-            c->size - MUD_TIME_SIZE,
-            c->src, MUD_TIME_SIZE,
+            c->src + MUD_TIME_SIZE, c->size - MUD_PKT_MIN_SIZE,
+            c->src, MUD_TIME_SIZE, // ad
             npub,
-            k->decrypt.key
+            k->decrypt.key,
+            c->src + c->size - MUD_MAC_SIZE // tag
         );
     } else {
         unsigned char npub[crypto_aead_chacha20poly1305_NPUBBYTES] = {0};
         memcpy(npub, c->src, MUD_TIME_SIZE);
         return crypto_aead_chacha20poly1305_decrypt(
-            c->dst,
-            NULL,
-            NULL,
-            c->src + MUD_TIME_SIZE,
-            c->size - MUD_TIME_SIZE,
-            c->src, MUD_TIME_SIZE,
+            c->dst, NULL,
+            NULL, // nsec
+            c->src + MUD_TIME_SIZE, c->size - MUD_TIME_SIZE,
+            c->src, MUD_TIME_SIZE, // ad
             npub,
             k->decrypt.key
         );
@@ -323,9 +315,9 @@ mud_unmapv4(union mud_sockaddr *addr)
 }
 
 static struct mud_path *
-mud_select_path(struct mud *mud, uint16_t cursor)
+mud_select_path(struct mud *mud, uint32_t cursor)
 {
-    uint64_t k = (cursor * mud->rate) >> 16;
+    uint64_t k = (cursor * mud->rate) >> 32;
 
     for (unsigned i = 0; i < mud->capacity; i++) {
         struct mud_path *path = &mud->paths[i];
@@ -648,9 +640,9 @@ mud_keyx_init(struct mud *mud, uint64_t now)
 }
 
 struct mud *
-mud_create(union mud_sockaddr *addr, unsigned char *key, int *aes)
+mud_create(union mud_sockaddr *addr, unsigned char *key)
 {
-    if (!addr || !key || !aes)
+    if (!addr || !key)
         return NULL;
 
     int v4, v6;
@@ -709,11 +701,8 @@ mud_create(union mud_sockaddr *addr, unsigned char *key, int *aes)
     mud->keyx.current = mud->keyx.private;
     mud->keyx.next = mud->keyx.private;
     mud->keyx.last = mud->keyx.private;
+    mud->keyx.aes = aegis256_is_available();
 
-    if (*aes && !aegis256_is_available())
-        *aes = 0;
-
-    mud->keyx.aes = *aes;
     return mud;
 }
 
@@ -1364,7 +1353,7 @@ mud_send(struct mud *mud, const void *data, size_t size)
         errno = EMSGSIZE;
         return -1;
     }
-    uint16_t k;
+    uint32_t k;
     memcpy(&k, &packet[packet_size - sizeof(k)], sizeof(k));
 
     struct mud_path *path = mud_select_path(mud, k);

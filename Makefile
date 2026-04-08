@@ -1,11 +1,10 @@
-CC     = cc
-CFLAGS = -Wall -O2
+CFLAGS = -march=native -Wall -O2 -g -fsanitize=address,undefined
 LDLIBS = -lsodium
 
-test:
-	$(CC) $(CFLAGS) -o test test.c $(LDLIBS)
+all: clean test
+	./test & ./test hello
 
 clean:
 	rm -f test
 
-.PHONY: test clean
+.PHONY: clean all
