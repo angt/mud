@@ -71,9 +71,6 @@
 #define MUD_PKT_MIN_SIZE (MUD_TIME_SIZE + MUD_MAC_SIZE)
 #define MUD_PKT_MAX_SIZE (1500U)
 
-#define MUD_MTU_MIN ( 576U + MUD_PKT_MIN_SIZE)
-#define MUD_MTU_MAX (1450U + MUD_PKT_MIN_SIZE)
-
 #define MUD_CTRL_SIZE (CMSG_SPACE(MUD_PKTINFO_SIZE) + \
                        CMSG_SPACE(sizeof(struct in6_pktinfo)))
 
@@ -978,13 +975,23 @@ mud_update_rl(struct mud *mud, struct mud_path *path, uint64_t now,
 }
 
 static void
+mud_reset_mtu(struct mud_path *path)
+{
+    if (path->conf.local.sa.sa_family == AF_INET6) {
+        path->mtu.min = 1280U + MUD_PKT_MIN_SIZE;
+    } else {
+        path->mtu.min = 576U + MUD_PKT_MIN_SIZE;
+    }
+    path->mtu.max = 1450U + MUD_PKT_MIN_SIZE;
+    path->mtu.probe = path->mtu.max;
+}
+
+static void
 mud_update_mtu(struct mud_path *path, uint64_t size)
 {
     if (!path->mtu.probe) {
         if (!path->mtu.last) {
-            path->mtu.min = MUD_MTU_MIN;
-            path->mtu.max = MUD_MTU_MAX;
-            path->mtu.probe = MUD_MTU_MAX;
+            mud_reset_mtu(path);
         }
         return;
     }
