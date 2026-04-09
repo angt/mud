@@ -158,6 +158,67 @@ struct mud {
     uint64_t base_time;
 };
 
+static inline uint64_t
+mud_le64(uint64_t x)
+{
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    return __builtin_bswap64(x);
+#else
+    return x;
+#endif
+}
+
+static inline struct mud_time
+mud_to_time(uint64_t v)
+{
+    struct mud_time t;
+    v = mud_le64(v);
+    memcpy(t.b, &v, sizeof(t));
+    return t;
+}
+
+static inline uint64_t
+mud_from_time(struct mud_time t)
+{
+    uint64_t v = 0;
+    memcpy(&v, t.b, sizeof(t));
+    return mud_le64(v);
+}
+
+static inline struct mud_u16
+mud_to_u16(uint64_t v)
+{
+    struct mud_u16 u;
+    v = mud_le64(v);
+    memcpy(u.b, &v, sizeof(u));
+    return u;
+}
+
+static inline uint64_t
+mud_from_u16(struct mud_u16 u)
+{
+    uint64_t v = 0;
+    memcpy(&v, u.b, sizeof(u));
+    return mud_le64(v);
+}
+
+static inline struct mud_u64
+mud_to_u64(uint64_t v)
+{
+    struct mud_u64 u;
+    v = mud_le64(v);
+    memcpy(u.b, &v, sizeof(u));
+    return u;
+}
+
+static inline uint64_t
+mud_from_u64(struct mud_u64 u)
+{
+    uint64_t v;
+    memcpy(&v, u.b, sizeof(u));
+    return mud_le64(v);
+}
+
 static inline int
 mud_encrypt_opt(const struct mud_crypto_key *k,
                 const struct mud_crypto_opt *c)
@@ -214,60 +275,6 @@ mud_decrypt_opt(const struct mud_crypto_key *k,
             k->decrypt.key
         );
     }
-}
-
-static inline uint64_t
-mud_le64(uint64_t x) {
-#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-    return __builtin_bswap64(x);
-#else
-    return x;
-#endif
-}
-
-static inline struct mud_time
-mud_to_time(uint64_t v) {
-    struct mud_time t;
-    v = mud_le64(v);
-    memcpy(t.b, &v, 6);
-    return t;
-}
-
-static inline uint64_t
-mud_from_time(struct mud_time t) {
-    uint64_t v = 0;
-    memcpy(&v, t.b, 6);
-    return mud_le64(v);
-}
-
-static inline struct mud_u16
-mud_to_u16(uint64_t v) {
-    struct mud_u16 u;
-    v = mud_le64(v);
-    memcpy(u.b, &v, 2);
-    return u;
-}
-
-static inline uint64_t
-mud_from_u16(struct mud_u16 u) {
-    uint64_t v = 0;
-    memcpy(&v, u.b, 2);
-    return mud_le64(v);
-}
-
-static inline struct mud_u64
-mud_to_u64(uint64_t v) {
-    struct mud_u64 u;
-    v = mud_le64(v);
-    memcpy(u.b, &v, 8);
-    return u;
-}
-
-static inline uint64_t
-mud_from_u64(struct mud_u64 u) {
-    uint64_t v;
-    memcpy(&v, u.b, 8);
-    return mud_le64(v);
 }
 
 static inline uint64_t
