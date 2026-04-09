@@ -7,6 +7,10 @@
 
 #define MUD_PATH_MAX (32U)
 
+struct mud_id {
+    unsigned char b[10];
+};
+
 struct mud;
 
 enum mud_state {
@@ -93,6 +97,7 @@ struct mud_path {
         uint64_t ok;
     } mtu;
     uint64_t idle;
+    struct mud_id id;
 };
 
 struct mud_error {
