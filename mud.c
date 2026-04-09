@@ -548,9 +548,11 @@ mud_set(struct mud *mud, struct mud_conf *conf)
 {
     struct mud_conf c = mud->conf;
 
-    if (conf->keepalive)     c.keepalive     = conf->keepalive;
-    if (conf->timetolerance) c.timetolerance = conf->timetolerance;
-    if (conf->kxtimeout)     c.kxtimeout     = conf->kxtimeout;
+    if (conf->keepalive)
+        c.keepalive = conf->keepalive;
+
+    if (conf->timetolerance)
+        c.timetolerance = conf->timetolerance;
 
     *conf = mud->conf = c;
     return 0;
@@ -620,7 +622,6 @@ mud_create(union mud_sockaddr addr, struct mud_key *key)
     }
     mud->conf.keepalive     = 25 * MUD_ONE_SEC;
     mud->conf.timetolerance = 10 * MUD_ONE_MIN;
-    mud->conf.kxtimeout     = 60 * MUD_ONE_MIN;
 
     uint64_t now = mud_now(mud);
     uint64_t base_time = mud_time();
