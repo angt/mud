@@ -5,8 +5,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 
-#define MUD_PATH_MAX    (32U)
-#define MUD_PUBKEY_SIZE (32U)
+#define MUD_PATH_MAX (32U)
 
 struct mud;
 
@@ -122,8 +121,8 @@ int mud_set_path (struct mud *, struct mud_path_conf *);
 int mud_update    (struct mud *);
 int mud_send_wait (struct mud *);
 
-int mud_recv (struct mud *, void *, size_t);
-int mud_send (struct mud *, const void *, size_t);
+ssize_t mud_recv (struct mud *, void *, size_t);
+ssize_t mud_send (struct mud *, void *, size_t);
 
 int      mud_get_errors (struct mud *, struct mud_errors *);
 int      mud_get_fd     (struct mud *);

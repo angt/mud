@@ -1,13 +1,7 @@
 CFLAGS  = -march=native -Wall -O2 -g -fsanitize=address,undefined
 LDFLAGS = -fsanitize=address,undefined
-LDLIBS  = -lsodium
 
-ifeq ($(shell uname -s),Darwin)
-CFLAGS  += -I$(shell brew --prefix libsodium)/include
-LDFLAGS += -L$(shell brew --prefix libsodium)/lib
-endif
-
-COMMON_C = mud.c aegis256/aegis256.c
+COMMON_C = mud.c aegis256/aegis256.c charm/src/charm.c
 COMMON_O = $(COMMON_C:.c=.o)
 
 all: clean test

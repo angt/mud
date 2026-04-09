@@ -1,4 +1,6 @@
 [submodule "aegis256"]
 	path = aegis256
 	url = https://github.com/angt/aegis256
-	ignore = dirty
+[submodule "charm"]
+	path = charm
+	url = https://github.com/jedisct1/charm
