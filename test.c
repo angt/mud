@@ -21,8 +21,8 @@ main(int argc, char **argv)
             .sin_addr.s_addr = htonl(INADDR_LOOPBACK),
         },
     };
-    unsigned char key[32] = {42};
-    struct mud *mud = mud_create(&local, key);
+    struct mud_key key = {.b = {42}};
+    struct mud *mud = mud_create(local, &key);
 
     if (!mud) {
         perror("mud_create");

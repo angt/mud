@@ -28,6 +28,10 @@ enum mud_path_status {
     MUD_RUNNING,
 };
 
+struct mud_key {
+    unsigned char b[32];
+};
+
 struct mud_stat {
     uint64_t val;
     uint64_t var;
@@ -109,7 +113,7 @@ struct mud_paths {
     unsigned count;
 };
 
-struct mud *mud_create (union mud_sockaddr *, unsigned char *);
+struct mud *mud_create (union mud_sockaddr, struct mud_key *);
 void        mud_delete (struct mud *);
 
 int mud_set      (struct mud *, struct mud_conf *);

@@ -667,15 +667,15 @@ mud_keyx_init(struct mud *mud, uint64_t now)
 }
 
 struct mud *
-mud_create(union mud_sockaddr *addr, unsigned char *key)
+mud_create(union mud_sockaddr addr, struct mud_key *key)
 {
-    if (!addr || !key)
+    if (!key)
         return NULL;
 
     int v4, v6;
     socklen_t addrlen = 0;
 
-    switch (addr->sa.sa_family) {
+    switch (addr.sa.sa_family) {
     case AF_INET:
         addrlen = sizeof(struct sockaddr_in);
         v4 = 1;
@@ -698,12 +698,12 @@ mud_create(union mud_sockaddr *addr, unsigned char *key)
         return NULL;
 
     memset(mud, 0, sizeof(struct mud));
-    mud->fd = socket(addr->sa.sa_family, SOCK_DGRAM, IPPROTO_UDP);
+    mud->fd = socket(addr.sa.sa_family, SOCK_DGRAM, IPPROTO_UDP);
 
     if ((mud->fd == -1) ||
         (mud_setup_socket(mud->fd, v4, v6)) ||
-        (bind(mud->fd, &addr->sa, addrlen)) ||
-        (getsockname(mud->fd, &addr->sa, &addrlen))) {
+        (bind(mud->fd, &addr.sa, addrlen)) ||
+        (getsockname(mud->fd, &addr.sa, &addrlen))) {
         mud_delete(mud);
         return NULL;
     }
