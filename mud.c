@@ -106,7 +106,7 @@ union mud_nonce {
 };
 
 struct mud_mac {
-    unsigned char b[16];
+    unsigned char b[8];
 };
 
 struct mud_msg {
@@ -236,15 +236,21 @@ static void
 mud_encrypt(struct mud *mud, union mud_nonce nonce,
             struct mud_mac *mac, void *data, size_t size)
 {
+    union {
+        unsigned char raw[16];
+        struct mud_mac mac;
+    } tag;
+
     if (mud->aes && !(nonce.time.b[0] & 1)) {
         aegis256_encrypt(data, data, size, NULL, 0,
-                         nonce.b, mud->key.aegis.b, mac->b);
+                         nonce.b, mud->key.aegis.b, tag.raw);
     } else {
         uint32_t st[12];
         uc_state_init(st, mud->key.charm.b, nonce.b);
-        uc_encrypt(st, data, size, mac->b);
+        uc_encrypt(st, data, size, tag.raw);
         uc_memzero(st, sizeof(st));
     }
+    *mac = tag.mac;
 }
 
 static int
@@ -255,7 +261,7 @@ mud_decrypt(struct mud *mud, union mud_nonce nonce,
 
     if (mud->aes && !(nonce.time.b[0] & 1)) {
         ret = aegis256_decrypt(data, data, size, NULL, 0,
-                               nonce.b, mud->key.aegis.b, mac->b);
+                               nonce.b, mud->key.aegis.b, mac->b, sizeof(*mac));
     } else {
         uint32_t st[12];
         uc_state_init(st, mud->key.charm.b, nonce.b);
