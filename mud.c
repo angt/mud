@@ -59,10 +59,8 @@
 
 #define MUD_TIME_SIZE    (6U)
 #define MUD_TIME_BITS    (MUD_TIME_SIZE * 8U)
-#define MUD_TIME_MASK(X) ((X) & ((UINT64_C(1) << MUD_TIME_BITS) - 2))
+#define MUD_TIME_MASK(X) ((X) & ((UINT64_C(1) << MUD_TIME_BITS) - 1))
 
-#define MUD_MSG(X)       ((X) & UINT64_C(1))
-#define MUD_MSG_MARK(X)  ((X) | UINT64_C(1))
 #define MUD_MSG_SENT_MAX (5)
 
 #define MUD_CTRL_SIZE (CMSG_SPACE(MUD_PKTINFO_SIZE) + \
@@ -128,13 +126,8 @@ struct mud_msg {
 
 struct mud_hdr {
     struct mud_time time;
-    struct mud_mac mac;
-};
-
-struct mud_pkt {
-    struct mud_hdr hdr;
     struct mud_id id;
-    struct mud_msg msg;
+    struct mud_mac mac;
 };
 
 struct mud {
@@ -241,7 +234,7 @@ mud_encrypt(struct mud *mud, union mud_nonce nonce,
         struct mud_mac mac;
     } tag;
 
-    if (mud->aes && !(nonce.time.b[0] & 1)) {
+    if (mud->aes && (nonce.id.b[0] & 1)) {
         aegis256_encrypt(data, data, size, NULL, 0,
                          nonce.b, mud->key.aegis.b, tag.raw);
     } else {
@@ -259,7 +252,7 @@ mud_decrypt(struct mud *mud, union mud_nonce nonce,
 {
     int ret;
 
-    if (mud->aes && !(nonce.time.b[0] & 1)) {
+    if (mud->aes && (nonce.id.b[0] & 1)) {
         ret = aegis256_decrypt(data, data, size, NULL, 0,
                                nonce.b, mud->key.aegis.b, mac->b, sizeof(*mac));
     } else {
@@ -649,6 +642,7 @@ mud_create(union mud_sockaddr addr, struct mud_key *key)
     uc_memzero(key, sizeof(*key));
 
     uc_randombytes_buf(mud->id.b, sizeof(mud->id));
+    mud->id.b[0] |= 1;
 
     return mud;
 }
@@ -753,13 +747,16 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
 {
     union {
         unsigned char data[1500];
-        struct mud_pkt pkt;
+        struct {
+            struct mud_hdr hdr;
+            struct mud_msg msg;
+        } pkt;
     } u = {
         .pkt = {
             .hdr = {
-                .time = mud_to_time(MUD_MSG_MARK(now)),
+                .time = mud_to_time(now),
+                .id   = mud->id,
             },
-            .id = mud->id,
             .msg = {
                 .sent_time = mud_to_time(sent_time),
                 .aes       = aegis256_is_available(),
@@ -794,15 +791,17 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
     if (!path->mtu.probe)
         u.pkt.msg.mtu = mud_to_u16(path->mtu.last);
 
+    u.pkt.hdr.id.b[0] &= ~1;
+
     union mud_nonce nonce = {
         .time = u.pkt.hdr.time,
-        .id = mud->id,
+        .id = u.pkt.hdr.id,
     };
-    size_t msg_size = size - offsetof(struct mud_pkt, msg);
+    size_t msg_size = size - sizeof(u.pkt.hdr);
     mud_encrypt(mud, nonce, &u.pkt.hdr.mac, &u.pkt.msg, msg_size);
 
     return mud_send_path(mud, path, now, u.pkt.hdr,
-                         &u.pkt.id, size - offsetof(struct mud_pkt, id),
+                         &u.pkt.msg, msg_size,
                          sent_time ? MSG_CONFIRM : 0);
 }
 
@@ -1014,21 +1013,11 @@ mud_recv(struct mud *mud, void *data, size_t size)
     if (!path || path->conf.state <= MUD_DOWN)
         return 0;
 
-    union mud_nonce nonce = { .time = hdr.time };
-    unsigned char *payload = data;
-    size_t payload_size = size;
-
-    if (MUD_MSG(sent_time)) {
-        if (size < sizeof(struct mud_id))
-            return 0;
-        memcpy(&nonce.id, data, sizeof(struct mud_id));
-        payload = (unsigned char *)data + sizeof(struct mud_id);
-        payload_size = size - sizeof(struct mud_id);
-    } else {
-        nonce.id = path->id;
-    }
-
-    if (mud_decrypt(mud, nonce, &hdr.mac, payload, payload_size)) {
+    union mud_nonce nonce = {
+        .time = hdr.time,
+        .id   = hdr.id
+    };
+    if (mud_decrypt(mud, nonce, &hdr.mac, data, size)) {
         mud->err.decrypt.addr = remote;
         mud->err.decrypt.time = now;
         mud->err.decrypt.count++;
@@ -1040,13 +1029,12 @@ mud_recv(struct mud *mud, void *data, size_t size)
     path->rx.bytes += bytes;
     mud->last_recv_time = now;
 
-    if (MUD_MSG(sent_time)) {
-        path->id = nonce.id;
-        mud_recv_msg(mud, path, sent_time, payload, bytes);
+    if (!(hdr.id.b[0] & 1)) {
+        mud_recv_msg(mud, path, sent_time, data, bytes);
         return 0;
     }
     path->idle = now;
-    return (ssize_t)payload_size;
+    return (ssize_t)size;
 }
 
 static int
@@ -1245,10 +1233,11 @@ mud_send(struct mud *mud, void *data, size_t size)
 
     struct mud_hdr hdr = {
         .time = mud_to_time(now),
+        .id   = mud->id,
     };
     union mud_nonce nonce = {
         .time = hdr.time,
-        .id = mud->id,
+        .id   = hdr.id,
     };
     mud_encrypt(mud, nonce, &hdr.mac, data, size);
 
