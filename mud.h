@@ -8,7 +8,7 @@
 #define MUD_PATH_MAX (32U)
 
 struct mud_id {
-    unsigned char b[4];
+    unsigned char b[2];
 };
 
 struct mud;
