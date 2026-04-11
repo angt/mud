@@ -104,7 +104,7 @@ union mud_nonce {
 };
 
 struct mud_mac {
-    unsigned char b[8];
+    unsigned char b[10];
 };
 
 struct mud_msg {
