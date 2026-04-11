@@ -43,8 +43,6 @@ struct mud_stat {
 
 struct mud_conf {
     uint64_t keepalive;
-    uint64_t timetolerance;
-    uint64_t kxtimeout;
 };
 
 union mud_sockaddr {

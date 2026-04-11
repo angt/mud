@@ -57,10 +57,6 @@
 #define MUD_ONE_SEC  (1000 * MUD_ONE_MSEC)
 #define MUD_ONE_MIN  (60 * MUD_ONE_SEC)
 
-#define MUD_TIME_SIZE    (6U)
-#define MUD_TIME_BITS    (MUD_TIME_SIZE * 8U)
-#define MUD_TIME_MASK(X) ((X) & ((UINT64_C(1) << MUD_TIME_BITS) - 1))
-
 #define MUD_MSG_SENT_MAX (5)
 
 #define MUD_CTRL_SIZE (CMSG_SPACE(MUD_PKTINFO_SIZE) + \
@@ -87,8 +83,13 @@ struct mud_u16 {
     unsigned char b[2];
 };
 
-struct mud_time {
-    unsigned char b[6];
+struct mud_u32 {
+    unsigned char b[4];
+};
+
+struct mud_pkt_id {
+    struct mud_id id;
+    struct mud_u32 count;
 };
 
 struct mud_u64 {
@@ -97,8 +98,8 @@ struct mud_u64 {
 
 union mud_nonce {
     struct {
-        struct mud_time time;
-        struct mud_id id;
+        struct mud_u32 time;
+        struct mud_pkt_id id;
     };
     unsigned char b[32];
 };
@@ -108,14 +109,17 @@ struct mud_mac {
 };
 
 struct mud_msg {
-    struct mud_time sent_time;
+    struct {
+        struct mud_u64 echo;
+        struct mud_u64 peer;
+    } now;
     unsigned char aes;
     struct {
         struct mud_u64 bytes;
         struct mud_u64 total;
     } tx, rx, fw;
     struct mud_u64 max_rate;
-    struct mud_time beat;
+    struct mud_u64 beat;
     struct mud_u16 mtu;
     unsigned char pref;
     unsigned char loss;
@@ -125,8 +129,7 @@ struct mud_msg {
 };
 
 struct mud_hdr {
-    struct mud_time time;
-    struct mud_id id;
+    struct mud_pkt_id id;
     struct mud_mac mac;
 };
 
@@ -144,7 +147,8 @@ struct mud {
     uint64_t rate;
     uint64_t window;
     uint64_t window_time;
-    uint64_t base_time;
+    uint64_t time;
+    uint32_t count;
     struct mud_id id;
 };
 
@@ -158,23 +162,6 @@ mud_le64(uint64_t x)
 #endif
 }
 
-static inline struct mud_time
-mud_to_time(uint64_t v)
-{
-    struct mud_time t;
-    v = mud_le64(v);
-    memcpy(t.b, &v, sizeof(t));
-    return t;
-}
-
-static inline uint64_t
-mud_from_time(struct mud_time t)
-{
-    uint64_t v = 0;
-    memcpy(&v, t.b, sizeof(t));
-    return mud_le64(v);
-}
-
 static inline struct mud_u16
 mud_to_u16(uint64_t v)
 {
@@ -186,6 +173,23 @@ mud_to_u16(uint64_t v)
 
 static inline uint64_t
 mud_from_u16(struct mud_u16 u)
+{
+    uint64_t v = 0;
+    memcpy(&v, u.b, sizeof(u));
+    return mud_le64(v);
+}
+
+static inline struct mud_u32
+mud_to_u32(uint64_t v)
+{
+    struct mud_u32 u;
+    v = mud_le64(v);
+    memcpy(u.b, &v, sizeof(u));
+    return u;
+}
+
+static inline uint64_t
+mud_from_u32(struct mud_u32 u)
 {
     uint64_t v = 0;
     memcpy(&v, u.b, sizeof(u));
@@ -207,6 +211,70 @@ mud_from_u64(struct mud_u64 u)
     uint64_t v;
     memcpy(&v, u.b, sizeof(u));
     return mud_le64(v);
+}
+
+static inline uint64_t
+mud_time(void)
+{
+#if defined CLOCK_REALTIME
+    struct timespec tv;
+    clock_gettime(CLOCK_REALTIME, &tv);
+#else
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+#endif
+    return (uint64_t)tv.tv_sec >> 3;
+}
+
+static inline uint64_t
+mud_now(void)
+{
+#if defined CLOCK_MONOTONIC
+    struct timespec tv;
+    clock_gettime(CLOCK_MONOTONIC, &tv);
+    return (uint64_t)tv.tv_sec * MUD_ONE_SEC
+         + (uint64_t)tv.tv_nsec / MUD_ONE_MSEC;
+#else
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (uint64_t)tv.tv_sec * MUD_ONE_SEC
+         + (uint64_t)tv.tv_usec;
+#endif
+}
+
+enum mud_pkt_flag {
+    MUD_PKT_MSG  = 0,
+    MUD_PKT_DATA = 1,
+};
+
+static inline struct mud_pkt_id
+mud_send_id(struct mud *mud, enum mud_pkt_flag flag)
+{
+    struct mud_id id = mud->id;
+
+    id.b[0] &= ~7;
+    id.b[0] |= ((mud->time & 3) << 1) | flag;
+
+    return (struct mud_pkt_id){
+        .id = id,
+        .count = mud_to_u32(mud->count),
+    };
+}
+
+static inline int
+mud_recv_id(struct mud *mud, struct mud_pkt_id id, union mud_nonce *nonce)
+{
+    uint64_t time = mud->time;
+    int diff = (((id.id.b[0] >> 1) - time + 1) & 3) - 1;
+
+    if (diff == 2)
+        return -1;
+
+    *nonce = (union mud_nonce){
+        .time = mud_to_u32(time + diff),
+        .id = id,
+    };
+    return 0;
 }
 
 static inline void
@@ -234,7 +302,7 @@ mud_encrypt(struct mud *mud, union mud_nonce nonce,
         struct mud_mac mac;
     } tag;
 
-    if (mud->aes && (nonce.id.b[0] & 1)) {
+    if (mud->aes && (nonce.id.id.b[0] & 1)) {
         aegis256_encrypt(data, data, size, NULL, 0,
                          nonce.b, mud->key.aegis.b, tag.raw);
     } else {
@@ -252,7 +320,7 @@ mud_decrypt(struct mud *mud, union mud_nonce nonce,
 {
     int ret;
 
-    if (mud->aes && (nonce.id.b[0] & 1)) {
+    if (mud->aes && (nonce.id.id.b[0] & 1)) {
         ret = aegis256_decrypt(data, data, size, NULL, 0,
                                nonce.b, mud->key.aegis.b, mac->b, sizeof(*mac));
     } else {
@@ -265,38 +333,6 @@ mud_decrypt(struct mud *mud, union mud_nonce nonce,
 }
 
 static inline uint64_t
-mud_time(void)
-{
-#if defined CLOCK_REALTIME
-    struct timespec tv;
-    clock_gettime(CLOCK_REALTIME, &tv);
-    return MUD_TIME_MASK(0
-            + (uint64_t)tv.tv_sec * MUD_ONE_SEC
-            + (uint64_t)tv.tv_nsec / MUD_ONE_MSEC);
-#else
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return MUD_TIME_MASK(0
-            + (uint64_t)tv.tv_sec * MUD_ONE_SEC
-            + (uint64_t)tv.tv_usec);
-#endif
-}
-
-static inline uint64_t
-mud_now(struct mud *mud)
-{
-#if defined CLOCK_MONOTONIC
-    struct timespec tv;
-    clock_gettime(CLOCK_MONOTONIC, &tv);
-    return MUD_TIME_MASK(mud->base_time
-            + (uint64_t)tv.tv_sec * MUD_ONE_SEC
-            + (uint64_t)tv.tv_nsec / MUD_ONE_MSEC);
-#else
-    return mud_time();
-#endif
-}
-
-static inline uint64_t
 mud_abs_diff(uint64_t a, uint64_t b)
 {
     return (a >= b) ? a - b : b - a;
@@ -305,7 +341,7 @@ mud_abs_diff(uint64_t a, uint64_t b)
 static inline int
 mud_timeout(uint64_t now, uint64_t last, uint64_t timeout)
 {
-    return (!last) || (MUD_TIME_MASK(now - last) >= timeout);
+    return (!last) || ((now - last) >= timeout);
 }
 
 static inline void
@@ -536,7 +572,7 @@ mud_get_path(struct mud *mud,
     path->conf.fixed_rate = 1;
     path->conf.loss_limit = 255;
     path->status          = MUD_PROBING;
-    path->idle            = mud_now(mud);
+    path->idle            = mud_now();
 
     return path;
 }
@@ -559,9 +595,6 @@ mud_set(struct mud *mud, struct mud_conf *conf)
 
     if (conf->keepalive)
         c.keepalive = conf->keepalive;
-
-    if (conf->timetolerance)
-        c.timetolerance = conf->timetolerance;
 
     *conf = mud->conf = c;
     return 0;
@@ -629,14 +662,8 @@ mud_create(union mud_sockaddr addr, struct mud_key *key)
         mud_delete(mud);
         return NULL;
     }
-    mud->conf.keepalive     = 25 * MUD_ONE_SEC;
-    mud->conf.timetolerance = 10 * MUD_ONE_MIN;
-
-    uint64_t now = mud_now(mud);
-    uint64_t base_time = mud_time();
-
-    if (base_time > now)
-        mud->base_time = base_time - now;
+    mud->conf.keepalive = 25 * MUD_ONE_SEC;
+    mud->time = mud_time();
 
     mud_derive_key(&mud->key, key);
     uc_memzero(key, sizeof(*key));
@@ -742,9 +769,15 @@ mud_sock_from_addr(union mud_sockaddr *sock, struct mud_addr *addr)
 
 static ssize_t
 mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
-             uint64_t sent_time, uint64_t fw_bytes, uint64_t fw_total,
+             uint64_t echo, uint64_t fw_bytes, uint64_t fw_total,
              size_t size)
 {
+    mud->time = mud_time();
+
+    union mud_nonce nonce = {
+        .time = mud_to_u32(mud->time),
+        .id   = mud_send_id(mud, MUD_PKT_MSG),
+    };
     union {
         unsigned char data[1500];
         struct {
@@ -753,12 +786,10 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
         } pkt;
     } u = {
         .pkt = {
-            .hdr = {
-                .time = mud_to_time(now),
-                .id   = mud->id,
-            },
+            .hdr = { .id = nonce.id, },
             .msg = {
-                .sent_time = mud_to_time(sent_time),
+                .now.echo = mud_to_u64(echo),
+                .now.peer = mud_to_u64(now),
                 .aes       = aegis256_is_available(),
                 .tx = {
                     .bytes = mud_to_u64(path->tx.bytes),
@@ -773,7 +804,7 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
                     .total = mud_to_u64(fw_total),
                 },
                 .max_rate   = mud_to_u64(path->conf.rx_max_rate),
-                .beat       = mud_to_time(path->conf.beat),
+                .beat       = mud_to_u64(path->conf.beat),
                 .pref       = path->conf.pref,
                 .loss       = path->tx.loss,
                 .fixed_rate = path->conf.fixed_rate,
@@ -781,7 +812,6 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
             },
         },
     };
-
     if (size < sizeof(u.pkt))
         size = sizeof(u.pkt);
 
@@ -791,18 +821,14 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
     if (!path->mtu.probe)
         u.pkt.msg.mtu = mud_to_u16(path->mtu.last);
 
-    u.pkt.hdr.id.b[0] &= ~1;
+    mud->count++;
 
-    union mud_nonce nonce = {
-        .time = u.pkt.hdr.time,
-        .id = u.pkt.hdr.id,
-    };
     size_t msg_size = size - sizeof(u.pkt.hdr);
     mud_encrypt(mud, nonce, &u.pkt.hdr.mac, &u.pkt.msg, msg_size);
 
     return mud_send_path(mud, path, now, u.pkt.hdr,
                          &u.pkt.msg, msg_size,
-                         sent_time ? MSG_CONFIRM : 0);
+                         echo ? MSG_CONFIRM : 0);
 }
 
 static void
@@ -889,36 +915,36 @@ mud_update_stat(struct mud_stat *stat, const uint64_t val)
 
 static void
 mud_recv_msg(struct mud *mud, struct mud_path *path,
-             uint64_t sent_time, unsigned char *data, size_t size)
+             unsigned char *data, size_t size)
 {
     struct mud_msg *msg = (struct mud_msg *)data;
     const uint64_t now = mud->last_recv_time;
-    const uint64_t tx_time = mud_from_time(msg->sent_time);
+    const uint64_t echo_now = mud_from_u64(msg->now.echo);
+    const uint64_t peer_now = mud_from_u64(msg->now.peer);
 
     mud_sock_from_addr(&path->remote, &msg->addr);
 
-    if (tx_time) {
-        mud_update_stat(&path->rtt, MUD_TIME_MASK(now - tx_time));
+    if (echo_now) {
+        mud_update_stat(&path->rtt, now - echo_now);
 
         const uint64_t tx_bytes = mud_from_u64(msg->fw.bytes);
         const uint64_t tx_total = mud_from_u64(msg->fw.total);
         const uint64_t rx_bytes = mud_from_u64(msg->rx.bytes);
         const uint64_t rx_total = mud_from_u64(msg->rx.total);
-        const uint64_t rx_time  = sent_time;
 
-        if ((tx_time > path->msg.tx.time) && (tx_bytes > path->msg.tx.bytes) &&
-            (rx_time > path->msg.rx.time) && (rx_bytes > path->msg.rx.bytes)) {
+        if ((peer_now > path->msg.tx.time) && (tx_bytes > path->msg.tx.bytes) &&
+            (now > path->msg.rx.time) && (rx_bytes > path->msg.rx.bytes)) {
             if (path->msg.set && path->status > MUD_PROBING) {
                 mud_update_rl(mud, path, now,
-                        MUD_TIME_MASK(tx_time - path->msg.tx.time),
-                        tx_bytes - path->msg.tx.bytes,
-                        tx_total - path->msg.tx.total,
-                        MUD_TIME_MASK(rx_time - path->msg.rx.time),
-                        rx_bytes - path->msg.rx.bytes,
-                        rx_total - path->msg.rx.total);
+                        peer_now   - path->msg.tx.time,
+                        tx_bytes   - path->msg.tx.bytes,
+                        tx_total   - path->msg.tx.total,
+                        now        - path->msg.rx.time,
+                        rx_bytes   - path->msg.rx.bytes,
+                        rx_total   - path->msg.rx.total);
             }
-            path->msg.tx.time = tx_time;
-            path->msg.rx.time = rx_time;
+            path->msg.tx.time  = peer_now;
+            path->msg.rx.time  = now;
             path->msg.tx.bytes = tx_bytes;
             path->msg.rx.bytes = rx_bytes;
             path->msg.tx.total = tx_total;
@@ -936,7 +962,7 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
         if (path->mtu.last && path->mtu.last == mud_from_u16(msg->mtu))
             path->mtu.ok = path->mtu.last;
     } else {
-        path->conf.beat = mud_from_time(msg->beat);
+        path->conf.beat = mud_from_u64(msg->beat);
 
         const uint64_t max_rate = mud_from_u64(msg->max_rate);
 
@@ -944,9 +970,9 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
             path->tx.rate = max_rate;
 
         path->conf.tx_max_rate = max_rate;
-        path->conf.pref = msg->pref;
-        path->conf.fixed_rate = msg->fixed_rate;
-        path->conf.loss_limit = msg->loss_limit;
+        path->conf.pref        = msg->pref;
+        path->conf.fixed_rate  = msg->fixed_rate;
+        path->conf.loss_limit  = msg->loss_limit;
 
         path->mtu.last = mud_from_u16(msg->mtu);
         path->mtu.ok = path->mtu.last;
@@ -956,7 +982,7 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
     }
     mud->aes = msg->aes && aegis256_is_available();
 
-    mud_send_msg(mud, path, now, sent_time,
+    mud_send_msg(mud, path, now, peer_now,
                  mud_from_u64(msg->tx.bytes),
                  mud_from_u64(msg->tx.total),
                  size);
@@ -988,49 +1014,41 @@ mud_recv(struct mud *mud, void *data, size_t size)
         (ret <= (ssize_t)sizeof(hdr)))
         return 0;
 
-    const uint64_t now = mud_now(mud);
-    const uint64_t sent_time = mud_from_time(hdr.time);
+    const uint64_t now = mud_now();
+    const size_t bytes = ret;
+    size = bytes - sizeof(hdr);
 
     mud_unmapv4(&remote);
 
-    if ((MUD_TIME_MASK(now - sent_time) > mud->conf.timetolerance) &&
-        (MUD_TIME_MASK(sent_time - now) > mud->conf.timetolerance)) {
+    union mud_sockaddr local;
+    if (mud_localaddr(&local, &msg))
+        return 0;
+
+    struct mud_path *path = mud_get_path(mud, &local, &remote, MUD_PASSIVE);
+    if (!path || path->conf.state <= MUD_DOWN)
+        return 0;
+
+    union mud_nonce nonce;
+
+    if (mud_recv_id(mud, hdr.id, &nonce)) {
         mud->err.clocksync.addr = remote;
         mud->err.clocksync.time = now;
         mud->err.clocksync.count++;
         return 0;
     }
-    const size_t bytes = ret;
-    size = bytes - sizeof(hdr);
-
-    union mud_sockaddr local;
-
-    if (mud_localaddr(&local, &msg))
-        return 0;
-
-    struct mud_path *path = mud_get_path(mud, &local, &remote, MUD_PASSIVE);
-
-    if (!path || path->conf.state <= MUD_DOWN)
-        return 0;
-
-    union mud_nonce nonce = {
-        .time = hdr.time,
-        .id   = hdr.id
-    };
     if (mud_decrypt(mud, nonce, &hdr.mac, data, size)) {
         mud->err.decrypt.addr = remote;
         mud->err.decrypt.time = now;
         mud->err.decrypt.count++;
         return 0;
     }
-
     path->rx.total++;
     path->rx.time = now;
     path->rx.bytes += bytes;
     mud->last_recv_time = now;
 
-    if (!(hdr.id.b[0] & 1)) {
-        mud_recv_msg(mud, path, sent_time, data, bytes);
+    if (!(hdr.id.id.b[0] & 1)) {
+        mud_recv_msg(mud, path, data, bytes);
         return 0;
     }
     path->idle = now;
@@ -1112,7 +1130,7 @@ mud_path_track(struct mud *mud, struct mud_path *path, uint64_t now)
         path->msg.sent++;
         path->msg.time = now;
         mud_send_msg(mud, path, now, 0, 0, 0, path->mtu.probe);
-        now = mud_now(mud);
+        now = mud_now();
     }
     return now;
 }
@@ -1120,7 +1138,7 @@ mud_path_track(struct mud *mud, struct mud_path *path, uint64_t now)
 static void
 mud_update_window(struct mud *mud, const uint64_t now)
 {
-    uint64_t elapsed = MUD_TIME_MASK(now - mud->window_time);
+    uint64_t elapsed = now - mud->window_time;
 
     if (elapsed > MUD_ONE_MSEC) {
         mud->window += mud->rate * elapsed / MUD_ONE_SEC;
@@ -1140,7 +1158,7 @@ mud_update(struct mud *mud)
     unsigned next_pref = 255;
     uint64_t rate = 0;
     uint64_t mtu = 0;
-    uint64_t now = mud_now(mud);
+    uint64_t now = mud_now();
 
     for (unsigned i = 0; i < mud->capacity; i++) {
         struct mud_path *path = &mud->paths[i];
@@ -1229,16 +1247,13 @@ mud_send(struct mud *mud, void *data, size_t size)
         errno = EAGAIN;
         return -1;
     }
-    const uint64_t now = mud_now(mud);
+    const uint64_t now = mud_now();
 
-    struct mud_hdr hdr = {
-        .time = mud_to_time(now),
-        .id   = mud->id,
-    };
     union mud_nonce nonce = {
-        .time = hdr.time,
-        .id   = hdr.id,
+        .time = mud_to_u32(mud->time),
+        .id   = mud_send_id(mud, MUD_PKT_DATA),
     };
+    struct mud_hdr hdr = { .id = nonce.id };
     mud_encrypt(mud, nonce, &hdr.mac, data, size);
 
     uint32_t cursor;
