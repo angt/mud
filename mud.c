@@ -58,6 +58,7 @@
 #define MUD_ONE_MIN  (60 * MUD_ONE_SEC)
 
 #define MUD_MSG_SENT_MAX (5)
+#define MUD_KEEPALIVE    (5 * MUD_ONE_SEC)
 
 #define MUD_CTRL_SIZE (CMSG_SPACE(MUD_PKTINFO_SIZE) + \
                        CMSG_SPACE(sizeof(struct in6_pktinfo)))
@@ -136,7 +137,6 @@ struct mud_hdr {
 struct mud {
     int fd;
     int aes;
-    uint64_t keepalive;
     struct mud_path *paths;
     unsigned pref;
     unsigned capacity;
@@ -650,7 +650,6 @@ mud_create(union mud_sockaddr addr, struct mud_key *key)
         mud_delete(mud);
         return NULL;
     }
-    mud->keepalive = 25 * MUD_ONE_SEC;
     mud->time = mud_time();
 
     mud_derive_key(&mud->key, key);
@@ -1105,7 +1104,7 @@ mud_path_track(struct mud *mud, struct mud_path *path, uint64_t now)
     switch (path->status) {
         case MUD_RUNNING:
             if (mud_timeout(now, path->idle, MUD_ONE_SEC))
-                timeout = mud->keepalive;
+                timeout = MUD_KEEPALIVE;
             break;
         case MUD_DEGRADED:
         case MUD_LOSSY:
@@ -1190,15 +1189,6 @@ mud_update(struct mud *mud)
         return -1;
 
     return mud->window < 1500;
-}
-
-unsigned
-mud_set_keepalive(struct mud *mud, unsigned ms)
-{
-    if (ms)
-        mud->keepalive = (uint64_t)ms * MUD_ONE_MSEC;
-
-    return mud->keepalive / MUD_ONE_MSEC;
 }
 
 int

@@ -112,9 +112,7 @@ struct mud_paths {
 struct mud *mud_create (union mud_sockaddr, struct mud_key *);
 void        mud_delete (struct mud *);
 
-unsigned mud_set_keepalive (struct mud *, unsigned);
-int      mud_set_path      (struct mud *, struct mud_path_conf *);
-
+int mud_set_path  (struct mud *, struct mud_path_conf *);
 int mud_update    (struct mud *);
 int mud_send_wait (struct mud *);
 
