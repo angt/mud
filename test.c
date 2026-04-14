@@ -49,9 +49,8 @@ main(int argc, char **argv)
     unsigned char buf[1500];
 
     for (;;) {
-        // mandatory, mud have lot of work to do.
-        if (mud_update(mud))
-            usleep(1000); // don't use all the cpu
+        usleep(1000); // don't use all the cpu
+        mud_update(mud);
 
         if (client) {
             // when there is data, mud_recv() is mandatory

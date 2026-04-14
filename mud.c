@@ -144,10 +144,9 @@ struct mud {
     uint64_t mtu;
     struct mud_errors err;
     uint64_t rate;
-    uint64_t window;
-    uint64_t window_time;
     uint64_t time;
     uint32_t count;
+    uint32_t random;
     struct mud_id id;
 };
 
@@ -300,9 +299,12 @@ static void
 mud_encrypt(struct mud *mud, union mud_nonce nonce,
             struct mud_mac *mac, void *data, size_t size)
 {
-    union {
+    _Alignas(16) union {
         unsigned char raw[16];
-        struct mud_mac mac;
+        struct {
+            struct mud_mac mac;
+            uint32_t random;
+        };
     } tag;
 
     if (mud->aes && (nonce.id.id.b[0] & 1)) {
@@ -314,6 +316,7 @@ mud_encrypt(struct mud *mud, union mud_nonce nonce,
         uc_encrypt(st, data, size, tag.raw);
         uc_memzero(st, sizeof(st));
     }
+    mud->random ^= tag.random;
     *mac = tag.mac;
 }
 
@@ -368,9 +371,9 @@ mud_unmapv4(union mud_sockaddr *addr)
 }
 
 static struct mud_path *
-mud_select_path(struct mud *mud, uint32_t cursor)
+mud_select_path(struct mud *mud)
 {
-    uint64_t k = (cursor * mud->rate) >> 32;
+    uint64_t k = (mud->random * mud->rate) >> 32;
 
     for (unsigned i = 0; i < mud->capacity; i++) {
         struct mud_path *path = &mud->paths[i];
@@ -441,11 +444,6 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
     path->tx.time = now;
     mud->count++;
 
-    if (mud->window > bytes) {
-        mud->window -= bytes;
-    } else {
-        mud->window = 0;
-    }
     return (ssize_t)size;
 }
 
@@ -814,7 +812,7 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
     size_t msg_size = size - sizeof(u.pkt.hdr);
     mud_encrypt(mud, nonce, &u.pkt.hdr.mac, &u.pkt.msg, msg_size);
 
-    return mud_send_path(mud, path, u.pkt.hdr,
+    return mud_send_path(mud, path, now, u.pkt.hdr,
                          &u.pkt.msg, msg_size,
                          echo ? MSG_CONFIRM : 0);
 }
@@ -1121,21 +1119,6 @@ mud_path_track(struct mud *mud, struct mud_path *path, uint64_t now)
     return now;
 }
 
-static void
-mud_update_window(struct mud *mud, const uint64_t now)
-{
-    uint64_t elapsed = now - mud->window_time;
-
-    if (elapsed > MUD_ONE_MSEC) {
-        mud->window += mud->rate * elapsed / MUD_ONE_SEC;
-        mud->window_time = now;
-    }
-    uint64_t window_max = mud->rate * 100 * MUD_ONE_MSEC / MUD_ONE_SEC;
-
-    if (mud->window > window_max)
-        mud->window = window_max;
-}
-
 int
 mud_update(struct mud *mud)
 {
@@ -1182,12 +1165,10 @@ mud_update(struct mud *mud)
     mud->rate = rate;
     mud->mtu = mtu;
 
-    mud_update_window(mud, now);
-
     if (!count)
         return -1;
 
-    return mud->window < 1500;
+    return 0;
 }
 
 int
@@ -1216,39 +1197,22 @@ mud_set_path(struct mud *mud, struct mud_path_conf *conf)
     return 0;
 }
 
-int
-mud_send_wait(struct mud *mud)
-{
-    return mud->window < 1500;
-}
-
 ssize_t
 mud_send(struct mud *mud, void *data, size_t size)
 {
-    if (!size)
-        return 0;
+    struct mud_path *path = mud_select_path(mud);
 
-    if (mud->window < 1500) {
+    if (!path) {
         errno = EAGAIN;
         return -1;
     }
-    const uint64_t now = mud_now();
-
     union mud_nonce nonce = mud_nonce_encrypt(mud, MUD_PKT_DATA);
     struct mud_hdr hdr = {
         .id = nonce.id
     };
     mud_encrypt(mud, nonce, &hdr.mac, data, size);
 
-    uint32_t cursor;
-    memcpy(&cursor, hdr.mac.b, sizeof(cursor));
-
-    struct mud_path *path = mud_select_path(mud, cursor);
-
-    if (!path) {
-        errno = EAGAIN;
-        return -1;
-    }
+    const uint64_t now = mud_now();
     path->idle = now;
 
     return mud_send_path(mud, path, now, hdr, data, size, 0);
