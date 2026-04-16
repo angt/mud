@@ -397,7 +397,7 @@ mud_select_path(struct mud *mud)
 
 static ssize_t
 mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
-              struct mud_hdr hdr, void *data, size_t size, int flags)
+              struct mud_hdr hdr, void *data, size_t size)
 {
     if (!size || !path)
         return 0;
@@ -438,6 +438,7 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
         errno = EAFNOSUPPORT;
         return -1;
     }
+    const int flags = path->status == MUD_RUNNING ? MSG_CONFIRM : 0;
     ssize_t ret = sendmsg(mud->fd, &msg, flags);
 
     if (ret == (ssize_t)-1)
@@ -814,9 +815,7 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
     size_t msg_size = size - sizeof(u.pkt.hdr);
     mud_encrypt(mud, nonce, &u.pkt.hdr.mac, &u.pkt.msg, msg_size);
 
-    return mud_send_path(mud, path, now, u.pkt.hdr,
-                         &u.pkt.msg, msg_size,
-                         echo ? MSG_CONFIRM : 0);
+    return mud_send_path(mud, path, now, u.pkt.hdr, &u.pkt.msg, msg_size);
 }
 
 static void
@@ -1218,5 +1217,5 @@ mud_send(struct mud *mud, void *data, size_t size)
     const uint64_t now = mud_now();
     path->idle = now;
 
-    return mud_send_path(mud, path, now, hdr, data, size, 0);
+    return mud_send_path(mud, path, now, hdr, data, size);
 }
