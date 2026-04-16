@@ -248,6 +248,9 @@ enum mud_pkt_flag {
 static inline union mud_nonce
 mud_nonce_encrypt(struct mud *mud, enum mud_pkt_flag flag)
 {
+    if (flag == MUD_PKT_MSG) {
+        mud->time = mud_time();
+    }
     uint64_t time = mud->time >> 3;
     struct mud_id id = mud->id;
 
@@ -266,6 +269,9 @@ mud_nonce_encrypt(struct mud *mud, enum mud_pkt_flag flag)
 static inline int
 mud_nonce_decrypt(struct mud *mud, struct mud_pkt_id id, union mud_nonce *nonce)
 {
+    if ((id.id.b[0] & 1) == MUD_PKT_MSG) {
+        mud->time = mud_time();
+    }
     uint64_t time = mud->time >> 3;
     int diff = (((id.id.b[0] >> 1) - time + 1) & 3) - 1;
 
@@ -307,7 +313,7 @@ mud_encrypt(struct mud *mud, union mud_nonce nonce,
         };
     } tag;
 
-    if (mud->aes && (nonce.id.id.b[0] & 1)) {
+    if (mud->aes && (nonce.id.id.b[0] & 1) == MUD_PKT_DATA) {
         aegis256_encrypt(data, data, size, NULL, 0,
                          nonce.b, mud->key.aegis.b, tag.raw);
     } else {
@@ -326,7 +332,7 @@ mud_decrypt(struct mud *mud, union mud_nonce nonce,
 {
     int ret;
 
-    if (mud->aes && (nonce.id.id.b[0] & 1)) {
+    if (mud->aes && (nonce.id.id.b[0] & 1) == MUD_PKT_DATA) {
         ret = aegis256_decrypt(data, data, size, NULL, 0,
                                nonce.b, mud->key.aegis.b, mac->b, sizeof(*mac));
     } else {
@@ -651,8 +657,6 @@ mud_create(union mud_sockaddr addr, struct mud_key *key)
         mud_delete(mud);
         return NULL;
     }
-    mud->time = mud_time();
-
     mud_derive_key(&mud->key, key);
     uc_memzero(key, sizeof(*key));
 
@@ -760,8 +764,6 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
              uint64_t echo, uint64_t fw_bytes, uint64_t fw_total,
              size_t size)
 {
-    mud->time = mud_time();
-
     union mud_nonce nonce = mud_nonce_encrypt(mud, MUD_PKT_MSG);
     union {
         unsigned char data[1500];
@@ -1207,6 +1209,7 @@ mud_send(struct mud *mud, void *data, size_t size)
         return -1;
     }
     union mud_nonce nonce = mud_nonce_encrypt(mud, MUD_PKT_DATA);
+
     struct mud_hdr hdr = {
         .id = nonce.id
     };
