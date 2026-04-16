@@ -26,7 +26,6 @@ enum mud_path_status {
     MUD_PROBING,
     MUD_DEGRADED,
     MUD_LOSSY,
-    MUD_WAITING,
     MUD_READY,
     MUD_RUNNING,
 };
@@ -66,7 +65,6 @@ struct mud_path {
     struct {
         uint64_t total;
         uint64_t bytes;
-        uint64_t time;
         uint64_t rate;
         uint64_t loss;
     } tx, rx;
@@ -89,6 +87,7 @@ struct mud_path {
         uint64_t last;
         uint64_t ok;
     } mtu;
+    uint64_t last_msg_time;
     uint64_t idle;
 };
 

@@ -140,7 +140,7 @@ struct mud {
     unsigned pref;
     unsigned capacity;
     struct mud_crypto_key key;
-    uint64_t last_recv_time;
+    uint64_t last_msg_time;
     uint64_t mtu;
     struct mud_errors err;
     uint64_t rate;
@@ -396,7 +396,7 @@ mud_select_path(struct mud *mud)
 }
 
 static ssize_t
-mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
+mud_send_path(struct mud *mud, struct mud_path *path,
               struct mud_hdr hdr, void *data, size_t size)
 {
     if (!size || !path)
@@ -448,7 +448,6 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
 
     path->tx.total++;
     path->tx.bytes += bytes;
-    path->tx.time = now;
     mud->count++;
 
     return (ssize_t)size;
@@ -580,7 +579,6 @@ mud_get_path(struct mud *mud,
     path->conf.beat       = 100 * MUD_ONE_MSEC;
     path->conf.loss_limit = 255;
     path->status          = MUD_PROBING;
-    path->idle            = mud_now();
 
     return path;
 }
@@ -815,7 +813,7 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
     size_t msg_size = size - sizeof(u.pkt.hdr);
     mud_encrypt(mud, nonce, &u.pkt.hdr.mac, &u.pkt.msg, msg_size);
 
-    return mud_send_path(mud, path, now, u.pkt.hdr, &u.pkt.msg, msg_size);
+    return mud_send_path(mud, path, u.pkt.hdr, &u.pkt.msg, msg_size);
 }
 
 static void
@@ -901,8 +899,12 @@ static void
 mud_recv_msg(struct mud *mud, struct mud_path *path,
              unsigned char *data, size_t size)
 {
+    const uint64_t now = mud_now();
+
+    path->last_msg_time = now;
+    mud->last_msg_time = now;
+
     struct mud_msg *msg = (struct mud_msg *)data;
-    const uint64_t now = mud->last_recv_time;
     const uint64_t echo_now = mud_from_u64(msg->now.echo);
     const uint64_t peer_now = mud_from_u64(msg->now.peer);
 
@@ -997,7 +999,6 @@ mud_recv(struct mud *mud, void *data, size_t size)
         (ret <= (ssize_t)sizeof(hdr)))
         return 0;
 
-    const uint64_t now = mud_now();
     const size_t bytes = ret;
     size = bytes - sizeof(hdr);
 
@@ -1028,15 +1029,14 @@ mud_recv(struct mud *mud, void *data, size_t size)
         return 0;
     }
     path->rx.total++;
-    path->rx.time = now;
     path->rx.bytes += bytes;
-    mud->last_recv_time = now;
 
-    if (!(hdr.id.id.b[0] & 1)) {
+    if ((hdr.id.id.b[0] & 1) == MUD_PKT_DATA) {
+        path->idle = 0;
+    } else {
         mud_recv_msg(mud, path, data, bytes);
         return 0;
     }
-    path->idle = now;
     return (ssize_t)size;
 }
 
@@ -1046,11 +1046,11 @@ mud_path_update(struct mud *mud, struct mud_path *path, uint64_t now)
     switch (path->conf.state) {
     case MUD_DOWN:
         path->status = MUD_DELETING;
-        if (mud_timeout(now, path->rx.time, 2 * MUD_ONE_MIN))
+        if (mud_timeout(now, path->last_msg_time, 2 * MUD_ONE_MIN))
             memset(path, 0, sizeof(struct mud_path));
         return 0;
     case MUD_PASSIVE:
-        if (mud_timeout(now, mud->last_recv_time, 2 * MUD_ONE_MIN)) {
+        if (mud_timeout(now, mud->last_msg_time, 2 * MUD_ONE_MIN)) {
             memset(path, 0, sizeof(struct mud_path));
             return 0;
         }
@@ -1076,17 +1076,10 @@ mud_path_update(struct mud *mud, struct mud_path *path, uint64_t now)
         path->status = MUD_LOSSY;
         return 0;
     }
-    if (path->conf.state == MUD_PASSIVE &&
-        mud_timeout(mud->last_recv_time, path->rx.time,
-                    MUD_MSG_SENT_MAX * path->conf.beat)) {
-        path->status = MUD_WAITING;
-        return 0;
-    }
     if (path->conf.pref > mud->pref) {
         path->status = MUD_READY;
     } else if (path->status != MUD_RUNNING) {
         path->status = MUD_RUNNING;
-        path->idle = now;
     }
     return 1;
 }
@@ -1101,7 +1094,7 @@ mud_path_track(struct mud *mud, struct mud_path *path, uint64_t now)
 
     switch (path->status) {
         case MUD_RUNNING:
-            if (mud_timeout(now, path->idle, MUD_ONE_SEC))
+            if (path->idle > 2 * MUD_MSG_SENT_MAX)
                 timeout = MUD_KEEPALIVE;
             break;
         case MUD_DEGRADED:
@@ -1112,6 +1105,7 @@ mud_path_track(struct mud *mud, struct mud_path *path, uint64_t now)
             return now;
     }
     if (mud_timeout(now, path->msg.time, timeout)) {
+        path->idle++;
         path->msg.sent++;
         path->msg.time = now;
         mud_send_msg(mud, path, now, 0, 0, 0, path->mtu.probe);
@@ -1214,8 +1208,7 @@ mud_send(struct mud *mud, void *data, size_t size)
     };
     mud_encrypt(mud, nonce, &hdr.mac, data, size);
 
-    const uint64_t now = mud_now();
-    path->idle = now;
+    path->idle = 0;
 
-    return mud_send_path(mud, path, now, hdr, data, size);
+    return mud_send_path(mud, path, hdr, data, size);
 }
