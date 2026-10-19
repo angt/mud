@@ -496,7 +496,7 @@ int
 mud_get_paths(struct mud *mud, struct mud_paths *paths,
               union mud_sockaddr *local, union mud_sockaddr *remote)
 {
-    if (!paths) {
+    if (!mud || !paths) {
         errno = EINVAL;
         return -1;
     }
@@ -591,7 +591,7 @@ mud_get_path(struct mud *mud,
 int
 mud_get_errors(struct mud *mud, struct mud_errors *err)
 {
-    if (!err) {
+    if (!mud || !err) {
         errno = EINVAL;
         return -1;
     }
@@ -602,6 +602,9 @@ mud_get_errors(struct mud *mud, struct mud_errors *err)
 uint64_t
 mud_get_mtu(struct mud *mud)
 {
+    if (!mud)
+        return 0;
+
     if (mud->mtu <= sizeof(struct mud_hdr))
         return 0;
 
@@ -1184,7 +1187,7 @@ mud_update(struct mud *mud)
 int
 mud_set_path(struct mud *mud, struct mud_path_conf *conf)
 {
-    if (conf->state < MUD_EMPTY || conf->state >= MUD_LAST) {
+    if (!conf || conf->state < MUD_EMPTY || conf->state >= MUD_LAST) {
         errno = EINVAL;
         return -1;
     }
@@ -1210,6 +1213,10 @@ mud_set_path(struct mud *mud, struct mud_path_conf *conf)
 ssize_t
 mud_send(struct mud *mud, void *data, size_t size)
 {
+    if (size > MUD_PACKET_MAX - sizeof(struct mud_hdr)) {
+        errno = EMSGSIZE;
+        return -1;
+    }
     struct mud_path *path = mud_select_path(mud);
 
     if (!path) {
