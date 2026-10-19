@@ -1027,9 +1027,9 @@ mud_recv(struct mud *mud, void *data, size_t size)
 
     mud_unmapv4(&remote);
 
-    struct mud_path *path = mud_get_path(mud, &local, &remote, MUD_PASSIVE);
+    struct mud_path *path = mud_get_path(mud, &local, &remote, MUD_DOWN);
 
-    if (!path || path->conf.state <= MUD_DOWN)
+    if (path && path->conf.state <= MUD_DOWN)
         return 0;
 
     union mud_nonce nonce;
@@ -1045,6 +1045,13 @@ mud_recv(struct mud *mud, void *data, size_t size)
         mud->err.decrypt.time = mud_time();
         mud->err.decrypt.count++;
         return 0;
+    }
+
+    if (!path) {
+        path = mud_get_path(mud, &local, &remote, MUD_PASSIVE);
+
+        if (!path)
+            return 0;
     }
     path->rx.total++;
     path->rx.bytes += bytes;
