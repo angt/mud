@@ -8,7 +8,7 @@
 #define MUD_PATH_MAX (32U)
 
 struct mud_id {
-    unsigned char b[2];
+    unsigned char b[8];
 };
 
 struct mud;
@@ -60,6 +60,7 @@ struct mud_path_conf {
 struct mud_path {
     struct mud_path_conf conf;
     enum mud_path_status status;
+    struct mud_id peer;
     union mud_sockaddr remote;
     struct mud_stat rtt;
     struct {

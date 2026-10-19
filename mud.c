@@ -90,11 +90,6 @@ struct mud_u32 {
     unsigned char b[4];
 };
 
-struct mud_pkt_id {
-    struct mud_id id;
-    struct mud_u32 count;
-};
-
 struct mud_u64 {
     unsigned char b[8];
 };
@@ -102,7 +97,9 @@ struct mud_u64 {
 union mud_nonce {
     struct {
         struct mud_u32 time;
-        struct mud_pkt_id id;
+        struct mud_u16 ctrl;
+        struct mud_u32 count;
+        struct mud_id id;
     };
     unsigned char b[32];
 };
@@ -131,7 +128,8 @@ struct mud_msg {
 };
 
 struct mud_hdr {
-    struct mud_pkt_id id;
+    struct mud_u16 ctrl;
+    struct mud_u32 count;
     struct mud_mac mac;
 };
 
@@ -242,46 +240,46 @@ mud_now(void)
 }
 
 enum mud_pkt_flag {
-    MUD_PKT_MSG  = 0,
-    MUD_PKT_DATA = 1,
+    MUD_PKT_DATA = 0,
+    MUD_PKT_MSG  = 1,
 };
 
 static inline union mud_nonce
 mud_nonce_encrypt(struct mud *mud, enum mud_pkt_flag flag)
 {
-    if (flag == MUD_PKT_MSG) {
+    if (flag)
         mud->time = mud_time();
-    }
-    uint64_t time = mud->time >> 3;
-    struct mud_id id = mud->id;
 
-    id.b[0] &= ~7;
-    id.b[0] |= ((time & 3) << 1) | flag;
+    const uint64_t time = mud->time >> 3;
 
     return (union mud_nonce){
-        .time = mud_to_u32(time),
-        .id = {
-            .id = id,
-            .count = mud_to_u32(mud->count),
-        },
+        .time  = mud_to_u32(time),
+        .ctrl  = mud_to_u16(((time & 3) << 1) | flag),
+        .count = mud_to_u32(mud->count),
+        .id    = mud->id,
     };
 }
 
 static inline int
-mud_nonce_decrypt(struct mud *mud, struct mud_pkt_id id, union mud_nonce *nonce)
+mud_nonce_recv(struct mud *mud, struct mud_hdr hdr,
+               struct mud_id id, union mud_nonce *nonce)
 {
-    if ((id.id.b[0] & 1) == MUD_PKT_MSG) {
+    const uint64_t ctrl = mud_from_u16(hdr.ctrl);
+
+    if (ctrl & 1)
         mud->time = mud_time();
-    }
-    uint64_t time = mud->time >> 3;
-    int diff = (((id.id.b[0] >> 1) - time + 1) & 3) - 1;
+
+    const uint64_t time = mud->time >> 3;
+    const int diff = (((int)((ctrl >> 1) & 3) - (int)(time & 3) + 5) & 3) - 1;
 
     if (diff == 2)
         return -1;
 
     *nonce = (union mud_nonce){
-        .time = mud_to_u32(time + diff),
-        .id = id,
+        .time  = mud_to_u32(time + (uint64_t)diff),
+        .ctrl  = hdr.ctrl,
+        .count = hdr.count,
+        .id    = id,
     };
     return 0;
 }
@@ -314,7 +312,7 @@ mud_encrypt(struct mud *mud, union mud_nonce nonce,
         };
     } tag;
 
-    if (mud->aes && (nonce.id.id.b[0] & 1) == MUD_PKT_DATA) {
+    if (mud->aes && (mud_from_u16(nonce.ctrl) & 1) == MUD_PKT_DATA) {
         aegis256_encrypt(data, data, size, NULL, 0,
                          nonce.b, mud->key.aegis.b, tag.raw);
     } else {
@@ -333,7 +331,7 @@ mud_decrypt(struct mud *mud, union mud_nonce nonce,
 {
     int ret;
 
-    if (mud->aes && (nonce.id.id.b[0] & 1) == MUD_PKT_DATA) {
+    if (mud->aes && (mud_from_u16(nonce.ctrl) & 1) == MUD_PKT_DATA) {
         ret = aegis256_decrypt(data, data, size, NULL, 0,
                                nonce.b, mud->key.aegis.b, mac->b, sizeof(*mac));
     } else {
@@ -667,8 +665,7 @@ mud_create(union mud_sockaddr addr, struct mud_key *key)
     mud_derive_key(&mud->key, key);
     uc_memzero(key, sizeof(*key));
 
-    uc_randombytes_buf(mud->id.b, sizeof(mud->id));
-    mud->id.b[0] |= 1;
+    uc_randombytes_buf(mud->id.b, sizeof(mud->id.b));
 
     return mud;
 }
@@ -776,13 +773,16 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
         unsigned char data[MUD_PACKET_MAX];
         struct {
             struct mud_hdr hdr;
+            struct mud_id id;
             struct mud_msg msg;
         } pkt;
     } u = {
         .pkt = {
             .hdr = {
-                .id = nonce.id,
+                .ctrl  = nonce.ctrl,
+                .count = nonce.count,
             },
+            .id = mud->id,
             .msg = {
                 .now = {
                     .echo = mud_to_u64(echo),
@@ -821,10 +821,11 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
     if (!path->mtu.probe)
         u.pkt.msg.mtu = mud_to_u16(path->mtu.last);
 
-    size_t msg_size = size - sizeof(u.pkt.hdr);
+    size_t msg_size = size - sizeof(u.pkt.hdr) - sizeof(u.pkt.id);
     mud_encrypt(mud, nonce, &u.pkt.hdr.mac, &u.pkt.msg, msg_size);
 
-    return mud_send_path(mud, path, u.pkt.hdr, &u.pkt.msg, msg_size);
+    return mud_send_path(mud, path, u.pkt.hdr, &u.pkt.id,
+                         sizeof(u.pkt.id) + msg_size);
 }
 
 static void
@@ -882,7 +883,6 @@ mud_update_mtu(struct mud_path *path, uint64_t size)
     } else {
         path->mtu.max = path->mtu.probe - 1;
     }
-
     uint64_t probe = (path->mtu.min + path->mtu.max) >> 1;
 
     if (path->mtu.min > path->mtu.max) {
@@ -910,7 +910,9 @@ static void
 mud_recv_msg(struct mud *mud, struct mud_path *path,
              unsigned char *data, size_t size)
 {
-    if (size < sizeof(struct mud_hdr) + sizeof(struct mud_msg))
+    if (size < sizeof(struct mud_hdr)
+             + sizeof(struct mud_id)
+             + sizeof(struct mud_msg))
         return;
 
     const uint64_t now = mud_now();
@@ -991,6 +993,19 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
                  size);
 }
 
+static void
+mud_peer_learn(struct mud_path *path, struct mud_id id)
+{
+    if (memcmp(&path->peer, &(struct mud_id){0}, sizeof(struct mud_id)) &&
+        memcmp(&path->peer, &id, sizeof(struct mud_id))) {
+        memset(&path->msg.tx, 0, sizeof(path->msg.tx));
+        memset(&path->msg.rx, 0, sizeof(path->msg.rx));
+        path->msg.set = 0;
+        path->msg.sent = 0;
+    }
+    path->peer = id;
+}
+
 ssize_t
 mud_recv(struct mud *mud, void *data, size_t size)
 {
@@ -1032,9 +1047,21 @@ mud_recv(struct mud *mud, void *data, size_t size)
     if (path && path->conf.state <= MUD_DOWN)
         return 0;
 
+    const int ctrl = mud_from_u16(hdr.ctrl) & 1;
+    struct mud_id id = {0};
+
+    if (ctrl) {
+        if (size < sizeof(id))
+            return 0;
+        memcpy(&id, data, sizeof(id));
+        data = (unsigned char *)data + sizeof(id);
+        size -= sizeof(id);
+    } else if (path) {
+        id = path->peer;
+    }
     union mud_nonce nonce;
 
-    if (mud_nonce_decrypt(mud, hdr.id, &nonce)) {
+    if (mud_nonce_recv(mud, hdr, id, &nonce)) {
         mud->err.clocksync.addr = remote;
         mud->err.clocksync.time = mud_time();
         mud->err.clocksync.count++;
@@ -1046,7 +1073,6 @@ mud_recv(struct mud *mud, void *data, size_t size)
         mud->err.decrypt.count++;
         return 0;
     }
-
     if (!path) {
         path = mud_get_path(mud, &local, &remote, MUD_PASSIVE);
 
@@ -1056,13 +1082,13 @@ mud_recv(struct mud *mud, void *data, size_t size)
     path->rx.total++;
     path->rx.bytes += bytes;
 
-    if ((hdr.id.id.b[0] & 1) == MUD_PKT_DATA) {
+    if (!ctrl) {
         path->idle = 0;
-    } else {
-        mud_recv_msg(mud, path, data, bytes);
-        return 0;
+        return (ssize_t)size;
     }
-    return (ssize_t)size;
+    mud_peer_learn(path, id);
+    mud_recv_msg(mud, path, data, bytes);
+    return 0;
 }
 
 static int
@@ -1235,7 +1261,8 @@ mud_send(struct mud *mud, void *data, size_t size)
     union mud_nonce nonce = mud_nonce_encrypt(mud, MUD_PKT_DATA);
 
     struct mud_hdr hdr = {
-        .id = nonce.id
+        .ctrl  = nonce.ctrl,
+        .count = nonce.count,
     };
     mud_encrypt(mud, nonce, &hdr.mac, data, size);
 
