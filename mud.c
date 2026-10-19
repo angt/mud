@@ -800,6 +800,9 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
             },
         },
     };
+    if (size > sizeof(u.data))
+        size = sizeof(u.data);
+
     if (size < sizeof(u.pkt))
         size = sizeof(u.pkt);
 
