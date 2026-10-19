@@ -1158,7 +1158,9 @@ mud_update(struct mud *mud)
                 mtu = path->mtu.ok;
         }
         now = mud_path_track(mud, path, now);
-        count++;
+
+        if (path->conf.state != MUD_EMPTY)
+            count++;
     }
     if (rate) {
         mud->pref = pref;
