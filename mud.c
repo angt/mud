@@ -907,6 +907,9 @@ static void
 mud_recv_msg(struct mud *mud, struct mud_path *path,
              unsigned char *data, size_t size)
 {
+    if (size < sizeof(struct mud_hdr) + sizeof(struct mud_msg))
+        return;
+
     const uint64_t now = mud_now();
 
     path->last_msg_time = now;
