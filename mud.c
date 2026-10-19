@@ -140,7 +140,6 @@ struct mud {
     unsigned pref;
     unsigned capacity;
     struct mud_crypto_key key;
-    uint64_t last_msg_time;
     uint64_t mtu;
     struct mud_errors err;
     uint64_t rate;
@@ -902,7 +901,6 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
     const uint64_t now = mud_now();
 
     path->last_msg_time = now;
-    mud->last_msg_time = now;
 
     struct mud_msg *msg = (struct mud_msg *)data;
     const uint64_t echo_now = mud_from_u64(msg->now.echo);
@@ -1050,7 +1048,7 @@ mud_path_update(struct mud *mud, struct mud_path *path, uint64_t now)
             memset(path, 0, sizeof(struct mud_path));
         return 0;
     case MUD_PASSIVE:
-        if (mud_timeout(now, mud->last_msg_time, 2 * MUD_ONE_MIN)) {
+        if (mud_timeout(now, path->last_msg_time, 2 * MUD_ONE_MIN)) {
             memset(path, 0, sizeof(struct mud_path));
             return 0;
         }
