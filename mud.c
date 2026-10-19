@@ -531,6 +531,10 @@ mud_get_path(struct mud *mud,
         errno = EINVAL;
         return NULL;
     }
+    if (local->sa.sa_family != AF_INET && local->sa.sa_family != AF_INET6) {
+        errno = EAFNOSUPPORT;
+        return NULL;
+    }
     for (unsigned i = 0; i < mud->capacity; i++) {
         struct mud_path *path = &mud->paths[i];
 
