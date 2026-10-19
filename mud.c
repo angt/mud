@@ -60,6 +60,8 @@
 #define MUD_MSG_SENT_MAX (5)
 #define MUD_KEEPALIVE    (5 * MUD_ONE_SEC)
 
+#define MUD_PACKET_MAX 1500
+
 #define MUD_CTRL_SIZE (CMSG_SPACE(MUD_PKTINFO_SIZE) + \
                        CMSG_SPACE(sizeof(struct in6_pktinfo)))
 
@@ -596,7 +598,7 @@ mud_get_errors(struct mud *mud, struct mud_errors *err)
 uint64_t
 mud_get_mtu(struct mud *mud)
 {
-    if (!mud->mtu)
+    if (mud->mtu <= sizeof(struct mud_hdr))
         return 0;
 
     return mud->mtu - sizeof(struct mud_hdr);
@@ -764,7 +766,7 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
 {
     union mud_nonce nonce = mud_nonce_encrypt(mud, MUD_PKT_MSG);
     union {
-        unsigned char data[1500];
+        unsigned char data[MUD_PACKET_MAX];
         struct {
             struct mud_hdr hdr;
             struct mud_msg msg;
@@ -961,6 +963,11 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
         path->conf.loss_limit  = msg->loss_limit;
 
         path->mtu.last = mud_from_u16(msg->mtu);
+
+        if (path->mtu.last <= sizeof(struct mud_hdr) ||
+            path->mtu.last > MUD_PACKET_MAX)
+            path->mtu.last = 0;
+
         path->mtu.ok = path->mtu.last;
 
         path->msg.sent++;
