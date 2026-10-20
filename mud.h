@@ -16,18 +16,18 @@ struct mud;
 enum mud_state {
     MUD_EMPTY = 0,
     MUD_DOWN,
-    MUD_PASSIVE,
+    MUD_LISTENING,
     MUD_UP,
     MUD_LAST,
 };
 
 enum mud_path_status {
-    MUD_DELETING = 0,
+    MUD_DEAD = 0,
     MUD_PROBING,
     MUD_DEGRADED,
     MUD_LOSSY,
+    MUD_BACKUP,
     MUD_READY,
-    MUD_RUNNING,
 };
 
 struct mud_key {
@@ -57,10 +57,14 @@ struct mud_path_conf {
     unsigned char loss_limit;
 };
 
+struct mud_peer {
+    struct mud_id id;
+};
+
 struct mud_path {
     struct mud_path_conf conf;
     enum mud_path_status status;
-    struct mud_id peer;
+    struct mud_peer peer;
     union mud_sockaddr remote;
     struct mud_stat rtt;
     struct {

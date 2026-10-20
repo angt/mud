@@ -383,7 +383,7 @@ mud_select_path(struct mud *mud)
     for (unsigned i = 0; i < mud->capacity; i++) {
         struct mud_path *path = &mud->paths[i];
 
-        if (path->status != MUD_RUNNING)
+        if (path->status != MUD_READY)
             continue;
 
         if (k < path->tx.rate)
@@ -437,7 +437,7 @@ mud_send_path(struct mud *mud, struct mud_path *path,
         errno = EAFNOSUPPORT;
         return -1;
     }
-    const int flags = path->status == MUD_RUNNING ? MSG_CONFIRM : 0;
+    const int flags = path->status == MUD_READY ? MSG_CONFIRM : 0;
     ssize_t ret = sendmsg(mud->fd, &msg, flags);
 
     if (ret == (ssize_t)-1)
@@ -955,7 +955,7 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
         path->rx.loss = (uint64_t)msg->loss;
         path->msg.sent = 0;
 
-        if (path->conf.state == MUD_PASSIVE)
+        if (path->conf.state == MUD_LISTENING)
             return;
 
         mud_update_mtu(path, size);
@@ -996,14 +996,14 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
 static void
 mud_peer_learn(struct mud_path *path, struct mud_id id)
 {
-    if (memcmp(&path->peer, &(struct mud_id){0}, sizeof(struct mud_id)) &&
-        memcmp(&path->peer, &id, sizeof(struct mud_id))) {
+    if (memcmp(&path->peer.id, &(struct mud_id){0}, sizeof(struct mud_id)) &&
+        memcmp(&path->peer.id, &id, sizeof(struct mud_id))) {
         memset(&path->msg.tx, 0, sizeof(path->msg.tx));
         memset(&path->msg.rx, 0, sizeof(path->msg.rx));
         path->msg.set = 0;
         path->msg.sent = 0;
     }
-    path->peer = id;
+    path->peer.id = id;
 }
 
 ssize_t
@@ -1057,7 +1057,7 @@ mud_recv(struct mud *mud, void *data, size_t size)
         data = (unsigned char *)data + sizeof(id);
         size -= sizeof(id);
     } else if (path) {
-        id = path->peer;
+        id = path->peer.id;
     }
     union mud_nonce nonce;
 
@@ -1074,7 +1074,7 @@ mud_recv(struct mud *mud, void *data, size_t size)
         return 0;
     }
     if (!path) {
-        path = mud_get_path(mud, &local, &remote, MUD_PASSIVE);
+        path = mud_get_path(mud, &local, &remote, MUD_LISTENING);
 
         if (!path)
             return 0;
@@ -1096,11 +1096,11 @@ mud_path_update(struct mud *mud, struct mud_path *path, uint64_t now)
 {
     switch (path->conf.state) {
     case MUD_DOWN:
-        path->status = MUD_DELETING;
+        path->status = MUD_DEAD;
         if (mud_timeout(now, path->last_msg_time, 2 * MUD_ONE_MIN))
             memset(path, 0, sizeof(struct mud_path));
         return 0;
-    case MUD_PASSIVE:
+    case MUD_LISTENING:
         if (mud_timeout(now, path->last_msg_time, 2 * MUD_ONE_MIN)) {
             memset(path, 0, sizeof(struct mud_path));
             return 0;
@@ -1128,9 +1128,9 @@ mud_path_update(struct mud *mud, struct mud_path *path, uint64_t now)
         return 0;
     }
     if (path->conf.pref > mud->pref) {
+        path->status = MUD_BACKUP;
+    } else if (path->status != MUD_READY) {
         path->status = MUD_READY;
-    } else if (path->status != MUD_RUNNING) {
-        path->status = MUD_RUNNING;
     }
     return 1;
 }
@@ -1144,7 +1144,7 @@ mud_path_track(struct mud *mud, struct mud_path *path, uint64_t now)
     uint64_t timeout = path->conf.beat;
 
     switch (path->status) {
-        case MUD_RUNNING:
+        case MUD_READY:
             if (path->idle > 2 * MUD_MSG_SENT_MAX)
                 timeout = MUD_KEEPALIVE;
             break;
@@ -1183,7 +1183,7 @@ mud_update(struct mud *mud)
                 next_pref = path->conf.pref;
             if (pref > path->conf.pref)
                 pref = path->conf.pref;
-            if (path->status == MUD_RUNNING)
+            if (path->status == MUD_READY)
                 rate += path->tx.rate;
         }
         if (path->mtu.ok) {
@@ -1206,7 +1206,7 @@ mud_update(struct mud *mud)
             if (!mud_path_update(mud, path, now))
                 continue;
 
-            if (path->status == MUD_RUNNING)
+            if (path->status == MUD_READY)
                 rate += path->tx.rate;
         }
     }
