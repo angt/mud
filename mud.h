@@ -59,6 +59,16 @@ struct mud_path_conf {
 
 struct mud_peer {
     struct mud_id id;
+    uint64_t now;
+    uint64_t echo_now;
+    uint64_t sent;
+    uint64_t rx_bytes;
+    uint64_t fw_bytes;
+    uint64_t tx_time;
+    uint64_t rx_total;
+    uint64_t fw_total;
+    uint64_t tx_acc;
+    uint64_t rx_acc;
 };
 
 struct mud_path {
@@ -74,16 +84,7 @@ struct mud_path {
         uint64_t loss;
     } tx, rx;
     struct {
-        struct {
-            uint64_t total;
-            uint64_t bytes;
-            uint64_t time;
-            uint64_t acc;
-            uint64_t acc_time;
-        } tx, rx;
         uint64_t time;
-        uint64_t sent;
-        uint64_t set;
     } msg;
     struct {
         uint64_t min;
