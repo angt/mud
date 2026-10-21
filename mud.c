@@ -285,14 +285,15 @@ static inline void
 mud_derive_key(struct mud_crypto_key *dst, const struct mud_key *src)
 {
     uint32_t st[12];
-    unsigned char aegis[] = "MUD-AEGIS";
-    unsigned char charm[] = "MUD-CHARM";
+    unsigned char mud[16] = "ANGT/MUD/2026";
+    unsigned char aegis[] = "AEGIS";
+    unsigned char charm[] = "CHARM";
 
-    uc_state_init(st, src->b, NULL);
+    uc_state_init(st, src->b, mud);
     uc_hash(st, dst->aegis.b, aegis, sizeof(aegis));
     uc_memzero(st, sizeof(st));
 
-    uc_state_init(st, src->b, NULL);
+    uc_state_init(st, src->b, mud);
     uc_hash(st, dst->charm.b, charm, sizeof(charm));
     uc_memzero(st, sizeof(st));
 }
