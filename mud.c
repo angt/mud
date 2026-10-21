@@ -97,11 +97,10 @@ struct mud_u64 {
 union mud_nonce {
     struct {
         struct mud_u32 time;
-        struct mud_u16 ctrl;
-        struct mud_u32 count;
+        struct mud_u32 ctrl;
         struct mud_id id;
     };
-    unsigned char b[32];
+    unsigned char b[AEGIS256_NPUBBYTES];
 };
 
 struct mud_mac {
@@ -128,8 +127,7 @@ struct mud_msg {
 };
 
 struct mud_hdr {
-    struct mud_u16 ctrl;
-    struct mud_u32 count;
+    struct mud_u32 ctrl;
     struct mud_mac mac;
 };
 
@@ -251,12 +249,12 @@ mud_nonce_encrypt(struct mud *mud, enum mud_pkt_flag flag)
         mud->time = mud_time();
 
     const uint64_t time = mud->time >> 3;
+    const uint64_t ctrl = (mud->count << 3) | ((time & 3) << 1) | flag;
 
     return (union mud_nonce){
-        .time  = mud_to_u32(time),
-        .ctrl  = mud_to_u16(((time & 3) << 1) | flag),
-        .count = mud_to_u32(mud->count),
-        .id    = mud->id,
+        .time = mud_to_u32(time),
+        .ctrl = mud_to_u32(ctrl),
+        .id   = mud->id,
     };
 }
 
@@ -264,7 +262,7 @@ static inline int
 mud_nonce_recv(struct mud *mud, struct mud_hdr hdr,
                struct mud_id id, union mud_nonce *nonce)
 {
-    const uint64_t ctrl = mud_from_u16(hdr.ctrl);
+    const uint64_t ctrl = mud_from_u32(hdr.ctrl);
 
     if (ctrl & 1)
         mud->time = mud_time();
@@ -276,10 +274,9 @@ mud_nonce_recv(struct mud *mud, struct mud_hdr hdr,
         return -1;
 
     *nonce = (union mud_nonce){
-        .time  = mud_to_u32(time + (uint64_t)diff),
-        .ctrl  = hdr.ctrl,
-        .count = hdr.count,
-        .id    = id,
+        .time = mud_to_u32(time + (uint64_t)diff),
+        .ctrl = hdr.ctrl,
+        .id   = id,
     };
     return 0;
 }
@@ -312,7 +309,7 @@ mud_encrypt(struct mud *mud, union mud_nonce nonce,
         };
     } tag;
 
-    if (mud->aes && (mud_from_u16(nonce.ctrl) & 1) == MUD_PKT_DATA) {
+    if (mud->aes && (mud_from_u32(nonce.ctrl) & 1) == MUD_PKT_DATA) {
         aegis256_encrypt(data, data, size, NULL, 0,
                          nonce.b, mud->key.aegis.b, tag.raw);
     } else {
@@ -331,7 +328,7 @@ mud_decrypt(struct mud *mud, union mud_nonce nonce,
 {
     int ret;
 
-    if (mud->aes && (mud_from_u16(nonce.ctrl) & 1) == MUD_PKT_DATA) {
+    if (mud->aes && (mud_from_u32(nonce.ctrl) & 1) == MUD_PKT_DATA) {
         ret = aegis256_decrypt(data, data, size, NULL, 0,
                                nonce.b, mud->key.aegis.b, mac->b, sizeof(*mac));
     } else {
@@ -779,8 +776,7 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
     } u = {
         .pkt = {
             .hdr = {
-                .ctrl  = nonce.ctrl,
-                .count = nonce.count,
+                .ctrl = nonce.ctrl,
             },
             .id = mud->id,
             .msg = {
@@ -1043,7 +1039,7 @@ mud_recv(struct mud *mud, void *data, size_t size)
     if (path && path->conf.state <= MUD_DOWN)
         return 0;
 
-    const int ctrl = mud_from_u16(hdr.ctrl) & 1;
+    const int ctrl = mud_from_u32(hdr.ctrl) & 1;
     struct mud_id id = {0};
 
     if (ctrl) {
@@ -1052,7 +1048,9 @@ mud_recv(struct mud *mud, void *data, size_t size)
         memcpy(&id, data, sizeof(id));
         data = (unsigned char *)data + sizeof(id);
         size -= sizeof(id);
-    } else if (path) {
+    } else {
+        if (!path || !memcmp(&path->peer.id, &id, sizeof(id)))
+            return 0;
         id = path->peer.id;
     }
     union mud_nonce nonce;
@@ -1257,8 +1255,7 @@ mud_send(struct mud *mud, void *data, size_t size)
     union mud_nonce nonce = mud_nonce_encrypt(mud, MUD_PKT_DATA);
 
     struct mud_hdr hdr = {
-        .ctrl  = nonce.ctrl,
-        .count = nonce.count,
+        .ctrl = nonce.ctrl,
     };
     mud_encrypt(mud, nonce, &hdr.mac, data, size);
 
