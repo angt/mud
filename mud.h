@@ -7,10 +7,6 @@
 
 #define MUD_PATH_MAX (32U)
 
-struct mud_id {
-    unsigned char b[8];
-};
-
 struct mud;
 
 enum mud_state {
@@ -34,12 +30,6 @@ struct mud_key {
     unsigned char b[32];
 };
 
-struct mud_stat {
-    uint64_t val;
-    uint64_t var;
-    int setup;
-};
-
 union mud_sockaddr {
     struct sockaddr sa;
     struct sockaddr_in sin;
@@ -52,49 +42,17 @@ struct mud_path_conf {
     union mud_sockaddr remote;
     uint64_t tx_max_rate;
     uint64_t rx_max_rate;
+    uint64_t lat_limit;
     uint64_t beat;
     unsigned char pref;
     unsigned char loss_limit;
 };
 
-struct mud_peer {
-    struct mud_id id;
-    uint64_t now;
-    uint64_t echo_now;
-    uint64_t sent;
-    uint64_t rx_bytes;
-    uint64_t fw_bytes;
-    uint64_t tx_time;
-    uint64_t rx_total;
-    uint64_t fw_total;
-    uint64_t tx_acc;
-    uint64_t rx_acc;
-};
-
-struct mud_path {
+struct mud_path_info {
     struct mud_path_conf conf;
+    union mud_sockaddr addr;
     enum mud_path_status status;
-    struct mud_peer peer;
-    union mud_sockaddr remote;
-    struct mud_stat rtt;
-    struct {
-        uint64_t total;
-        uint64_t bytes;
-        uint64_t rate;
-        uint64_t loss;
-    } tx, rx;
-    struct {
-        uint64_t time;
-    } msg;
-    struct {
-        uint64_t min;
-        uint64_t max;
-        uint64_t probe;
-        uint64_t last;
-        uint64_t ok;
-    } mtu;
-    uint64_t last_msg_time;
-    uint64_t idle;
+    uint64_t rtt;
 };
 
 struct mud_error {
@@ -109,23 +67,21 @@ struct mud_errors {
 };
 
 struct mud_paths {
-    struct mud_path path[MUD_PATH_MAX];
+    struct mud_path_info infos[MUD_PATH_MAX];
     unsigned count;
 };
 
 struct mud *mud_create (union mud_sockaddr, struct mud_key *);
 void        mud_delete (struct mud *);
 
-int mud_set_path (struct mud *, struct mud_path_conf *);
+int mud_set_path (struct mud *, struct mud_path_conf);
 int mud_update   (struct mud *);
 
 ssize_t mud_recv (struct mud *, void *, size_t);
 ssize_t mud_send (struct mud *, void *, size_t);
 
-int      mud_get_errors (struct mud *, struct mud_errors *);
-int      mud_get_fd     (struct mud *);
-uint64_t mud_get_mtu    (struct mud *);
-int      mud_get_paths  (struct mud *,
-                         struct mud_paths *,
-                          union mud_sockaddr *,
-                          union mud_sockaddr *);
+struct mud_errors mud_get_errors   (struct mud *);
+int               mud_get_fd       (struct mud *);
+uint64_t          mud_get_mtu      (struct mud *);
+struct mud_paths  mud_get_paths    (struct mud *);
+size_t            mud_get_overhead (struct mud *);

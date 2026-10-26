@@ -65,6 +65,58 @@
 #define MUD_CTRL_SIZE (CMSG_SPACE(MUD_PKTINFO_SIZE) + \
                        CMSG_SPACE(sizeof(struct in6_pktinfo)))
 
+struct mud_stat {
+    uint64_t val;
+    uint64_t var;
+    int setup;
+};
+
+struct mud_id {
+    unsigned char b[8];
+};
+
+struct mud_peer {
+    struct mud_id id;
+    uint64_t now;
+    uint64_t echo_now;
+    uint64_t sent;
+    uint64_t rx_bytes;
+    uint64_t fw_bytes;
+    uint64_t tx_time;
+    uint64_t rx_total;
+    uint64_t fw_total;
+    uint64_t tx_acc;
+    uint64_t rx_acc;
+    uint64_t max_rate;
+};
+
+struct mud_path {
+    struct mud_path_conf conf;
+    enum mud_path_status status;
+    struct mud_peer peer;
+    union mud_sockaddr addr;
+    struct mud_stat rtt;
+    uint64_t rtt_last;
+    struct {
+        uint64_t total;
+        uint64_t bytes;
+        uint64_t rate;
+        uint64_t loss;
+    } tx, rx;
+    struct {
+        uint64_t time;
+    } msg;
+    struct {
+        uint64_t min;
+        uint64_t max;
+        uint64_t probe;
+        uint64_t last;
+        uint64_t ok;
+    } mtu;
+    uint64_t last_msg_time;
+    uint64_t idle;
+};
+
 struct mud_crypto_key {
     struct mud_key aegis;
     struct mud_key charm;
@@ -488,33 +540,28 @@ mud_cmp_port(union mud_sockaddr *a, union mud_sockaddr *b)
     return 1;
 }
 
-int
-mud_get_paths(struct mud *mud, struct mud_paths *paths,
-              union mud_sockaddr *local, union mud_sockaddr *remote)
+struct mud_paths
+mud_get_paths(struct mud *mud)
 {
-    if (!mud || !paths) {
-        errno = EINVAL;
-        return -1;
-    }
-    unsigned count = 0;
+    struct mud_paths paths = {0};
+
+    if (!mud)
+        return paths;
 
     for (unsigned i = 0; i < mud->capacity; i++) {
-        struct mud_path *path = &mud->paths[i];
+        const struct mud_path *path = &mud->paths[i];
 
-        if (local && local->sa.sa_family &&
-            mud_cmp_addr(local, &path->conf.local))
+        if (path->conf.state == MUD_EMPTY)
             continue;
 
-        if (remote && remote->sa.sa_family &&
-            (mud_cmp_addr(remote, &path->conf.remote) ||
-             mud_cmp_port(remote, &path->conf.remote)))
-            continue;
-
-        if (path->conf.state != MUD_EMPTY)
-            paths->path[count++] = *path;
+        paths.infos[paths.count++] = (struct mud_path_info){
+            .conf   = path->conf,
+            .addr   = path->addr,
+            .status = path->status,
+            .rtt    = path->rtt_last,
+        };
     }
-    paths->count = count;
-    return 0;
+    return paths;
 }
 
 static struct mud_path *
@@ -577,22 +624,20 @@ mud_get_path(struct mud *mud,
     path->conf.local      = *local;
     path->conf.remote     = *remote;
     path->conf.state      = state;
-    path->conf.beat       = 100 * MUD_ONE_MSEC;
+    path->conf.beat       = 100;
     path->conf.loss_limit = 255;
     path->status          = MUD_PROBING;
 
     return path;
 }
 
-int
-mud_get_errors(struct mud *mud, struct mud_errors *err)
+struct mud_errors
+mud_get_errors(struct mud *mud)
 {
-    if (!mud || !err) {
-        errno = EINVAL;
-        return -1;
-    }
-    memcpy(err, &mud->err, sizeof(struct mud_errors));
-    return 0;
+    if (!mud)
+        return (struct mud_errors){0};
+
+    return mud->err;
 }
 
 uint64_t
@@ -605,6 +650,15 @@ mud_get_mtu(struct mud *mud)
         return 0;
 
     return mud->mtu - sizeof(struct mud_hdr);
+}
+
+size_t
+mud_get_overhead(struct mud *mud)
+{
+    if (!mud)
+        return 0;
+
+    return sizeof(struct mud_hdr);
 }
 
 static int
@@ -847,8 +901,13 @@ mud_update_rl(struct mud *mud, struct mud_path *path, uint64_t now,
         }
         path->tx.rate += path->tx.rate / 10;
     }
-    if (path->tx.rate > path->conf.tx_max_rate)
-        path->tx.rate = path->conf.tx_max_rate;
+    uint64_t cap = path->conf.tx_max_rate;
+
+    if (path->peer.max_rate && (!cap || path->peer.max_rate < cap))
+        cap = path->peer.max_rate;
+
+    if (cap && path->tx.rate > cap)
+        path->tx.rate = cap;
 }
 
 static void
@@ -920,9 +979,10 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
     const uint64_t echo_now = mud_from_u64(msg->now.echo);
     const uint64_t peer_now = mud_from_u64(msg->now.peer);
 
-    mud_sock_from_addr(&path->remote, &msg->addr);
+    mud_sock_from_addr(&path->addr, &msg->addr);
 
     if (echo_now) {
+        path->rtt_last = now - echo_now;
         mud_update_stat(&path->rtt, now - echo_now);
 
         const uint64_t tx_bytes = mud_from_u64(msg->fw.bytes);
@@ -959,16 +1019,13 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
         if (path->mtu.last && path->mtu.last == mud_from_u16(msg->mtu))
             path->mtu.ok = path->mtu.last;
     } else {
-        path->conf.beat = mud_from_u64(msg->beat);
-
         const uint64_t max_rate = mud_from_u64(msg->max_rate);
 
-        if (path->conf.tx_max_rate != max_rate)
-            path->tx.rate = max_rate;
-
-        path->conf.tx_max_rate = max_rate;
-        path->conf.pref        = msg->pref;
-        path->conf.loss_limit  = msg->loss_limit;
+        if (max_rate != path->peer.max_rate) {
+            path->peer.max_rate = max_rate;
+            if (max_rate)
+                path->tx.rate = max_rate;
+        }
 
         path->mtu.last = mud_from_u16(msg->mtu);
 
@@ -1136,7 +1193,7 @@ mud_path_track(struct mud *mud, struct mud_path *path, uint64_t now)
     if (path->conf.state != MUD_UP)
         return now;
 
-    uint64_t timeout = path->conf.beat;
+    uint64_t timeout = path->conf.beat * MUD_ONE_MSEC;
 
     switch (path->status) {
         case MUD_READY:
@@ -1173,6 +1230,9 @@ mud_update(struct mud *mud)
     for (unsigned i = 0; i < mud->capacity; i++) {
         struct mud_path *path = &mud->paths[i];
 
+        if (path->conf.state == MUD_EMPTY)
+            continue;
+
         if (mud_path_update(mud, path, now)) {
             if (next_pref > path->conf.pref && path->conf.pref > mud->pref)
                 next_pref = path->conf.pref;
@@ -1180,6 +1240,8 @@ mud_update(struct mud *mud)
                 pref = path->conf.pref;
             if (path->status == MUD_READY)
                 rate += path->tx.rate;
+        } else if (path->conf.state == MUD_EMPTY) {
+            continue;
         }
         if (path->mtu.ok) {
             if (!mtu || mtu > path->mtu.ok)
@@ -1187,8 +1249,7 @@ mud_update(struct mud *mud)
         }
         now = mud_path_track(mud, path, now);
 
-        if (path->conf.state != MUD_EMPTY)
-            count++;
+        count++;
     }
     if (rate) {
         mud->pref = pref;
@@ -1197,6 +1258,9 @@ mud_update(struct mud *mud)
 
         for (unsigned i = 0; i < mud->capacity; i++) {
             struct mud_path *path = &mud->paths[i];
+
+            if (path->conf.state == MUD_EMPTY)
+                continue;
 
             if (!mud_path_update(mud, path, now))
                 continue;
@@ -1215,28 +1279,35 @@ mud_update(struct mud *mud)
 }
 
 int
-mud_set_path(struct mud *mud, struct mud_path_conf *conf)
+mud_set_path(struct mud *mud, struct mud_path_conf conf)
 {
-    if (!conf || conf->state < MUD_EMPTY || conf->state >= MUD_LAST) {
+    if (conf.state < MUD_EMPTY || conf.state >= MUD_LAST) {
         errno = EINVAL;
         return -1;
     }
-    struct mud_path *path = mud_get_path(mud, &conf->local,
-                                              &conf->remote,
-                                              conf->state);
+    if (conf.state == MUD_EMPTY) {
+        struct mud_path *path = mud_get_path(mud, &conf.local,
+                                                  &conf.remote,
+                                                  MUD_EMPTY);
+        if (path)
+            memset(path, 0, sizeof(struct mud_path));
+
+        return 0;
+    }
+    struct mud_path *path = mud_get_path(mud, &conf.local,
+                                              &conf.remote,
+                                              conf.state);
     if (!path)
         return -1;
 
-    struct mud_path_conf c = path->conf;
+    conf.local  = path->conf.local;
+    conf.remote = path->conf.remote;
 
-    if (conf->state)       c.state       = conf->state;
-    if (conf->pref)        c.pref        = conf->pref >> 1;
-    if (conf->beat)        c.beat        = conf->beat * MUD_ONE_MSEC;
-    if (conf->loss_limit)  c.loss_limit  = conf->loss_limit;
-    if (conf->tx_max_rate) c.tx_max_rate = path->tx.rate = conf->tx_max_rate;
-    if (conf->rx_max_rate) c.rx_max_rate = path->rx.rate = conf->rx_max_rate;
+    path->conf = conf;
 
-    *conf = path->conf = c;
+    if (conf.tx_max_rate)
+        path->tx.rate = conf.tx_max_rate;
+
     return 0;
 }
 

@@ -41,7 +41,7 @@ main(int argc, char **argv)
             .rx_max_rate = 1000 * 1000,
             // use default beat, fixed_rate, loss_limit
         };
-        if (mud_set_path(mud, &path_conf)) {
+        if (mud_set_path(mud, path_conf)) {
             perror("mud_set_path");
             return -1;
         }
