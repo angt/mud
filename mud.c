@@ -428,7 +428,11 @@ mud_unmapv4(union mud_sockaddr *addr)
 static struct mud_path *
 mud_select_path(struct mud *mud)
 {
-    uint64_t k = (mud->random * mud->rate) >> 32;
+    const uint64_t rnd = mud->random;
+    const uint64_t rate_hi = mud->rate >> 32;
+    const uint64_t rate_lo = mud->rate & UINT64_C(0xFFFFFFFF);
+
+    uint64_t k = rnd * rate_hi + ((rnd * rate_lo) >> 32);
 
     for (unsigned i = 0; i < mud->capacity; i++) {
         struct mud_path *path = &mud->paths[i];
