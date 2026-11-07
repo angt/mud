@@ -88,6 +88,7 @@ struct mud_peer {
     uint64_t tx_acc;
     uint64_t rx_acc;
     uint64_t max_rate;
+    int64_t  fwd_delay;
 };
 
 struct mud_path {
@@ -886,7 +887,8 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
 static void
 mud_update_rl(struct mud *mud, struct mud_path *path, uint64_t now,
               uint64_t tx_dt, uint64_t tx_bytes, uint64_t tx_pkt,
-              uint64_t rx_dt, uint64_t rx_bytes, uint64_t rx_pkt)
+              uint64_t rx_dt, uint64_t rx_bytes, uint64_t rx_pkt,
+              int64_t fwd_delay_delta)
 {
     if (rx_dt && rx_dt > tx_dt + (tx_dt >> 3)) {
         path->tx.rate = (7 * rx_bytes * MUD_ONE_SEC) / (8 * rx_dt);
@@ -903,7 +905,11 @@ mud_update_rl(struct mud *mud, struct mud_path *path, uint64_t now,
             path->peer.tx_acc = tx_acc;
             path->peer.rx_acc = rx_acc;
         }
-        path->tx.rate += path->tx.rate / 10;
+        if (fwd_delay_delta > 0) {
+            path->tx.rate = (7 * rx_bytes * MUD_ONE_SEC) / (8 * rx_dt);
+        } else if (!fwd_delay_delta) {
+            path->tx.rate += path->tx.rate / 10;
+        }
     }
     uint64_t cap = path->conf.tx_max_rate;
 
@@ -996,6 +1002,11 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
 
         if ((peer_now > path->peer.tx_time) && (tx_bytes > path->peer.fw_bytes) &&
             (now > path->peer.now) && (rx_bytes > path->peer.rx_bytes)) {
+            const int64_t fwd_delay = (int64_t)(peer_now - echo_now);
+            const int64_t fwd_delay_delta = path->peer.fwd_delay
+                                          ? fwd_delay - path->peer.fwd_delay : 0;
+            path->peer.fwd_delay = fwd_delay;
+
             if (path->peer.tx_time && path->status > MUD_PROBING) {
                 mud_update_rl(mud, path, now,
                         peer_now   - path->peer.tx_time,
@@ -1003,7 +1014,8 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
                         tx_total   - path->peer.fw_total,
                         now        - path->peer.now,
                         rx_bytes   - path->peer.rx_bytes,
-                        rx_total   - path->peer.rx_total);
+                        rx_total   - path->peer.rx_total,
+                        fwd_delay_delta);
             }
             path->peer.now      = now;
             path->peer.tx_time  = peer_now;
