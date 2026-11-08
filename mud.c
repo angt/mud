@@ -160,12 +160,19 @@ struct mud_mac {
     unsigned char b[10];
 };
 
+enum mud_msg_kind {
+    MUD_MSG_PROBE,
+    MUD_MSG_REPLY,
+    MUD_MSG_FEEDBACK,
+    MUD_MSG_LAST,
+};
+
 struct mud_msg {
     struct {
         struct mud_u64 echo;
         struct mud_u64 peer;
     } now;
-    unsigned char aes;
+    unsigned char flags;
     struct {
         struct mud_u64 bytes;
         struct mud_u64 total;
@@ -259,6 +266,24 @@ mud_from_u64(struct mud_u64 u)
     uint64_t v;
     memcpy(&v, u.b, sizeof(u));
     return mud_le64(v);
+}
+
+static inline unsigned char
+mud_msg_flags(enum mud_msg_kind kind, int aes)
+{
+    return (unsigned char)((kind << 1) | !!aes);
+}
+
+static inline enum mud_msg_kind
+mud_msg_kind(unsigned char flags)
+{
+    return (enum mud_msg_kind)(flags >> 1);
+}
+
+static inline int
+mud_msg_aes(unsigned char flags)
+{
+    return flags & 1;
 }
 
 static inline uint64_t
@@ -821,8 +846,8 @@ mud_sock_from_addr(union mud_sockaddr *sock, struct mud_addr *addr)
 }
 
 static ssize_t
-mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
-             uint64_t echo, uint64_t fw_bytes, uint64_t fw_total,
+mud_send_msg(struct mud *mud, struct mud_path *path, enum mud_msg_kind kind,
+             uint64_t now, uint64_t echo, uint64_t fw_bytes, uint64_t fw_total,
              size_t size)
 {
     union mud_nonce nonce = mud_nonce_encrypt(mud, MUD_PKT_MSG);
@@ -844,7 +869,7 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
                     .echo = mud_to_u64(echo),
                     .peer = mud_to_u64(now),
                 },
-                .aes = aegis256_is_available(),
+                .flags = mud_msg_flags(kind, aegis256_is_available()),
                 .tx = {
                     .bytes = mud_to_u64(path->tx.bytes),
                     .total = mud_to_u64(path->tx.total),
@@ -981,11 +1006,16 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
              + sizeof(struct mud_msg))
         return;
 
+    struct mud_msg *msg = (struct mud_msg *)data;
+    const enum mud_msg_kind kind = mud_msg_kind(msg->flags);
+
+    if (kind >= MUD_MSG_LAST)
+        return;
+
     const uint64_t now = mud_now();
 
     path->last_msg_time = now;
 
-    struct mud_msg *msg = (struct mud_msg *)data;
     const uint64_t echo_now = mud_from_u64(msg->now.echo);
     const uint64_t peer_now = mud_from_u64(msg->now.peer);
 
@@ -1054,12 +1084,15 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
         path->peer.sent++;
         path->msg.time = now;
     }
-    mud->aes = msg->aes && aegis256_is_available();
+    mud->aes = mud_msg_aes(msg->flags) && aegis256_is_available();
 
-    mud_send_msg(mud, path, now, peer_now,
-                 mud_from_u64(msg->tx.bytes),
-                 mud_from_u64(msg->tx.total),
-                 size);
+    if (kind == MUD_MSG_FEEDBACK)
+        return;
+
+    mud_send_msg(mud, path, kind == MUD_MSG_REPLY ? MUD_MSG_FEEDBACK
+                                                  : MUD_MSG_REPLY,
+                 now, peer_now, mud_from_u64(msg->tx.bytes),
+                                mud_from_u64(msg->tx.total), size);
 }
 
 static void
@@ -1227,7 +1260,7 @@ mud_path_track(struct mud *mud, struct mud_path *path, uint64_t now)
         path->idle++;
         path->peer.sent++;
         path->msg.time = now;
-        mud_send_msg(mud, path, now, 0, 0, 0, path->mtu.probe);
+        mud_send_msg(mud, path, MUD_MSG_PROBE, now, 0, 0, 0, path->mtu.probe);
         now = mud_now();
     }
     return now;
